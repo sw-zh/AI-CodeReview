@@ -155,6 +155,8 @@ def freeze_formal_snapshot(
     if task is None or git is None or git.cycle_id != cycle_id:
         raise DomainError("GIT_RANGE_INVALID", "正式快照必须绑定当前轮次已冻结的 Git 范围")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    if cycle.business_status not in {"DRAFT", "NEEDS_EVIDENCE", "NEEDS_CONFIRMATION"}:
+        raise DomainError("STATE_CONFLICT", "当前轮次不能再冻结新的正式输入快照")
     sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == task.project_id).all()
     if len(sources) != len(set(source_revision_ids)) or any(x.processing_status != SourceProcessingStatus.READY for x in sources):
         raise DomainError("SOURCE_NOT_READY", "正式快照的全部资料必须存在且处于 READY")

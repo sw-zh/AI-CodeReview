@@ -35,6 +35,8 @@ def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UU
         raise DomainError("STATE_CONFLICT", "仅终态分析运行可生成报告草稿")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     snapshot = session.get(InputSnapshot, run.snapshot_id)
+    if snapshot is None or snapshot.cycle_id != cycle.id or snapshot.purpose != "FORMAL":
+        raise DomainError("INPUT_STALE", "报告草稿必须绑定当前轮次的正式输入快照")
     results = session.query(VerificationResult).filter_by(analysis_run_id=run.id).all()
     content_hash = _content_hash(results=results, editorial_note="", dispositions={})
     next_no = session.query(func.coalesce(func.max(ReportVersion.sequence_no), 0)).filter_by(cycle_id=cycle.id).scalar() + 1
@@ -135,6 +137,15 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
     report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "APPROVED": raise DomainError("STATE_CONFLICT", "仅已批准报告可发布")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    approval = session.query(ApprovalAction).filter_by(
+        report_version_id=report.id,
+        action="APPROVED",
+        report_hash=report.content_hash,
+        snapshot_hash=report.snapshot_hash,
+        run_id=report.run_id,
+    ).order_by(ApprovalAction.created_at.desc()).first()
+    if approval is None:
+        raise DomainError("STATE_CONFLICT", "批准记录未绑定当前报告哈希、快照哈希和分析运行")
     existing = session.query(PublishedRecord).filter_by(report_version_id=report.id).one_or_none()
     if existing: return existing
     record_hash = f"sha256:{hashlib.sha256(f'{report.content_hash}:{report.snapshot_hash}'.encode()).hexdigest()}"

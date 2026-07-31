@@ -34,6 +34,8 @@ def start_analysis_run(
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if snapshot.purpose != "FORMAL" or session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none() is None:
         raise DomainError("INPUT_STALE", "只有包含冻结 Git 范围的正式快照可以启动分析")
+    if cycle.business_status not in {"DRAFT", "NEEDS_EVIDENCE", "NEEDS_CONFIRMATION"}:
+        raise DomainError("STATE_CONFLICT", "当前轮次状态不允许启动新的分析运行")
     existing_job = session.query(AnalysisJob).filter_by(idempotency_key=idempotency_key).one_or_none()
     if existing_job is not None:
         return session.get(AnalysisRun, existing_job.run_id)
