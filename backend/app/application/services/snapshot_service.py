@@ -1,12 +1,12 @@
 import hashlib
 import json
-from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
 from app.application.services.redaction import safe_excerpt
+from app.core.config import get_settings
 from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import (
@@ -24,6 +24,7 @@ from app.infrastructure.persistence.models import (
     VerificationTask,
     SourceRevision,
 )
+from app.infrastructure.artifact_storage import LocalArtifactStorage
 
 
 def freeze_preparation_snapshot(
@@ -176,6 +177,7 @@ def freeze_formal_snapshot(
     ).all() if manual_evidence_ids else []
     if len(manual_evidence) != len(manual_evidence_ids):
         raise DomainError("INPUT_INVALID", "manual evidence does not belong to this verification cycle")
+    storage = LocalArtifactStorage(get_settings().artifact_root)
     normalized = {"purpose": "FORMAL", "cycleId": str(cycle.id), "policyVersion": "v1", "workflowVersion": "v1", "git": {"baseSha": git.base_sha, "targetSha": git.target_sha, "mergeBaseSha": git.merge_base_sha, "diffMode": git.diff_mode, "diffHash": git.diff_hash}, "sources": sorted([{"id": str(x.id), "hash": x.content_hash, "parser": x.parser_version} for x in sources], key=lambda x: x["id"]), "externalEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "commitSha": x.commit_sha, "type": x.evidence_type} for x in external_evidence], key=lambda x: x["id"]), "manualEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "submittedBy": str(x.submitted_by)} for x in manual_evidence], key=lambda x: x["id"])}
     snapshot_hash = f"sha256:{hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
     existing = session.query(InputSnapshot).filter_by(snapshot_hash=snapshot_hash).one_or_none()
@@ -189,11 +191,11 @@ def freeze_formal_snapshot(
             session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="DOCUMENT", evidence_kind="RAW_FACT", source_revision_id=source.id, content_hash=chunk.text_hash, excerpt_safe=safe_excerpt(chunk.content), locator={"sourceRevisionId": str(source.id), "chunkId": str(chunk.id), "chunkIndex": chunk.chunk_index, **chunk.locator}, locator_precision="EXACT", extractor_version=source.parser_version or "markdown-text-v1"))
     for item in external_evidence:
         session.add(InputSnapshotExternalEvidence(snapshot_id=snapshot.id, external_evidence_id=item.id, content_hash=item.content_hash, commit_sha=item.commit_sha))
-        content = Path(item.artifact_uri).read_text(encoding="utf-8")
+        content = storage.read_text(item.artifact_uri)
         session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type=item.evidence_type, evidence_kind="RAW_FACT", commit_sha=item.commit_sha, content_hash=item.content_hash, excerpt_safe=safe_excerpt(content), locator={"externalEvidenceId": str(item.id), "logicalName": item.logical_name, "commitSha": item.commit_sha, "exitCode": item.exit_code}, locator_precision="EXACT", extractor_version="external-evidence-v1"))
     for item in manual_evidence:
         session.add(InputSnapshotManualEvidence(snapshot_id=snapshot.id, manual_evidence_id=item.id, content_hash=item.content_hash))
-        content = Path(item.artifact_uri).read_text(encoding="utf-8")
+        content = storage.read_text(item.artifact_uri)
         session.add(EvidenceItem(
             project_id=task.project_id,
             snapshot_id=snapshot.id,

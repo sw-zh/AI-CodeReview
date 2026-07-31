@@ -1,5 +1,4 @@
 import hashlib
-from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -9,6 +8,7 @@ from app.core.config import get_settings
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import ManualEvidence, VerificationCycle, VerificationTask
+from app.infrastructure.artifact_storage import LocalArtifactStorage
 
 
 def submit_manual_evidence(
@@ -40,11 +40,9 @@ def submit_manual_evidence(
     )
     session.add(evidence)
     session.flush()
-    target_dir = Path(get_settings().artifact_root).resolve() / str(task.project_id) / "manual-evidence" / str(evidence.id)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / "note.txt"
-    target.write_bytes(encoded)
-    evidence.artifact_uri = str(target)
+    evidence.artifact_uri = LocalArtifactStorage(get_settings().artifact_root).write_bytes(
+        [str(task.project_id), "manual-evidence", str(evidence.id)], "note.txt", encoded
+    )
     append_audit_event(
         session,
         project_id=task.project_id,

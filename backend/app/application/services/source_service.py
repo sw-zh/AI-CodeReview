@@ -1,5 +1,4 @@
 import hashlib
-from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import func
@@ -11,6 +10,8 @@ from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.domain.model_contracts import EmbeddingRequest
 from app.infrastructure.embedding_model import create_embedding_model
+from app.infrastructure.artifact_storage import LocalArtifactStorage
+from app.infrastructure.document_parser import MarkdownTextDocumentParser
 from app.infrastructure.persistence.models import DocumentChunk, SourceRevision
 
 ALLOWED_MEDIA_TYPES = {"text/plain", "text/markdown"}
@@ -58,31 +59,26 @@ def create_source_revision(
     session.add(source)
     session.flush()
 
-    root = Path(get_settings().artifact_root).resolve()
-    target_dir = root / str(project_id) / str(source.id)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / "source.txt"
-    target.write_bytes(content)
-    source.artifact_uri = str(target)
+    storage = LocalArtifactStorage(get_settings().artifact_root)
+    source.artifact_uri = storage.write_bytes([str(project_id), str(source.id)], "source.txt", content)
 
     # The first slice has deterministic UTF-8 parsing only, but records every state transition.
     source.processing_status = SourceProcessingStatus.PARSING
-    source.parser_version = "markdown-text-v1"
+    parser = MarkdownTextDocumentParser()
+    source.parser_version = parser.version
     source.processing_status = SourceProcessingStatus.CHUNKING
     text = content.decode("utf-8")
-    paragraphs = [part.strip() for part in text.replace("\r\n", "\n").split("\n\n") if part.strip()]
     embedding_model = create_embedding_model(get_settings())
-    for index, paragraph in enumerate(paragraphs or [text.strip()]):
-        start = text.find(paragraph)
-        embedding = embedding_model.embed(EmbeddingRequest(text=paragraph, model=get_settings().embedding_model))
+    for index, chunk in enumerate(parser.parse(text)):
+        embedding = embedding_model.embed(EmbeddingRequest(text=chunk.content, model=get_settings().embedding_model))
         session.add(
             DocumentChunk(
                 source_revision_id=source.id,
                 chunk_index=index,
-                content=paragraph,
-                text_hash=f"sha256:{hashlib.sha256(paragraph.encode('utf-8')).hexdigest()}",
-                locator={"paragraph": index + 1, "charStart": max(start, 0), "charEnd": max(start, 0) + len(paragraph)},
-                index_version="markdown-text-v1",
+                content=chunk.content,
+                text_hash=f"sha256:{hashlib.sha256(chunk.content.encode('utf-8')).hexdigest()}",
+                locator=chunk.locator,
+                index_version=parser.version,
                 embedding=embedding.vector,
             )
         )

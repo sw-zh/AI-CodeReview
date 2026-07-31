@@ -20,6 +20,12 @@ class FrozenGitDiff:
     coverage: dict
 
 
+@dataclass(frozen=True)
+class ParsedDocumentChunk:
+    content: str
+    locator: dict
+
+
 class GitReaderPort:
     """Read-only Git boundary; it never executes repository content or hooks."""
 
@@ -56,4 +62,21 @@ class EmbeddingModelPort:
     """Embedding boundary remains independent from the generation provider."""
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+        raise NotImplementedError
+
+
+class DocumentParserPort:
+    """Parses an allowed document format into immutable, locatable chunks."""
+
+    def parse(self, content: str) -> list[ParsedDocumentChunk]:
+        raise NotImplementedError
+
+
+class ArtifactStoragePort:
+    """Controlled raw-artifact boundary; database rows retain only the returned URI."""
+
+    def write_bytes(self, namespace: list[str], filename: str, content: bytes) -> str:
+        raise NotImplementedError
+
+    def read_text(self, uri: str) -> str:
         raise NotImplementedError
