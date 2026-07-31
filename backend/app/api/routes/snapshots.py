@@ -46,7 +46,7 @@ def freeze(
 @router.post("/formal", response_model=SnapshotResponse, status_code=status.HTTP_201_CREATED)
 def freeze_formal(cycle_id: UUID, payload: FormalSnapshotCreateRequest, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> SnapshotResponse:
     try:
-        snapshot = freeze_formal_snapshot(session, cycle_id=cycle_id, source_revision_ids=payload.source_revision_ids, git_snapshot_id=payload.git_snapshot_id, actor_id=user.id, correlation_id=correlation_id(request))
+        snapshot = freeze_formal_snapshot(session, cycle_id=cycle_id, source_revision_ids=payload.source_revision_ids, git_snapshot_id=payload.git_snapshot_id, external_evidence_ids=payload.external_evidence_ids, actor_id=user.id, correlation_id=correlation_id(request))
         session.commit()
         return SnapshotResponse(id=snapshot.id, cycle_id=snapshot.cycle_id, snapshot_hash=snapshot.snapshot_hash, purpose=snapshot.purpose, policy_version=snapshot.policy_version, workflow_version=snapshot.workflow_version, created_at=snapshot.created_at)
     except DomainError as exc:

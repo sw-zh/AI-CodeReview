@@ -318,6 +318,33 @@ class InputSnapshotGit(Base):
     diff_hash: Mapped[str] = mapped_column(String(80), nullable=False)
 
 
+class ExternalEvidence(TimestampedEntity, Base):
+    __tablename__ = "external_evidence"
+    __table_args__ = (CheckConstraint("evidence_type IN ('TEST', 'BUILD')", name="ck_external_evidence_type"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    cycle_id: Mapped[UUID] = mapped_column(ForeignKey("verification_cycles.id", ondelete="CASCADE"), nullable=False)
+    evidence_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    logical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    submitted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class InputSnapshotExternalEvidence(Base):
+    __tablename__ = "input_snapshot_external_evidence"
+    __table_args__ = (UniqueConstraint("snapshot_id", "external_evidence_id", name="uq_snapshot_external_evidence"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
+    external_evidence_id: Mapped[UUID] = mapped_column(ForeignKey("external_evidence.id"), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class AnalysisRun(TimestampedEntity, Base):
     __tablename__ = "analysis_runs"
     __table_args__ = (

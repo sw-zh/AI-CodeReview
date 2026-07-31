@@ -6,6 +6,7 @@ type Task = { id: string; title: string; cycle_id: string; cycle_status: string 
 type Source = { id: string; logical_name: string; processing_status: string; content_hash: string }
 type Repository = { id: string; display_url: string }
 type GitSnapshot = { id: string; base_sha: string; target_sha: string; diff_hash: string; coverage: { changedFiles: string[] } }
+type ExternalEvidence = { id: string; evidence_type: string; logical_name: string; commit_sha: string; exit_code: number | null }
 type Snapshot = { id: string; snapshot_hash: string; purpose: string }
 type Run = { id: string; snapshot_id: string; run_status: string; poll_url: string }
 type Evidence = { id: string; sourceType: string; excerpt: string; locator: Record<string, unknown>; precision: string }
@@ -30,6 +31,11 @@ const task = ref<Task | null>(null)
 const source = ref<Source | null>(null)
 const repository = ref<Repository | null>(null)
 const gitSnapshot = ref<GitSnapshot | null>(null)
+const externalEvidence = ref<ExternalEvidence | null>(null)
+const externalEvidenceType = ref('TEST')
+const externalEvidenceName = ref('pytest-output.txt')
+const externalEvidenceContent = ref('')
+const externalExitCode = ref('0')
 const formalSnapshot = ref<Snapshot | null>(null)
 const run = ref<Run | null>(null)
 const results = ref<Result[]>([])
@@ -133,8 +139,17 @@ async function freezeFormalSnapshot() {
   if (!task.value || !source.value || !gitSnapshot.value) return
   busy.value = true
   try {
-    formalSnapshot.value = await request<Snapshot>(`/cycles/${task.value.cycle_id}/input-snapshots/formal`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ source_revision_ids: [source.value.id], git_snapshot_id: gitSnapshot.value.id }) })
+    formalSnapshot.value = await request<Snapshot>(`/cycles/${task.value.cycle_id}/input-snapshots/formal`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ source_revision_ids: [source.value.id], git_snapshot_id: gitSnapshot.value.id, external_evidence_ids: externalEvidence.value ? [externalEvidence.value.id] : [] }) })
     message.value = '正式快照已冻结，可启动核验运行。'
+  } catch (error) { showError(error) } finally { busy.value = false }
+}
+
+async function importExternalEvidence() {
+  if (!task.value || !gitSnapshot.value || !externalEvidenceContent.value.trim()) return
+  busy.value = true
+  try {
+    externalEvidence.value = await request<ExternalEvidence>(`/cycles/${task.value.cycle_id}/external-evidence`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ evidence_type: externalEvidenceType.value, logical_name: externalEvidenceName.value, commit_sha: gitSnapshot.value.target_sha, content: externalEvidenceContent.value, exit_code: externalExitCode.value === '' ? null : Number(externalExitCode.value) }) })
+    message.value = '外部测试或构建结果已绑定当前目标 SHA，将随正式快照冻结。'
   } catch (error) { showError(error) } finally { busy.value = false }
 }
 
@@ -241,6 +256,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
         <div class="form-section"><label>任务标题<input v-model="taskTitle" :disabled="!!task" /></label><label>需求标识<input v-model="requirementKey" :disabled="!!task" /></label><button :disabled="busy || !project || !!task" @click="createTask">创建核验任务</button><p v-if="task" class="item-meta">轮次 · {{ task.cycle_status }}</p></div>
         <div class="form-section"><label>资料角色<select v-model="sourceRole" :disabled="!!source"><option>ACCEPTANCE</option><option>REQUIREMENT</option><option>DESIGN</option><option>MEETING</option></select></label><label class="file-field">Markdown / 纯文本<input accept=".md,.txt,text/markdown,text/plain" type="file" :disabled="!!source" @change="chooseFile" /></label><button :disabled="busy || !task || !sourceFile || !!source" @click="uploadSource">上传资料版本</button><p v-if="source" class="item-meta">{{ source.logical_name }} · {{ source.processing_status }}</p></div>
         <div class="form-section git-section"><label>只读仓库<input v-model="repositoryUrl" :disabled="!!repository" /></label><button :disabled="busy || !source || !!repository" @click="registerRepository">登记仓库</button><template v-if="repository"><label>基准 Ref<input v-model="baseRef" :disabled="!!gitSnapshot" /></label><label>目标 Ref<input v-model="targetRef" :disabled="!!gitSnapshot" /></label><label>包含路径<input v-model="includePaths" :disabled="!!gitSnapshot" /></label><label>排除路径<input v-model="excludePaths" :disabled="!!gitSnapshot" /></label><button :disabled="busy || !!gitSnapshot" @click="freezeGit">冻结 Git 范围</button></template><p v-if="gitSnapshot" class="item-meta mono">{{ gitSnapshot.target_sha.slice(0, 12) }} · {{ gitSnapshot.coverage.changedFiles.length }} files</p></div>
+        <div v-if="gitSnapshot" class="form-section"><label>外部证据类型<select v-model="externalEvidenceType" :disabled="!!externalEvidence"><option>TEST</option><option>BUILD</option></select></label><label>结果名称<input v-model="externalEvidenceName" :disabled="!!externalEvidence" /></label><label>退出码<input v-model="externalExitCode" type="number" :disabled="!!externalEvidence" /></label><label>结果摘要<textarea v-model="externalEvidenceContent" :disabled="!!externalEvidence" rows="3" placeholder="例如：pytest 12 passed"></textarea></label><button :disabled="busy || !externalEvidenceContent.trim() || !!externalEvidence" @click="importExternalEvidence">导入外部证据</button><p v-if="externalEvidence" class="item-meta">{{ externalEvidence.evidence_type }} · {{ externalEvidence.logical_name }} · {{ externalEvidence.exit_code ?? '未提供退出码' }}</p></div>
         <button class="freeze-button" :disabled="busy || !source || !gitSnapshot || !!formalSnapshot" @click="freezeFormalSnapshot">冻结正式输入快照</button>
       </aside>
 

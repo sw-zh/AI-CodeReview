@@ -33,6 +33,7 @@ class VerificationGraphState(TypedDict, total=False):
     input_snapshot_id: str
     evidence_ids: list[str]
     git_evidence_ids: list[str]
+    external_evidence_ids: list[str]
     claim_ids: list[str]
     verification_result_ids: list[str]
     coverage_id: str
@@ -110,8 +111,9 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     """Persist deterministic evidence first; heuristic matches never become CONFIRMED."""
 
     def load_snapshot(state: VerificationGraphState) -> VerificationGraphState:
-        evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="DOCUMENT").all()
-        return {"evidence_ids": [str(item.id) for item in evidence]}
+        document_evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="DOCUMENT").all()
+        external_evidence = session.query(EvidenceItem).filter(EvidenceItem.snapshot_id == UUID(state["input_snapshot_id"]), EvidenceItem.source_type.in_(("TEST", "BUILD"))).all()
+        return {"evidence_ids": [str(item.id) for item in document_evidence], "external_evidence_ids": [str(item.id) for item in external_evidence]}
 
     def collect_git_evidence(state: VerificationGraphState) -> VerificationGraphState:
         snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
@@ -217,15 +219,15 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         return {"claim_ids": claims}
 
     def link_deterministic(state: VerificationGraphState) -> VerificationGraphState:
-        code_evidence = [session.get(EvidenceItem, UUID(item)) for item in state.get("git_evidence_ids", [])]
-        code_evidence = [item for item in code_evidence if item is not None]
+        actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", [])]]
+        actual_evidence = [item for item in actual_evidence if item is not None]
         for claim_id in state.get("claim_ids", []):
             claim = session.get(Claim, UUID(claim_id))
             if claim is None:
                 continue
             claim_tokens = _tokens(claim.text)
             supporting: list[EvidenceItem] = []
-            for evidence in code_evidence:
+            for evidence in actual_evidence:
                 overlap = claim_tokens & _tokens(evidence.excerpt_safe)
                 if not overlap:
                     continue
@@ -246,11 +248,11 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         return {}
 
     def propose_model_links(state: VerificationGraphState) -> VerificationGraphState:
-        code_evidence = [session.get(EvidenceItem, UUID(item)) for item in state.get("git_evidence_ids", [])]
-        code_evidence = [item for item in code_evidence if item is not None]
+        actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", [])]]
+        actual_evidence = [item for item in actual_evidence if item is not None]
         claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
         claims = [item for item in claims if item is not None]
-        allowed_ids = {str(item.id) for item in code_evidence}
+        allowed_ids = {str(item.id) for item in actual_evidence}
         request = GenerationRequest(
             run_id=run_id,
             prompt_version="v1",
@@ -260,12 +262,12 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                     "id": str(claim.id),
                     "text": claim.text,
                     "candidateEvidenceIds": [
-                        str(evidence.id) for evidence in code_evidence if _tokens(claim.text) & _tokens(evidence.excerpt_safe)
+                        str(evidence.id) for evidence in actual_evidence if _tokens(claim.text) & _tokens(evidence.excerpt_safe)
                     ],
                 }
                 for claim in claims
             ],
-            evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in code_evidence],
+            evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in actual_evidence],
         )
         settings = get_settings()
         try:

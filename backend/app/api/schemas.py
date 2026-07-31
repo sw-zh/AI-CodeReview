@@ -58,6 +58,7 @@ class SnapshotCreateRequest(BaseModel):
 
 class FormalSnapshotCreateRequest(SnapshotCreateRequest):
     git_snapshot_id: UUID
+    external_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
 
 
 class SnapshotResponse(BaseModel):
@@ -162,3 +163,22 @@ class EvidenceQuestionResponse(BaseModel):
     answer: str
     fact_status: str
     citations: list[dict]
+
+
+class ExternalEvidenceCreateRequest(BaseModel):
+    evidence_type: str = Field(pattern="^(TEST|BUILD)$")
+    logical_name: str = Field(min_length=1, max_length=255)
+    commit_sha: str = Field(pattern="^[0-9a-fA-F]{40}$")
+    content: str = Field(min_length=1, max_length=2 * 1024 * 1024)
+    exit_code: int | None = Field(default=None, ge=-255, le=255)
+
+
+class ExternalEvidenceResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    cycle_id: UUID
+    evidence_type: str
+    logical_name: str
+    commit_sha: str
+    content_hash: str
+    exit_code: int | None
