@@ -124,3 +124,8 @@ class ReportResponse(BaseModel):
 
 class ApprovalRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
+
+
+class ProjectMemberCreateRequest(BaseModel):
+    user_id: UUID
+    role: str = Field(pattern="^(SUBMITTER|REVIEWER|ADMIN)$")

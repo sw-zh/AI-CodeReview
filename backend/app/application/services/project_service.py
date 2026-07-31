@@ -2,9 +2,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.application.services.common import append_audit_event
+from app.application.services.common import append_audit_event, require_project_role
 from app.domain.enums import ProjectRole
-from app.infrastructure.persistence.models import Project, ProjectMember
+from app.domain.errors import DomainError
+from app.infrastructure.persistence.models import Project, ProjectMember, User
 
 
 def create_project(
@@ -25,3 +26,16 @@ def create_project(
         after_version=project.version,
     )
     return project
+
+
+def add_member(session: Session, *, project_id: UUID, user_id: UUID, role: str, actor_id: UUID, correlation_id: str) -> ProjectMember:
+    require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
+    if session.get(User, user_id) is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "待添加用户不存在")
+    member = session.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).one_or_none()
+    if member is not None:
+        raise DomainError("STATE_CONFLICT", "用户已是项目成员")
+    member = ProjectMember(project_id=project_id, user_id=user_id, role=role)
+    session.add(member); session.flush()
+    append_audit_event(session, project_id=project_id, actor_id=actor_id, aggregate_type="ProjectMember", aggregate_id=member.id, action="PROJECT_MEMBER_ADDED", correlation_id=correlation_id, payload={"memberUserId": str(user_id), "role": role})
+    return member
