@@ -96,6 +96,8 @@ class GitSnapshotCreateRequest(BaseModel):
     base_ref: str = Field(min_length=1, max_length=255)
     target_ref: str = Field(min_length=1, max_length=255)
     diff_mode: str = Field(pattern="^(TWO_DOT|THREE_DOT)$")
+    include_paths: list[str] = Field(default_factory=list, max_length=100)
+    exclude_paths: list[str] = Field(default_factory=list, max_length=100)
 
 
 class GitSnapshotResponse(BaseModel):

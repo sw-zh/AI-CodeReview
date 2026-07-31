@@ -12,7 +12,7 @@ from app.domain.ports import FrozenGitRange, GitReaderPort
 class ReadOnlyGitReader(GitReaderPort):
     """Uses a restricted Git command allowlist in the controlled artifact volume."""
 
-    def freeze_range(self, repository_url: str, base_ref: str, target_ref: str, diff_mode: str) -> FrozenGitRange:
+    def freeze_range(self, repository_url: str, base_ref: str, target_ref: str, diff_mode: str, include_paths: list[str], exclude_paths: list[str]) -> FrozenGitRange:
         parsed = urlparse(repository_url)
         if parsed.scheme not in {"https", "ssh"} or not parsed.netloc:
             raise DomainError("GIT_RANGE_INVALID", "仓库地址必须是 https 或 ssh 远程地址")
@@ -23,11 +23,15 @@ class ReadOnlyGitReader(GitReaderPort):
         target_sha = self._run(repository, "rev-parse", "--verify", f"{target_ref}^{{commit}}")
         merge_base_sha = self._run(repository, "merge-base", base_sha, target_sha)
         comparison = f"{base_sha}..{target_sha}" if diff_mode == "TWO_DOT" else f"{merge_base_sha}..{target_sha}"
-        diff = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--binary", comparison)
-        name_status = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", comparison)
+        pathspecs = [*include_paths, *(f":(exclude){path}" for path in exclude_paths)]
+        suffix = ("--", *pathspecs) if pathspecs else ()
+        diff = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--binary", comparison, *suffix)
+        name_status = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", comparison, *suffix)
         coverage = {
             "comparison": comparison,
             "changedFiles": [line for line in name_status.splitlines() if line],
+            "includePaths": include_paths,
+            "excludePaths": exclude_paths,
             "skipped": [],
         }
         return FrozenGitRange(

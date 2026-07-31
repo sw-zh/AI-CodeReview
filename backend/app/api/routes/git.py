@@ -45,7 +45,7 @@ def freeze(
     _: str = Depends(idempotency_key),
 ) -> GitSnapshotResponse:
     try:
-        snapshot = freeze_git_snapshot(session, cycle_id=cycle_id, repository_id=payload.repository_id, base_ref=payload.base_ref, target_ref=payload.target_ref, diff_mode=payload.diff_mode, actor_id=user.id, correlation_id=correlation_id(request), reader=ReadOnlyGitReader())
+        snapshot = freeze_git_snapshot(session, cycle_id=cycle_id, repository_id=payload.repository_id, base_ref=payload.base_ref, target_ref=payload.target_ref, diff_mode=payload.diff_mode, include_paths=payload.include_paths, exclude_paths=payload.exclude_paths, actor_id=user.id, correlation_id=correlation_id(request), reader=ReadOnlyGitReader())
         session.commit()
         return GitSnapshotResponse(id=snapshot.id, base_sha=snapshot.base_sha, target_sha=snapshot.target_sha, merge_base_sha=snapshot.merge_base_sha, diff_mode=snapshot.diff_mode, diff_hash=snapshot.diff_hash, coverage=snapshot.coverage)
     except DomainError as exc:

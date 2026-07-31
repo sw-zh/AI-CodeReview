@@ -13,5 +13,5 @@ class FrozenGitRange:
 class GitReaderPort:
     """Read-only Git boundary; it never executes repository content or hooks."""
 
-    def freeze_range(self, repository_url: str, base_ref: str, target_ref: str, diff_mode: str) -> FrozenGitRange:
+    def freeze_range(self, repository_url: str, base_ref: str, target_ref: str, diff_mode: str, include_paths: list[str], exclude_paths: list[str]) -> FrozenGitRange:
         raise NotImplementedError
