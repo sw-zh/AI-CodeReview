@@ -242,13 +242,15 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 if not overlap:
                     continue
                 supporting.append(evidence)
-                link = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id, evidence_id=evidence.id, relation="SUPPORTS").one_or_none()
+                exit_code = evidence.locator.get("exitCode") if evidence.source_type in {"TEST", "BUILD"} else None
+                relation = "CONTRADICTS" if isinstance(exit_code, int) and exit_code != 0 else "SUPPORTS"
+                link = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id, evidence_id=evidence.id, relation=relation).one_or_none()
                 if link is None:
                     session.add(ClaimEvidenceLink(
                         claim_id=claim.id,
                         evidence_id=evidence.id,
-                        relation="SUPPORTS",
-                        reason=f"确定性标识符命中：{', '.join(sorted(overlap)[:5])}",
+                        relation=relation,
+                        reason=(f"外部 {evidence.source_type} 的非零退出码与目标冲突；标识符命中：" if relation == "CONTRADICTS" else "确定性标识符命中：") + ", ".join(sorted(overlap)[:5]),
                         confidence=0.75,
                         produced_by="DETERMINISTIC",
                         requires_human_confirmation=True,
@@ -346,11 +348,20 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             deterministic_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "DETERMINISTIC"]
             model_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "MODEL"]
             deterministic_conflicts = [item for item in links if item.relation == "CONTRADICTS" and item.produced_by == "DETERMINISTIC"]
-            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *model_supports]]
+            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *deterministic_conflicts, *model_supports]]
+            support_evidence = [session.get(EvidenceItem, item.evidence_id) for item in deterministic_supports]
+            has_passing_external_test = any(
+                item is not None and item.source_type in {"TEST", "BUILD"} and item.locator.get("exitCode") == 0
+                for item in support_evidence
+            )
             if deterministic_conflicts:
                 status = "CONFLICTING"
                 reason = "存在可追溯的确定性反驳证据，不能由模型自行裁决"
                 needs_confirmation = True
+            elif deterministic_supports and has_passing_external_test and claim.authority_level >= 3:
+                status = "CONFIRMED"
+                reason = "权威资料、确定性实现证据与绑定目标提交的成功外部结果一致"
+                needs_confirmation = False
             elif deterministic_supports:
                 status = "PARTIALLY_SUPPORTED"
                 reason = "已发现冻结 Git 范围内的确定性标识符命中；语义满足度仍需人工确认"
