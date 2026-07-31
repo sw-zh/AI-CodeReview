@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,13 +28,8 @@ class ReadOnlyGitReader(GitReaderPort):
         suffix = ("--", *pathspecs) if pathspecs else ()
         diff = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--binary", comparison, *suffix)
         name_status = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", comparison, *suffix)
-        coverage = {
-            "comparison": comparison,
-            "changedFiles": [line for line in name_status.splitlines() if line],
-            "includePaths": include_paths,
-            "excludePaths": exclude_paths,
-            "skipped": [],
-        }
+        numstat = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--numstat", comparison, *suffix)
+        coverage = self._coverage(comparison, include_paths, exclude_paths, diff, name_status, numstat)
         return FrozenGitRange(
             base_sha=base_sha,
             target_sha=target_sha,
@@ -66,16 +62,52 @@ class ReadOnlyGitReader(GitReaderPort):
         if actual_hash != expected_diff_hash:
             raise DomainError("INPUT_STALE", "冻结 Git 差异校验失败，不能使用已变化的输入继续分析")
         name_status = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", comparison, *suffix)
+        numstat = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--numstat", comparison, *suffix)
         return FrozenGitDiff(
             diff=diff,
-            coverage={
-                "comparison": comparison,
-                "changedFiles": [line for line in name_status.splitlines() if line],
-                "includePaths": include_paths,
-                "excludePaths": exclude_paths,
-                "skipped": [],
-            },
+            coverage=self._coverage(comparison, include_paths, exclude_paths, diff, name_status, numstat),
         )
+
+    @staticmethod
+    def _coverage(comparison: str, include_paths: list[str], exclude_paths: list[str], diff: str, name_status: str, numstat: str) -> dict:
+        """Make non-text or intentionally skipped Git inputs explicit to the workflow."""
+        notices: list[dict] = []
+        skipped: list[dict] = []
+        changed = [line for line in name_status.splitlines() if line]
+        for line in changed:
+            parts = line.split("\t")
+            status = parts[0]
+            paths = parts[1:]
+            if status.startswith("R") and len(paths) >= 2:
+                notices.append({"kind": "RENAMED", "from": paths[-2], "to": paths[-1]})
+            elif status.startswith("D") and paths:
+                skipped.append({"kind": "DELETED", "path": paths[-1], "reasonCode": "NO_NEW_SIDE_TEXT"})
+
+        binary_paths = set(re.findall(r"(?m)^Binary files a/(.+?) and b/(.+?) differ$", diff))
+        for before, after in binary_paths:
+            skipped.append({"kind": "BINARY", "path": after or before, "reasonCode": "BINARY_DIFF"})
+        for path in re.findall(r"(?m)^Submodule (.+?) [0-9a-f]+\.\.[0-9a-f]+", diff):
+            skipped.append({"kind": "SUBMODULE", "path": path, "reasonCode": "SUBMODULE_POINTER"})
+
+        generated_pattern = re.compile(r"(^|/)(dist|build|coverage|node_modules)/|\.(min\.js|map|lock)$", re.IGNORECASE)
+        for line in changed:
+            path = line.split("\t")[-1]
+            if generated_pattern.search(path):
+                skipped.append({"kind": "GENERATED", "path": path, "reasonCode": "GENERATED_PATH_RULE"})
+        for line in numstat.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+                continue
+            if int(parts[0]) + int(parts[1]) > 10_000:
+                skipped.append({"kind": "LARGE_FILE", "path": parts[-1], "reasonCode": "DIFF_LINE_THRESHOLD"})
+        return {
+            "comparison": comparison,
+            "changedFiles": changed,
+            "includePaths": include_paths,
+            "excludePaths": exclude_paths,
+            "notices": notices,
+            "skipped": skipped,
+        }
 
     def _ensure_read_only_clone(self, repository_url: str) -> Path:
         root = Path(get_settings().artifact_root).resolve() / "repositories"
