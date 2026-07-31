@@ -73,7 +73,7 @@ function showError(error: unknown) {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, init)
   const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.detail?.message ?? body.detail ?? `请求失败 (${response.status})`)
+  if (!response.ok) throw new Error(body.message ?? body.detail?.message ?? body.detail ?? `请求失败 (${response.status})`)
   return body as T
 }
 

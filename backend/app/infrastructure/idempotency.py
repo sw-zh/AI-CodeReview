@@ -17,6 +17,10 @@ def _hash(value: bytes) -> str:
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
+def _error(request: Request, *, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"code": code, "message": message, "correlationId": request.headers.get("X-Correlation-Id"), "details": None})
+
+
 async def replay_or_reserve(request: Request) -> Response | tuple[IdempotencyRecord, str] | None:
     """Reserve one command before its handler and replay only an identical completed request."""
     key = request.headers.get("Idempotency-Key")
@@ -35,17 +39,17 @@ async def replay_or_reserve(request: Request) -> Response | tuple[IdempotencyRec
         existing = session.query(IdempotencyRecord).filter_by(**scope).one_or_none()
         if existing is not None:
             if existing.request_hash != request_hash:
-                return JSONResponse(status_code=409, content={"detail": {"code": "IDEMPOTENCY_CONFLICT", "message": "同一幂等键不能对应不同请求内容"}})
+                return _error(request, code="IDEMPOTENCY_CONFLICT", message="同一幂等键不能对应不同请求内容")
             if existing.state == "COMPLETED":
                 return JSONResponse(status_code=existing.response_status or 200, content=existing.response_body or {})
-            return JSONResponse(status_code=409, content={"detail": {"code": "IDEMPOTENCY_IN_PROGRESS", "message": "相同命令正在处理中"}})
+            return _error(request, code="IDEMPOTENCY_IN_PROGRESS", message="相同命令正在处理中")
         record = IdempotencyRecord(**scope, request_hash=request_hash)
         session.add(record)
         try:
             session.flush()
         except IntegrityError:
             # A concurrent request claimed the key after the first lookup.
-            return JSONResponse(status_code=409, content={"detail": {"code": "IDEMPOTENCY_IN_PROGRESS", "message": "相同命令正在处理中"}})
+            return _error(request, code="IDEMPOTENCY_IN_PROGRESS", message="相同命令正在处理中")
         session.expunge(record)
     return record, request_hash
 
