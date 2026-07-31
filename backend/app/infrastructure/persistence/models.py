@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -261,7 +261,15 @@ class InputSnapshotGit(Base):
 
 class AnalysisRun(TimestampedEntity, Base):
     __tablename__ = "analysis_runs"
-    __table_args__ = (UniqueConstraint("snapshot_id", "analysis_config_hash", name="uq_active_run_config"),)
+    __table_args__ = (
+        Index(
+            "uq_active_run_config",
+            "snapshot_id",
+            "analysis_config_hash",
+            unique=True,
+            postgresql_where=text("run_status IN ('QUEUED', 'RUNNING')"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
