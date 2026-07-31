@@ -182,3 +182,12 @@ class ExternalEvidenceResponse(BaseModel):
     commit_sha: str
     content_hash: str
     exit_code: int | None
+
+
+class SnapshotSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class SnapshotSearchResponse(BaseModel):
+    items: list[dict]

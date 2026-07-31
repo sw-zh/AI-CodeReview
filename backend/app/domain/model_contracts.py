@@ -32,3 +32,16 @@ class GenerationResult:
     attempts: int
     latency_ms: int
     proposals: ModelProposalBatch
+
+
+@dataclass(frozen=True)
+class EmbeddingRequest:
+    text: str
+    model: str
+
+
+@dataclass(frozen=True)
+class EmbeddingResult:
+    provider: str
+    model: str
+    vector: list[float]

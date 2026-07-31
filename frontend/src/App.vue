@@ -44,6 +44,7 @@ const reportNote = ref('')
 const selectedResult = ref<Result | null>(null)
 const question = ref('这条核验结论的依据是什么？')
 const answer = ref<{ answer: string; fact_status: string; citations: Array<Record<string, unknown>> } | null>(null)
+const retrievedEvidence = ref<Evidence[]>([])
 const activeTab = ref<'record' | 'question'>('record')
 const reviewReason = ref('已核对交付记录与证据引用。')
 const message = ref('使用演示账户登录后，按左侧证据来源冻结正式输入。')
@@ -53,6 +54,7 @@ let pollTimer: number | undefined
 const authenticated = computed(() => Boolean(token.value))
 const isActiveRun = computed(() => run.value && ['QUEUED', 'RUNNING'].includes(run.value.run_status))
 const resultEvidenceIds = computed(() => selectedResult.value?.evidence.map((item) => item.id) ?? [])
+const questionEvidenceIds = computed(() => retrievedEvidence.value.length ? retrievedEvidence.value.map((item) => item.id) : resultEvidenceIds.value)
 
 function headers(extra: HeadersInit = {}) {
   return { Authorization: `Bearer ${token.value}`, 'Idempotency-Key': crypto.randomUUID(), ...extra }
@@ -216,13 +218,23 @@ async function reportAction(action: 'submit' | 'approve' | 'request-changes' | '
 }
 
 async function askEvidence() {
-  if (!formalSnapshot.value || !resultEvidenceIds.value.length) {
-    message.value = '请先选择一条带有代码证据的核验结果。'
+  if (!formalSnapshot.value || !questionEvidenceIds.value.length) {
+    message.value = '请先检索资料，或选择一条带有证据的核验结果。'
     return
   }
   busy.value = true
   try {
-    answer.value = await request(`/input-snapshots/${formalSnapshot.value.id}/questions`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ question: question.value, evidence_ids: resultEvidenceIds.value }) })
+    answer.value = await request(`/input-snapshots/${formalSnapshot.value.id}/questions`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ question: question.value, evidence_ids: questionEvidenceIds.value }) })
+  } catch (error) { showError(error) } finally { busy.value = false }
+}
+
+async function retrieveEvidence() {
+  if (!formalSnapshot.value || !question.value.trim()) return
+  busy.value = true
+  try {
+    const result = await request<{ items: Array<{ evidenceId: string; excerpt: string; locator: Record<string, unknown>; precision: string }> }>(`/input-snapshots/${formalSnapshot.value.id}/search`, { method: 'POST', headers: { Authorization: `Bearer ${token.value}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: question.value, limit: 5 }) })
+    retrievedEvidence.value = result.items.map((item) => ({ id: item.evidenceId, sourceType: 'DOCUMENT', excerpt: item.excerpt, locator: item.locator, precision: item.precision }))
+    message.value = retrievedEvidence.value.length ? `已检索到 ${retrievedEvidence.value.length} 条当前快照资料证据。` : '当前快照中没有匹配的资料证据。'
   } catch (error) { showError(error) } finally { busy.value = false }
 }
 
@@ -272,7 +284,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
         <div class="panel-heading"><div><p class="overline">03 · 复核</p><h2>核验详情</h2></div></div>
         <div class="tabs"><button :class="{ active: activeTab === 'record' }" @click="activeTab = 'record'">交付记录</button><button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">证据问答</button></div>
         <template v-if="activeTab === 'record'"><div v-if="selectedResult" class="evidence-detail"><p class="detail-label">当前 Claim</p><strong>{{ selectedResult.claim_key }}</strong><p>{{ selectedResult.claim_text }}</p><div v-for="evidence in selectedResult.evidence" :key="evidence.id" class="evidence-row"><span>{{ evidence.sourceType }}</span><div><strong>{{ String(evidence.locator.path ?? '文件级定位') }}</strong><p>{{ evidence.excerpt }}</p><small>{{ evidence.precision }} · {{ String(evidence.locator.hunk ?? '') }}</small></div></div></div><div class="report-actions"><p class="detail-label">报告版本</p><strong>{{ report ? `${report.status} · ${report.content_hash.slice(0, 18)}…` : '尚未生成' }}</strong><button :disabled="busy || !run || !['SUCCEEDED', 'PARTIALLY_COMPLETED'].includes(run.run_status) || !!report" @click="createDraft">从结果创建草稿</button><label>草稿说明<textarea v-model="reportNote" :disabled="report?.status !== 'DRAFT'" rows="3"></textarea></label><button :disabled="busy || report?.status !== 'DRAFT'" @click="saveDraft">保存草稿</button><button :disabled="busy || report?.status !== 'DRAFT'" @click="reportAction('submit')">提交审核</button><label>审核理由<textarea v-model="reviewReason" rows="2"></textarea></label><div class="review-actions"><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('approve')">批准</button><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('request-changes')">要求补证</button></div><button class="publish-action" :disabled="busy || report?.status !== 'APPROVED'" @click="reportAction('publish')">发布交付记录</button><small>后端会拒绝提交者自审；批准和发布始终以服务端状态为准。</small></div></template>
-        <template v-else><div class="question-panel"><p>问答只读取当前快照中已授权的证据，不会修改任务、审批或发布状态。</p><textarea v-model="question" rows="4"></textarea><button :disabled="busy || !resultEvidenceIds.length" @click="askEvidence">基于已选证据回答</button><div v-if="answer" class="answer"><span :class="['result-status', answer.fact_status.toLowerCase()]">{{ answer.fact_status }}</span><p>{{ answer.answer }}</p><small>{{ answer.citations.length }} 条可解析引用</small></div></div></template>
+        <template v-else><div class="question-panel"><p>问答只读取当前快照中已授权的证据，不会修改任务、审批或发布状态。</p><textarea v-model="question" rows="4"></textarea><button :disabled="busy || !formalSnapshot" @click="retrieveEvidence">检索当前快照资料</button><div v-if="retrievedEvidence.length" class="retrieval-list"><small>将引用以下 {{ retrievedEvidence.length }} 条资料证据</small><p v-for="item in retrievedEvidence" :key="item.id">{{ item.excerpt }}</p></div><button :disabled="busy || !questionEvidenceIds.length" @click="askEvidence">基于受控证据回答</button><div v-if="answer" class="answer"><span :class="['result-status', answer.fact_status.toLowerCase()]">{{ answer.fact_status }}</span><p>{{ answer.answer }}</p><small>{{ answer.citations.length }} 条可解析引用</small></div></div></template>
       </aside>
     </section>
     <p class="notice" role="status">{{ message }}</p>
