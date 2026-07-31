@@ -58,6 +58,6 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
     if existing: return existing
     record_hash = f"sha256:{hashlib.sha256(f'{report.content_hash}:{report.snapshot_hash}'.encode()).hexdigest()}"
     record = PublishedRecord(task_id=task.id, cycle_id=cycle.id, report_version_id=report.id, record_no=f"{task.requirement_key}-{cycle.sequence_no}-{report.sequence_no}", record_hash=record_hash, published_by=actor_id)
-    session.add(record); report.status = "PUBLISHED"; cycle.business_status = "PUBLISHED"
+    session.add(record); session.flush(); report.status = "PUBLISHED"; cycle.business_status = "PUBLISHED"
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="PublishedRecord", aggregate_id=record.id, action="REPORT_PUBLISHED", correlation_id=correlation_id)
     return record
