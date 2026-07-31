@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_codereview}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_codereview}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    build: ../backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ai_codereview}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_codereview}
+      ARTIFACT_ROOT: /artifacts
+      CORS_ALLOWED_ORIGINS: '["http://localhost:5173"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      - artifact-volume:/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/api/v1/health/live')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  worker:
+    build: ../backend
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ai_codereview}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_codereview}
+      ARTIFACT_ROOT: /artifacts
+      WORKER_ID: compose-worker
+    volumes:
+      - artifact-volume:/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ../frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  artifact-volume:

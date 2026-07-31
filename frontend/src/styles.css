@@ -1,0 +1,20 @@
+:root {
+  color: #162033;
+  background: #f6f8fb;
+  font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+}
+
+body { margin: 0; }
+
+.shell {
+  width: min(720px, calc(100% - 48px));
+  margin: 12vh auto;
+  padding: 40px;
+  border: 1px solid #dbe3ef;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgb(26 50 92 / 8%);
+}
+
+.eyebrow { color: #3267d6; font-weight: 700; letter-spacing: .08em; }
+.hint { color: #697386; }
