@@ -238,7 +238,31 @@ async function reportAction(action: 'submit' | 'approve' | 'request-changes' | '
     const headersForAction = body ? headers({ 'Content-Type': 'application/json' }) : headers()
     const result = await request<Report | { id: string }>(`/report-versions/${report.value.id}/${action}`, { method: 'POST', headers: headersForAction, body })
     if ('status' in result) report.value = result
-    message.value = action === 'publish' ? '交付记录已发布为不可变版本。' : `报告操作完成：${action}`
+    if (action === 'publish') report.value = { ...report.value, status: 'PUBLISHED' }
+    message.value = action === 'publish' ? '交付记录已发布为不可变版本。可创建下一核验轮次处理新的输入。' : `报告操作完成：${action}`
+  } catch (error) { showError(error) } finally { busy.value = false }
+}
+
+async function createNextCycle() {
+  if (!project.value || !task.value) return
+  busy.value = true
+  try {
+    const next = await request<{ id: string; status: string }>(`/projects/${project.value.id}/verification-tasks/${task.value.id}/cycles`, { method: 'POST', headers: headers() })
+    task.value = { ...task.value, cycle_id: next.id, cycle_status: next.status }
+    source.value = null
+    sourceFile.value = null
+    gitSnapshot.value = null
+    externalEvidence.value = null
+    manualEvidence.value = null
+    formalSnapshot.value = null
+    run.value = null
+    results.value = []
+    selectedResult.value = null
+    report.value = null
+    reportNote.value = ''
+    answer.value = null
+    retrievedEvidence.value = []
+    message.value = '新核验轮次已创建。请上传新的或更新后的资料，重新冻结 Git 与正式输入快照。'
   } catch (error) { showError(error) } finally { busy.value = false }
 }
 
@@ -309,7 +333,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
       <aside class="inspector-panel panel">
         <div class="panel-heading"><div><p class="overline">03 · 复核</p><h2>核验详情</h2></div></div>
         <div class="tabs"><button :class="{ active: activeTab === 'record' }" @click="activeTab = 'record'">交付记录</button><button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">证据问答</button></div>
-        <template v-if="activeTab === 'record'"><div v-if="selectedResult" class="evidence-detail"><p class="detail-label">当前 Claim</p><strong>{{ selectedResult.claim_key }}</strong><p>{{ selectedResult.claim_text }}</p><div v-for="evidence in selectedResult.evidence" :key="evidence.id" class="evidence-row"><span>{{ evidence.sourceType }}</span><div><strong>{{ String(evidence.locator.path ?? '文件级定位') }}</strong><p>{{ evidence.excerpt }}</p><small>{{ evidence.precision }} · {{ String(evidence.locator.hunk ?? '') }}</small></div></div></div><div class="report-actions"><p class="detail-label">报告版本</p><strong>{{ report ? `${report.status} · ${report.content_hash.slice(0, 18)}…` : '尚未生成' }}</strong><button :disabled="busy || !run || !['SUCCEEDED', 'PARTIALLY_COMPLETED'].includes(run.run_status) || !!report" @click="createDraft">从结果创建草稿</button><label>草稿说明<textarea v-model="reportNote" :disabled="report?.status !== 'DRAFT'" rows="3"></textarea></label><button :disabled="busy || report?.status !== 'DRAFT'" @click="saveDraft">保存草稿</button><button :disabled="busy || report?.status !== 'DRAFT'" @click="reportAction('submit')">提交审核</button><label>审核理由<textarea v-model="reviewReason" rows="2"></textarea></label><div class="review-actions"><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('approve')">批准</button><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('request-changes')">要求补证</button></div><button class="publish-action" :disabled="busy || report?.status !== 'APPROVED'" @click="reportAction('publish')">发布交付记录</button><small>后端会拒绝提交者自审；批准和发布始终以服务端状态为准。</small></div></template>
+        <template v-if="activeTab === 'record'"><div v-if="selectedResult" class="evidence-detail"><p class="detail-label">当前 Claim</p><strong>{{ selectedResult.claim_key }}</strong><p>{{ selectedResult.claim_text }}</p><div v-for="evidence in selectedResult.evidence" :key="evidence.id" class="evidence-row"><span>{{ evidence.sourceType }}</span><div><strong>{{ String(evidence.locator.path ?? '文件级定位') }}</strong><p>{{ evidence.excerpt }}</p><small>{{ evidence.precision }} · {{ String(evidence.locator.hunk ?? '') }}</small></div></div></div><div class="report-actions"><p class="detail-label">报告版本</p><strong>{{ report ? `${report.status} · ${report.content_hash.slice(0, 18)}…` : '尚未生成' }}</strong><button :disabled="busy || !run || !['SUCCEEDED', 'PARTIALLY_COMPLETED'].includes(run.run_status) || !!report" @click="createDraft">从结果创建草稿</button><label>草稿说明<textarea v-model="reportNote" :disabled="report?.status !== 'DRAFT'" rows="3"></textarea></label><button :disabled="busy || report?.status !== 'DRAFT'" @click="saveDraft">保存草稿</button><button :disabled="busy || report?.status !== 'DRAFT'" @click="reportAction('submit')">提交审核</button><label>审核理由<textarea v-model="reviewReason" rows="2"></textarea></label><div class="review-actions"><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('approve')">批准</button><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('request-changes')">要求补证</button></div><button class="publish-action" :disabled="busy || report?.status !== 'APPROVED'" @click="reportAction('publish')">发布交付记录</button><button :disabled="busy || report?.status !== 'PUBLISHED'" @click="createNextCycle">创建新核验轮次</button><small>后端会拒绝提交者自审；批准和发布始终以服务端状态为准。</small></div></template>
         <template v-else><div class="question-panel"><p>问答只读取当前快照中已授权的证据，不会修改任务、审批或发布状态。</p><textarea v-model="question" rows="4"></textarea><button :disabled="busy || !formalSnapshot" @click="retrieveEvidence">检索当前快照资料</button><div v-if="retrievedEvidence.length" class="retrieval-list"><small>将引用以下 {{ retrievedEvidence.length }} 条资料证据</small><p v-for="item in retrievedEvidence" :key="item.id">{{ item.excerpt }}</p></div><button :disabled="busy || !questionEvidenceIds.length" @click="askEvidence">基于受控证据回答</button><div v-if="answer" class="answer"><span :class="['result-status', answer.fact_status.toLowerCase()]">{{ answer.fact_status }}</span><p>{{ answer.answer }}</p><small>{{ answer.citations.length }} 条可解析引用</small></div></div></template>
       </aside>
     </section>
