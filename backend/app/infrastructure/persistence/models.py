@@ -345,6 +345,30 @@ class InputSnapshotExternalEvidence(Base):
     commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class ManualEvidence(TimestampedEntity, Base):
+    """A submitter-provided note or attachment preserved outside the report draft."""
+
+    __tablename__ = "manual_evidence"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    cycle_id: Mapped[UUID] = mapped_column(ForeignKey("verification_cycles.id", ondelete="CASCADE"), nullable=False)
+    logical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    submitted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class InputSnapshotManualEvidence(Base):
+    __tablename__ = "input_snapshot_manual_evidence"
+    __table_args__ = (UniqueConstraint("snapshot_id", "manual_evidence_id", name="uq_snapshot_manual_evidence"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
+    manual_evidence_id: Mapped[UUID] = mapped_column(ForeignKey("manual_evidence.id"), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+
+
 class AnalysisRun(TimestampedEntity, Base):
     __tablename__ = "analysis_runs"
     __table_args__ = (

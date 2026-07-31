@@ -37,6 +37,7 @@ class VerificationGraphState(TypedDict, total=False):
     evidence_ids: list[str]
     git_evidence_ids: list[str]
     external_evidence_ids: list[str]
+    manual_evidence_ids: list[str]
     claim_ids: list[str]
     verification_result_ids: list[str]
     coverage_id: str
@@ -130,7 +131,12 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         ensure_not_cancelled()
         document_evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="DOCUMENT").all()
         external_evidence = session.query(EvidenceItem).filter(EvidenceItem.snapshot_id == UUID(state["input_snapshot_id"]), EvidenceItem.source_type.in_(("TEST", "BUILD"))).all()
-        return {"evidence_ids": [str(item.id) for item in document_evidence], "external_evidence_ids": [str(item.id) for item in external_evidence]}
+        manual_evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="MANUAL").all()
+        return {
+            "evidence_ids": [str(item.id) for item in document_evidence],
+            "external_evidence_ids": [str(item.id) for item in external_evidence],
+            "manual_evidence_ids": [str(item.id) for item in manual_evidence],
+        }
 
     def collect_git_evidence(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
@@ -241,6 +247,8 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         ensure_not_cancelled()
         actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", [])]]
         actual_evidence = [item for item in actual_evidence if item is not None]
+        manual_evidence = [session.get(EvidenceItem, UUID(item)) for item in state.get("manual_evidence_ids", [])]
+        manual_evidence = [item for item in manual_evidence if item is not None]
         for claim_id in state.get("claim_ids", []):
             claim = session.get(Claim, UUID(claim_id))
             if claim is None:
@@ -265,13 +273,32 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         produced_by="DETERMINISTIC",
                         requires_human_confirmation=True,
                     ))
+            for evidence in manual_evidence:
+                overlap = claim_tokens & _tokens(evidence.excerpt_safe)
+                if not overlap:
+                    continue
+                link = session.query(ClaimEvidenceLink).filter_by(
+                    claim_id=claim.id,
+                    evidence_id=evidence.id,
+                    relation="SUPPORTS",
+                ).one_or_none()
+                if link is None:
+                    session.add(ClaimEvidenceLink(
+                        claim_id=claim.id,
+                        evidence_id=evidence.id,
+                        relation="SUPPORTS",
+                        reason="人工补证包含与核验目标重叠的标识符：" + ", ".join(sorted(overlap)[:5]),
+                        confidence=0.5,
+                        produced_by="HUMAN",
+                        requires_human_confirmation=True,
+                    ))
         # The next node validates uniqueness against persisted links, including these ones.
         session.flush()
         return {}
 
     def propose_model_links(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
-        actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", [])]]
+        actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", []), *state.get("manual_evidence_ids", [])]]
         actual_evidence = [item for item in actual_evidence if item is not None]
         claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
         claims = [item for item in claims if item is not None]
@@ -359,9 +386,10 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 continue
             links = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id).all()
             deterministic_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "DETERMINISTIC"]
+            human_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "HUMAN"]
             model_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "MODEL"]
             deterministic_conflicts = [item for item in links if item.relation == "CONTRADICTS" and item.produced_by == "DETERMINISTIC"]
-            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *deterministic_conflicts, *model_supports]]
+            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *deterministic_conflicts, *human_supports, *model_supports]]
             support_evidence = [session.get(EvidenceItem, item.evidence_id) for item in deterministic_supports]
             has_passing_external_test = any(
                 item is not None and item.source_type in {"TEST", "BUILD"} and item.locator.get("exitCode") == 0
@@ -378,6 +406,10 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             elif deterministic_supports:
                 status = "PARTIALLY_SUPPORTED"
                 reason = "已发现冻结 Git 范围内的确定性标识符命中；语义满足度仍需人工确认"
+                needs_confirmation = True
+            elif human_supports:
+                status = "PARTIALLY_SUPPORTED"
+                reason = "已关联人工补证；该补证不能单独形成确认结论，仍需人工复核"
                 needs_confirmation = True
             elif model_supports:
                 status = "INFERENCE_REQUIRES_CONFIRMATION"

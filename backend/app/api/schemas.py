@@ -59,6 +59,7 @@ class SnapshotCreateRequest(BaseModel):
 class FormalSnapshotCreateRequest(SnapshotCreateRequest):
     git_snapshot_id: UUID
     external_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    manual_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
 
 
 class SnapshotResponse(BaseModel):
@@ -189,6 +190,19 @@ class ExternalEvidenceResponse(BaseModel):
     commit_sha: str
     content_hash: str
     exit_code: int | None
+
+
+class ManualEvidenceCreateRequest(BaseModel):
+    logical_name: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=2 * 1024 * 1024)
+
+
+class ManualEvidenceResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    cycle_id: UUID
+    logical_name: str
+    content_hash: str
 
 
 class SnapshotSearchRequest(BaseModel):
