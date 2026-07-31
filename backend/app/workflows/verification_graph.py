@@ -1,5 +1,6 @@
 import hashlib
 import re
+from datetime import UTC, datetime
 from typing import TypedDict
 from uuid import UUID
 
@@ -23,6 +24,8 @@ from app.infrastructure.persistence.models import (
     InputSnapshot,
     InputSnapshotGit,
     ModelCall,
+    NodeAttempt,
+    RiskFinding,
     RunEvent,
     SourceRevision,
     VerificationCycle,
@@ -121,10 +124,28 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
 
     def observed(node_id: str, handler):
         def invoke(state: VerificationGraphState) -> VerificationGraphState:
+            attempt_no = session.query(NodeAttempt).filter_by(analysis_run_id=run_id, node_id=node_id).count() + 1
+            attempt = NodeAttempt(analysis_run_id=run_id, node_id=node_id, attempt_no=attempt_no, status="RUNNING")
+            session.add(attempt)
             session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="RUNNING", correlation_id=str(run_id), payload_redacted={"workflowVersion": state.get("workflow_schema_version", "v1")}))
-            result = handler(state)
-            session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="SUCCEEDED", correlation_id=str(run_id), payload_redacted={"outputKeys": sorted(result.keys())}))
-            return result
+            try:
+                result = handler(state)
+                attempt.status = "SUCCEEDED"
+                attempt.finished_at = datetime.now(UTC)
+                session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="SUCCEEDED", correlation_id=str(run_id), payload_redacted={"outputKeys": sorted(result.keys())}))
+                return result
+            except DomainError as exc:
+                attempt.status = "FAILED"
+                attempt.error_code = exc.code
+                attempt.finished_at = datetime.now(UTC)
+                session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="FAILED", correlation_id=str(run_id), payload_redacted={"errorCode": exc.code}))
+                raise
+            except Exception:
+                attempt.status = "FAILED"
+                attempt.error_code = "SYSTEM_ERROR"
+                attempt.finished_at = datetime.now(UTC)
+                session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="FAILED", correlation_id=str(run_id), payload_redacted={"errorCode": "SYSTEM_ERROR"}))
+                raise
         return invoke
 
     def load_snapshot(state: VerificationGraphState) -> VerificationGraphState:
@@ -396,6 +417,23 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 for item in support_evidence
             )
             if deterministic_conflicts:
+                for conflict in deterministic_conflicts:
+                    existing_finding = session.query(RiskFinding).filter_by(
+                        analysis_run_id=run_id,
+                        claim_id=claim.id,
+                        evidence_id=conflict.evidence_id,
+                        category="EVIDENCE_CONFLICT",
+                    ).one_or_none()
+                    if existing_finding is None:
+                        session.add(RiskFinding(
+                            analysis_run_id=run_id,
+                            claim_id=claim.id,
+                            evidence_id=conflict.evidence_id,
+                            severity="HIGH" if claim.authority_level >= 3 else "MEDIUM",
+                            category="EVIDENCE_CONFLICT",
+                            finding_kind="DETERMINISTIC",
+                            recommendation="复核冲突证据并补充与冻结提交绑定的可追溯材料",
+                        ))
                 status = "CONFLICTING"
                 reason = "存在可追溯的确定性反驳证据，不能由模型自行裁决"
                 needs_confirmation = True

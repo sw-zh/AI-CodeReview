@@ -216,6 +216,34 @@ class VerificationResult(Base):
     produced_by: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class NodeAttempt(Base):
+    __tablename__ = "node_attempts"
+    __table_args__ = (UniqueConstraint("analysis_run_id", "node_id", "attempt_no", name="uq_node_attempt"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    analysis_run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RiskFinding(Base):
+    __tablename__ = "risk_findings"
+    __table_args__ = (UniqueConstraint("analysis_run_id", "claim_id", "evidence_id", "category", name="uq_risk_finding"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    analysis_run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    claim_id: Mapped[UUID] = mapped_column(ForeignKey("claims.id", ondelete="CASCADE"), nullable=False)
+    evidence_id: Mapped[UUID] = mapped_column(ForeignKey("evidence_items.id"), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    finding_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class AnalysisCoverage(Base):
     __tablename__ = "analysis_coverages"
 
