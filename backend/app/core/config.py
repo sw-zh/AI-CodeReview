@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "postgresql+psycopg://ai_codereview:ai_codereview@postgres:5432/ai_codereview"
     artifact_root: str = "/artifacts"
-    jwt_secret: str
+    jwt_secret: str = Field(min_length=32)
     jwt_access_ttl_seconds: int = Field(default=3600, ge=300, le=86_400)
     cors_allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     worker_id: str = "worker-1"
