@@ -56,6 +56,10 @@ class SnapshotCreateRequest(BaseModel):
     source_revision_ids: list[UUID] = Field(min_length=1)
 
 
+class FormalSnapshotCreateRequest(SnapshotCreateRequest):
+    git_snapshot_id: UUID
+
+
 class SnapshotResponse(BaseModel):
     id: UUID
     cycle_id: UUID

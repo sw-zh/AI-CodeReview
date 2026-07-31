@@ -12,6 +12,8 @@ from app.infrastructure.persistence.models import (
     EvidenceItem,
     InputSnapshot,
     InputSnapshotSource,
+    InputSnapshotGit,
+    GitSnapshot,
     VerificationCycle,
     VerificationTask,
     SourceRevision,
@@ -127,4 +129,29 @@ def freeze_preparation_snapshot(
         correlation_id=correlation_id,
         payload={"snapshotHash": snapshot.snapshot_hash, "sourceRevisionIds": [str(x) for x in source_revision_ids]},
     )
+    return snapshot
+
+
+def freeze_formal_snapshot(
+    session: Session, *, cycle_id: UUID, source_revision_ids: list[UUID], git_snapshot_id: UUID, actor_id: UUID, correlation_id: str
+) -> InputSnapshot:
+    cycle = session.get(VerificationCycle, cycle_id)
+    task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    git = session.get(GitSnapshot, git_snapshot_id)
+    if task is None or git is None or git.cycle_id != cycle_id:
+        raise DomainError("GIT_RANGE_INVALID", "正式快照必须绑定当前轮次已冻结的 Git 范围")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == task.project_id).all()
+    if len(sources) != len(set(source_revision_ids)) or any(x.processing_status != SourceProcessingStatus.READY for x in sources):
+        raise DomainError("SOURCE_NOT_READY", "正式快照的全部资料必须存在且处于 READY")
+    normalized = {"purpose": "FORMAL", "cycleId": str(cycle.id), "policyVersion": "v1", "workflowVersion": "v1", "git": {"baseSha": git.base_sha, "targetSha": git.target_sha, "mergeBaseSha": git.merge_base_sha, "diffMode": git.diff_mode, "diffHash": git.diff_hash}, "sources": sorted([{"id": str(x.id), "hash": x.content_hash, "parser": x.parser_version} for x in sources], key=lambda x: x["id"])}
+    snapshot_hash = f"sha256:{hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+    existing = session.query(InputSnapshot).filter_by(snapshot_hash=snapshot_hash).one_or_none()
+    if existing is not None: return existing
+    snapshot = InputSnapshot(cycle_id=cycle.id, snapshot_hash=snapshot_hash, policy_version="v1", workflow_version="v1", created_by=actor_id, purpose="FORMAL")
+    session.add(snapshot); session.flush()
+    for source in sources:
+        session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
+    session.add(InputSnapshotGit(snapshot_id=snapshot.id, git_snapshot_id=git.id, diff_hash=git.diff_hash))
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id)})
     return snapshot
