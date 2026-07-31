@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
+from app.application.services.redaction import safe_excerpt
 from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import (
@@ -111,7 +112,7 @@ def freeze_preparation_snapshot(
                     evidence_kind="RAW_FACT",
                     source_revision_id=source.id,
                     content_hash=chunk.text_hash,
-                    excerpt_safe=chunk.content[:1000],
+                    excerpt_safe=safe_excerpt(chunk.content),
                     locator={
                         "sourceRevisionId": str(source.id),
                         "chunkId": str(chunk.id),
@@ -164,11 +165,11 @@ def freeze_formal_snapshot(
         session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
         chunks = session.query(DocumentChunk).filter_by(source_revision_id=source.id, index_version=source.parser_version).order_by(DocumentChunk.chunk_index).all()
         for chunk in chunks:
-            session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="DOCUMENT", evidence_kind="RAW_FACT", source_revision_id=source.id, content_hash=chunk.text_hash, excerpt_safe=chunk.content[:1000], locator={"sourceRevisionId": str(source.id), "chunkId": str(chunk.id), "chunkIndex": chunk.chunk_index, **chunk.locator}, locator_precision="EXACT", extractor_version=source.parser_version or "markdown-text-v1"))
+            session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="DOCUMENT", evidence_kind="RAW_FACT", source_revision_id=source.id, content_hash=chunk.text_hash, excerpt_safe=safe_excerpt(chunk.content), locator={"sourceRevisionId": str(source.id), "chunkId": str(chunk.id), "chunkIndex": chunk.chunk_index, **chunk.locator}, locator_precision="EXACT", extractor_version=source.parser_version or "markdown-text-v1"))
     for item in external_evidence:
         session.add(InputSnapshotExternalEvidence(snapshot_id=snapshot.id, external_evidence_id=item.id, content_hash=item.content_hash, commit_sha=item.commit_sha))
         content = Path(item.artifact_uri).read_text(encoding="utf-8")
-        session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type=item.evidence_type, evidence_kind="RAW_FACT", commit_sha=item.commit_sha, content_hash=item.content_hash, excerpt_safe=content[:1000], locator={"externalEvidenceId": str(item.id), "logicalName": item.logical_name, "commitSha": item.commit_sha, "exitCode": item.exit_code}, locator_precision="EXACT", extractor_version="external-evidence-v1"))
+        session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type=item.evidence_type, evidence_kind="RAW_FACT", commit_sha=item.commit_sha, content_hash=item.content_hash, excerpt_safe=safe_excerpt(content), locator={"externalEvidenceId": str(item.id), "logicalName": item.logical_name, "commitSha": item.commit_sha, "exitCode": item.exit_code}, locator_precision="EXACT", extractor_version="external-evidence-v1"))
     session.add(InputSnapshotGit(snapshot_id=snapshot.id, git_snapshot_id=git.id, diff_hash=git.diff_hash))
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id)})
     return snapshot
