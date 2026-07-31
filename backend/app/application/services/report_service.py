@@ -50,6 +50,28 @@ def approve(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, c
     return report
 
 
+def request_changes(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, correlation_id: str) -> ReportVersion:
+    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    if task is None or report.status != "SUBMITTED": raise DomainError("STATE_CONFLICT", "仅已提交报告可要求补证")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    if report.submitted_by == actor_id: raise DomainError("AUTH_FORBIDDEN", "提交者不能审核自己的报告")
+    report.status = "CHANGES_REQUESTED"
+    session.add(ApprovalAction(report_version_id=report.id, action="CHANGES_REQUESTED", actor_id=actor_id, reason=reason, report_hash=report.content_hash, snapshot_hash=report.snapshot_hash, run_id=report.run_id))
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_CHANGES_REQUESTED", correlation_id=correlation_id)
+    return report
+
+
+def reject(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, correlation_id: str) -> ReportVersion:
+    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    if task is None or report.status != "SUBMITTED": raise DomainError("STATE_CONFLICT", "仅已提交报告可驳回")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    if report.submitted_by == actor_id: raise DomainError("AUTH_FORBIDDEN", "提交者不能审核自己的报告")
+    report.status = "REJECTED"; cycle.business_status = "REJECTED"
+    session.add(ApprovalAction(report_version_id=report.id, action="REJECTED", actor_id=actor_id, reason=reason, report_hash=report.content_hash, snapshot_hash=report.snapshot_hash, run_id=report.run_id))
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_REJECTED", correlation_id=correlation_id)
+    return report
+
+
 def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id: str) -> PublishedRecord:
     report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "APPROVED": raise DomainError("STATE_CONFLICT", "仅已批准报告可发布")
