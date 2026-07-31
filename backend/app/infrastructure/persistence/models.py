@@ -250,6 +250,72 @@ class InputSnapshotSource(Base):
     parser_version: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class InputSnapshotGit(Base):
+    __tablename__ = "input_snapshot_git"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), unique=True, nullable=False)
+    git_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("git_snapshots.id"), nullable=False)
+    diff_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+
+
+class AnalysisRun(TimestampedEntity, Base):
+    __tablename__ = "analysis_runs"
+    __table_args__ = (UniqueConstraint("snapshot_id", "analysis_config_hash", name="uq_active_run_config"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
+    analysis_config_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    run_status: Mapped[str] = mapped_column(String(32), nullable=False, default="QUEUED")
+    manifest_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AnalysisRunManifest(Base):
+    __tablename__ = "analysis_run_manifests"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), unique=True, nullable=False)
+    workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_set_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_set_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    degradation: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class AnalysisJob(TimestampedEntity, Base):
+    __tablename__ = "analysis_jobs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), unique=True, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    job_status: Mapped[str] = mapped_column(String(32), nullable=False, default="QUEUED")
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    node_id: Mapped[str | None] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_redacted: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
