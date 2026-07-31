@@ -37,7 +37,15 @@ def start_analysis_run(
     existing_job = session.query(AnalysisJob).filter_by(idempotency_key=idempotency_key).one_or_none()
     if existing_job is not None:
         return session.get(AnalysisRun, existing_job.run_id)
-    config = {"workflow": "v1", "rules": "v1", "prompt": "v1", "schema": "v1"}
+    settings = get_settings()
+    config = {
+        "workflow": "v1",
+        "rules": "v1",
+        "prompt": "v1",
+        "schema": "v1",
+        "generationProvider": settings.generation_provider,
+        "generationModel": settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1",
+    }
     config_hash = f"sha256:{hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()}"
     existing_run = session.query(AnalysisRun).filter_by(snapshot_id=snapshot.id, analysis_config_hash=config_hash).one_or_none()
     if existing_run is not None and existing_run.run_status in {"QUEUED", "RUNNING"}:
@@ -46,8 +54,7 @@ def start_analysis_run(
     run = AnalysisRun(snapshot_id=snapshot.id, analysis_config_hash=config_hash, manifest_hash=manifest_hash, checkpoint_ns=f"run-{uuid4()}")
     session.add(run)
     session.flush()
-    settings = get_settings()
-    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="v1", rule_set_version="v1", prompt_set_version="v1", generation_model=settings.gemini_generation_model if settings.gemini_api_key else "fake-model-v1", embedding_model=settings.embedding_model, schema_version="v1"))
+    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="v1", rule_set_version="v1", prompt_set_version="v1", generation_model=config["generationModel"], embedding_model=settings.embedding_model, schema_version="v1"))
     session.add(AnalysisJob(run_id=run.id, idempotency_key=idempotency_key, max_attempts=settings.job_max_attempts))
     cycle.business_status = "ANALYZING"
     cycle.active_run_id = run.id

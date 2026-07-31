@@ -1,5 +1,7 @@
 from functools import lru_cache
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +21,7 @@ class Settings(BaseSettings):
     worker_id: str = "worker-1"
     job_lease_seconds: int = Field(default=60, ge=15, le=300)
     job_max_attempts: int = Field(default=3, ge=1, le=10)
+    generation_provider: Literal["fake", "gemini"] = "fake"
     gemini_api_key: str | None = None
     gemini_generation_model: str = "gemini-2.5-flash"
     embedding_model: str = "text-embedding-004"

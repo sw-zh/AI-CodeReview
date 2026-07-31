@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from app.domain.model_contracts import GenerationRequest, GenerationResult
+
 
 @dataclass(frozen=True)
 class FrozenGitRange:
@@ -37,4 +39,11 @@ class GitReaderPort:
         expected_diff_hash: str,
     ) -> FrozenGitDiff:
         """Read only an immutable SHA range and reject a changed diff payload."""
+        raise NotImplementedError
+
+
+class GenerationModelPort:
+    """Generation boundary: implementations may propose links but never final results."""
+
+    def generate(self, request: GenerationRequest) -> GenerationResult:
         raise NotImplementedError

@@ -6,7 +6,10 @@ from uuid import UUID
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.domain.errors import DomainError
+from app.domain.model_contracts import GenerationRequest
+from app.infrastructure.generation_model import create_generation_model
 from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.infrastructure.persistence.models import (
     AnalysisCoverage,
@@ -17,6 +20,7 @@ from app.infrastructure.persistence.models import (
     GitSnapshot,
     InputSnapshot,
     InputSnapshotGit,
+    ModelCall,
     SourceRevision,
     VerificationCycle,
     VerificationResult,
@@ -212,8 +216,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             claims.append(str(claim.id))
         return {"claim_ids": claims}
 
-    def reconcile(state: VerificationGraphState) -> VerificationGraphState:
-        results: list[str] = []
+    def link_deterministic(state: VerificationGraphState) -> VerificationGraphState:
         code_evidence = [session.get(EvidenceItem, UUID(item)) for item in state.get("git_evidence_ids", [])]
         code_evidence = [item for item in code_evidence if item is not None]
         for claim_id in state.get("claim_ids", []):
@@ -238,10 +241,109 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         produced_by="DETERMINISTIC",
                         requires_human_confirmation=True,
                     ))
-            evidence_ids = [str(item.id) for item in supporting]
-            if supporting:
+        # The next node validates uniqueness against persisted links, including these ones.
+        session.flush()
+        return {}
+
+    def propose_model_links(state: VerificationGraphState) -> VerificationGraphState:
+        code_evidence = [session.get(EvidenceItem, UUID(item)) for item in state.get("git_evidence_ids", [])]
+        code_evidence = [item for item in code_evidence if item is not None]
+        claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
+        claims = [item for item in claims if item is not None]
+        allowed_ids = {str(item.id) for item in code_evidence}
+        request = GenerationRequest(
+            run_id=run_id,
+            prompt_version="v1",
+            schema_version="v1",
+            claims=[
+                {
+                    "id": str(claim.id),
+                    "text": claim.text,
+                    "candidateEvidenceIds": [
+                        str(evidence.id) for evidence in code_evidence if _tokens(claim.text) & _tokens(evidence.excerpt_safe)
+                    ],
+                }
+                for claim in claims
+            ],
+            evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in code_evidence],
+        )
+        settings = get_settings()
+        try:
+            model = create_generation_model(settings)
+            generated = model.generate(request)
+            session.add(ModelCall(
+                run_id=run_id,
+                provider=generated.provider,
+                model=generated.model,
+                operation="LINK_PROPOSAL",
+                prompt_version=request.prompt_version,
+                schema_version=request.schema_version,
+                allowed_evidence_ids=sorted(allowed_ids),
+                status="SUCCEEDED",
+                latency_ms=generated.latency_ms,
+                attempts=generated.attempts,
+            ))
+            claim_ids = {str(item.id) for item in claims}
+            for proposal in generated.proposals.proposals:
+                if str(proposal.claim_id) not in claim_ids or str(proposal.evidence_id) not in allowed_ids:
+                    continue
+                existing = session.query(ClaimEvidenceLink).filter_by(
+                    claim_id=proposal.claim_id,
+                    evidence_id=proposal.evidence_id,
+                    relation=proposal.relation,
+                ).one_or_none()
+                if existing is None:
+                    session.add(ClaimEvidenceLink(
+                        claim_id=proposal.claim_id,
+                        evidence_id=proposal.evidence_id,
+                        relation=proposal.relation,
+                        reason=proposal.rationale,
+                        confidence=0.5,
+                        produced_by="MODEL",
+                        requires_human_confirmation=True,
+                    ))
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="ANALYZED"))
+            session.flush()
+            return {}
+        except DomainError as exc:
+            session.add(ModelCall(
+                run_id=run_id,
+                provider=settings.generation_provider,
+                model=settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1",
+                operation="LINK_PROPOSAL",
+                prompt_version=request.prompt_version,
+                schema_version=request.schema_version,
+                allowed_evidence_ids=sorted(allowed_ids),
+                status="FAILED",
+                attempts=2 if exc.code == "MODEL_SCHEMA_INVALID" else 1,
+                error_code=exc.code,
+                error_summary=exc.message[:500],
+            ))
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="UNAVAILABLE", reason_code=exc.code))
+            return {"node_errors": [*state.get("node_errors", []), exc.code]}
+
+    def reconcile(state: VerificationGraphState) -> VerificationGraphState:
+        results: list[str] = []
+        for claim_id in state.get("claim_ids", []):
+            claim = session.get(Claim, UUID(claim_id))
+            if claim is None:
+                continue
+            links = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id).all()
+            deterministic_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "DETERMINISTIC"]
+            model_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "MODEL"]
+            deterministic_conflicts = [item for item in links if item.relation == "CONTRADICTS" and item.produced_by == "DETERMINISTIC"]
+            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *model_supports]]
+            if deterministic_conflicts:
+                status = "CONFLICTING"
+                reason = "存在可追溯的确定性反驳证据，不能由模型自行裁决"
+                needs_confirmation = True
+            elif deterministic_supports:
                 status = "PARTIALLY_SUPPORTED"
                 reason = "已发现冻结 Git 范围内的确定性标识符命中；语义满足度仍需人工确认"
+                needs_confirmation = True
+            elif model_supports:
+                status = "INFERENCE_REQUIRES_CONFIRMATION"
+                reason = "仅有模型提出的证据关联，尚未形成确定性支持结论"
                 needs_confirmation = True
             else:
                 status = "INSUFFICIENT_EVIDENCE"
@@ -268,11 +370,15 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     graph.add_node("load_snapshot", load_snapshot)
     graph.add_node("collect_git_evidence", collect_git_evidence)
     graph.add_node("create_claims", create_claims)
+    graph.add_node("link_deterministic", link_deterministic)
+    graph.add_node("propose_model_links", propose_model_links)
     graph.add_node("reconcile", reconcile)
     graph.add_edge(START, "load_snapshot")
     graph.add_edge("load_snapshot", "collect_git_evidence")
     graph.add_edge("collect_git_evidence", "create_claims")
-    graph.add_edge("create_claims", "reconcile")
+    graph.add_edge("create_claims", "link_deterministic")
+    graph.add_edge("link_deterministic", "propose_model_links")
+    graph.add_edge("propose_model_links", "reconcile")
     graph.add_edge("reconcile", END)
     return graph.compile().invoke({
         "analysis_run_id": str(run_id),

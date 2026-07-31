@@ -66,13 +66,16 @@ def _claim_and_complete_one(worker_id: str, lease_seconds: int) -> None:
             job.attempt_no += 1
             run.run_status = "RUNNING"
             run.started_at = run.started_at or now
+            run_id = run.id
             try:
-                graph_state = run_verification_graph(session, run.id, run.snapshot_id)
+                # A graph failure must not poison the durable lease update in the outer transaction.
+                with session.begin_nested():
+                    graph_state = run_verification_graph(session, run.id, run.snapshot_id)
                 job.job_status = "SUCCEEDED"
                 run.run_status = "PARTIALLY_COMPLETED" if graph_state.get("node_errors") else "SUCCEEDED"
                 _derive_cycle_status(session, run)
             except Exception:
-                logger.exception("workflow_failed run_id=%s", run.id)
+                logger.exception("workflow_failed run_id=%s", run_id)
                 job.last_error_code = "WORKFLOW_FAILED"
                 job.job_status = "FAILED" if job.attempt_no >= job.max_attempts else "QUEUED"
                 run.run_status = "FAILED" if job.job_status == "FAILED" else "QUEUED"
