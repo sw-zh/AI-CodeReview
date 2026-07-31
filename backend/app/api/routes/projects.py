@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import ProjectCreateRequest, ProjectMemberCreateRequest, ProjectResponse
-from app.application.services.project_service import add_member, create_project
+from app.application.services.project_service import add_member, add_member_by_email, create_project
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import Project, ProjectMember
 
@@ -47,7 +47,7 @@ def get_project(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> 
 @router.post("/{project_id}/members", status_code=status.HTTP_201_CREATED)
 def add_project_member(project_id: UUID, payload: ProjectMemberCreateRequest, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> dict:
     try:
-        member = add_member(session, project_id=project_id, user_id=payload.user_id, role=payload.role, actor_id=user.id, correlation_id=correlation_id(request)); session.commit()
+        member = add_member_by_email(session, project_id=project_id, user_email=payload.user_email, role=payload.role, actor_id=user.id, correlation_id=correlation_id(request)) if payload.user_email else add_member(session, project_id=project_id, user_id=payload.user_id, role=payload.role, actor_id=user.id, correlation_id=correlation_id(request)); session.commit()
         return {"id": str(member.id), "userId": str(member.user_id), "role": member.role}
     except DomainError as exc:
         session.rollback(); raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message})

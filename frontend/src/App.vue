@@ -17,6 +17,8 @@ const token = ref(sessionStorage.getItem('accessToken') ?? '')
 const email = ref('submitter@example.local')
 const password = ref('demo-submitter')
 const projectName = ref('交付核验演示')
+const reviewerEmail = ref('reviewer@example.local')
+const reviewerAdded = ref(false)
 const taskTitle = ref('交付记录核验')
 const requirementKey = ref('REQ-001')
 const sourceRole = ref('ACCEPTANCE')
@@ -99,6 +101,16 @@ async function createTask() {
   try {
     task.value = await request<Task>(`/projects/${project.value.id}/verification-tasks`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ title: taskTitle.value, requirement_key: requirementKey.value }) })
     message.value = '任务与首个核验轮次已创建。上传 Markdown 或纯文本资料。'
+  } catch (error) { showError(error) } finally { busy.value = false }
+}
+
+async function addReviewer() {
+  if (!project.value) return
+  busy.value = true
+  try {
+    await request(`/projects/${project.value.id}/members`, { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ user_email: reviewerEmail.value, role: 'REVIEWER' }) })
+    reviewerAdded.value = true
+    message.value = '审核者已加入项目。提交报告后可切换审核账户继续复核。'
   } catch (error) { showError(error) } finally { busy.value = false }
 }
 
@@ -264,7 +276,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
     <section v-else class="workspace">
       <aside class="source-panel panel">
         <div class="panel-heading"><div><p class="overline">01 · 输入</p><h2>证据来源</h2></div><span class="panel-state">{{ formalSnapshot ? '已冻结' : '草稿' }}</span></div>
-        <div class="form-section"><label>项目名称<input v-model="projectName" :disabled="!!project" /></label><button :disabled="busy || !!project" @click="createProject">创建项目</button><p v-if="project" class="item-meta">{{ project.name }}</p></div>
+        <div class="form-section"><label>项目名称<input v-model="projectName" :disabled="!!project" /></label><button :disabled="busy || !!project" @click="createProject">创建项目</button><p v-if="project" class="item-meta">{{ project.name }}</p><template v-if="project"><label>审核者邮箱<input v-model="reviewerEmail" :disabled="reviewerAdded" /></label><button :disabled="busy || reviewerAdded" @click="addReviewer">添加审核者</button><p v-if="reviewerAdded" class="item-meta">审核者 · REVIEWER</p></template></div>
         <div class="form-section"><label>任务标题<input v-model="taskTitle" :disabled="!!task" /></label><label>需求标识<input v-model="requirementKey" :disabled="!!task" /></label><button :disabled="busy || !project || !!task" @click="createTask">创建核验任务</button><p v-if="task" class="item-meta">轮次 · {{ task.cycle_status }}</p></div>
         <div class="form-section"><label>资料角色<select v-model="sourceRole" :disabled="!!source"><option>ACCEPTANCE</option><option>REQUIREMENT</option><option>DESIGN</option><option>MEETING</option></select></label><label class="file-field">Markdown / 纯文本<input accept=".md,.txt,text/markdown,text/plain" type="file" :disabled="!!source" @change="chooseFile" /></label><button :disabled="busy || !task || !sourceFile || !!source" @click="uploadSource">上传资料版本</button><p v-if="source" class="item-meta">{{ source.logical_name }} · {{ source.processing_status }}</p></div>
         <div class="form-section git-section"><label>只读仓库<input v-model="repositoryUrl" :disabled="!!repository" /></label><button :disabled="busy || !source || !!repository" @click="registerRepository">登记仓库</button><template v-if="repository"><label>基准 Ref<input v-model="baseRef" :disabled="!!gitSnapshot" /></label><label>目标 Ref<input v-model="targetRef" :disabled="!!gitSnapshot" /></label><label>包含路径<input v-model="includePaths" :disabled="!!gitSnapshot" /></label><label>排除路径<input v-model="excludePaths" :disabled="!!gitSnapshot" /></label><button :disabled="busy || !!gitSnapshot" @click="freezeGit">冻结 Git 范围</button></template><p v-if="gitSnapshot" class="item-meta mono">{{ gitSnapshot.target_sha.slice(0, 12) }} · {{ gitSnapshot.coverage.changedFiles.length }} files</p></div>

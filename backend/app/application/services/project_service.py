@@ -39,3 +39,11 @@ def add_member(session: Session, *, project_id: UUID, user_id: UUID, role: str, 
     session.add(member); session.flush()
     append_audit_event(session, project_id=project_id, actor_id=actor_id, aggregate_type="ProjectMember", aggregate_id=member.id, action="PROJECT_MEMBER_ADDED", correlation_id=correlation_id, payload={"memberUserId": str(user_id), "role": role})
     return member
+
+
+def add_member_by_email(session: Session, *, project_id: UUID, user_email: str, role: str, actor_id: UUID, correlation_id: str) -> ProjectMember:
+    require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
+    target = session.query(User).filter_by(email=user_email.strip().lower()).one_or_none()
+    if target is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "待添加用户不存在")
+    return add_member(session, project_id=project_id, user_id=target.id, role=role, actor_id=actor_id, correlation_id=correlation_id)

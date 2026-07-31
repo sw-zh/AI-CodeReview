@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -150,8 +150,15 @@ class ApprovalRequest(BaseModel):
 
 
 class ProjectMemberCreateRequest(BaseModel):
-    user_id: UUID
+    user_id: UUID | None = None
+    user_email: str | None = Field(default=None, max_length=255)
     role: str = Field(pattern="^(SUBMITTER|REVIEWER|ADMIN)$")
+
+    @model_validator(mode="after")
+    def require_one_identity(self):
+        if (self.user_id is None) == (self.user_email is None):
+            raise ValueError("exactly one of user_id or user_email is required")
+        return self
 
 
 class EvidenceQuestionRequest(BaseModel):
