@@ -42,3 +42,17 @@ def create_task(
         payload={"cycleId": str(cycle.id)},
     )
     return task, cycle
+
+
+def create_next_cycle(session: Session, *, task_id: UUID, actor_id: UUID, correlation_id: str) -> VerificationCycle:
+    task = session.get(VerificationTask, task_id)
+    if task is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "核验任务不存在")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    previous = session.query(VerificationCycle).filter_by(task_id=task.id).order_by(VerificationCycle.sequence_no.desc()).first()
+    if previous is None or previous.business_status != CycleStatus.PUBLISHED:
+        raise DomainError("STATE_CONFLICT", "仅已发布核验轮次可以创建新版本")
+    cycle = VerificationCycle(task_id=task.id, sequence_no=previous.sequence_no + 1, business_status=CycleStatus.DRAFT, created_from_cycle_id=previous.id)
+    session.add(cycle); session.flush()
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="VerificationCycle", aggregate_id=cycle.id, action="VERIFICATION_CYCLE_CREATED", correlation_id=correlation_id, payload={"previousCycleId": str(previous.id)})
+    return cycle
