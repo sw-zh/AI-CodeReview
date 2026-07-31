@@ -21,6 +21,14 @@ def _content_hash(*, results: list[VerificationResult], editorial_note: str, dis
     return f"sha256:{hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()}"
 
 
+def _draft_cycle_status(results: list[VerificationResult]) -> str:
+    if not results or all(item.status == "INSUFFICIENT_EVIDENCE" for item in results):
+        return "NEEDS_EVIDENCE"
+    if any(item.requires_human_confirmation for item in results):
+        return "NEEDS_CONFIRMATION"
+    return "DRAFT_READY"
+
+
 def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UUID, correlation_id: str) -> ReportVersion:
     cycle = session.get(VerificationCycle, cycle_id); run = session.get(AnalysisRun, run_id); task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or run is None or run.run_status not in {"SUCCEEDED", "PARTIALLY_COMPLETED"}:
@@ -79,6 +87,7 @@ def submit_for_review(session: Session, *, report_id: UUID, actor_id: UUID, corr
     if task is None or report.status != "DRAFT": raise DomainError("STATE_CONFLICT", "仅草稿可提交审核")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     report.status = "SUBMITTED"; report.submitted_by = actor_id; report.submitted_at = datetime.now(UTC)
+    cycle.business_status = "PENDING_REVIEW"
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_SUBMITTED", correlation_id=correlation_id)
     return report
 
@@ -106,6 +115,7 @@ def request_changes(session: Session, *, report_id: UUID, actor_id: UUID, reason
     session.add(draft); session.flush()
     for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
         session.add(ReportItem(report_version_id=draft.id, result_id=item.result_id, display_order=item.display_order, result_snapshot=item.result_snapshot, citation_snapshot=item.citation_snapshot, disposition=item.disposition))
+    cycle.business_status = _draft_cycle_status(session.query(VerificationResult).filter_by(analysis_run_id=report.run_id).all())
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_CHANGES_REQUESTED", correlation_id=correlation_id, payload={"newDraftId": str(draft.id)})
     return draft
 
