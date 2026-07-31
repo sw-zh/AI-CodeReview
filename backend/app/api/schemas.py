@@ -129,3 +129,14 @@ class ApprovalRequest(BaseModel):
 class ProjectMemberCreateRequest(BaseModel):
     user_id: UUID
     role: str = Field(pattern="^(SUBMITTER|REVIEWER|ADMIN)$")
+
+
+class EvidenceQuestionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    evidence_ids: list[UUID] = Field(min_length=1, max_length=20)
+
+
+class EvidenceQuestionResponse(BaseModel):
+    answer: str
+    fact_status: str
+    citations: list[dict]
