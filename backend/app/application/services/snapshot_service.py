@@ -8,6 +8,8 @@ from app.application.services.common import append_audit_event, require_project_
 from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import (
+    DocumentChunk,
+    EvidenceItem,
     InputSnapshot,
     InputSnapshotSource,
     VerificationCycle,
@@ -89,6 +91,32 @@ def freeze_preparation_snapshot(
                 parser_version=source.parser_version or "unknown",
             )
         )
+        chunk = (
+            session.query(DocumentChunk)
+            .filter_by(source_revision_id=source.id, index_version=source.parser_version)
+            .order_by(DocumentChunk.chunk_index)
+            .first()
+        )
+        if chunk is not None:
+            session.add(
+                EvidenceItem(
+                    project_id=task.project_id,
+                    snapshot_id=snapshot.id,
+                    source_type="DOCUMENT",
+                    evidence_kind="RAW_FACT",
+                    source_revision_id=source.id,
+                    content_hash=chunk.text_hash,
+                    excerpt_safe=chunk.content[:1000],
+                    locator={
+                        "sourceRevisionId": str(source.id),
+                        "chunkId": str(chunk.id),
+                        "chunkIndex": chunk.chunk_index,
+                        **chunk.locator,
+                    },
+                    locator_precision="EXACT",
+                    extractor_version=source.parser_version or "markdown-text-v1",
+                )
+            )
     append_audit_event(
         session,
         project_id=task.project_id,

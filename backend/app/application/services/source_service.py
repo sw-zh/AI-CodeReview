@@ -9,7 +9,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.core.config import get_settings
 from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import SourceRevision
+from app.infrastructure.persistence.models import DocumentChunk, SourceRevision
 
 ALLOWED_MEDIA_TYPES = {"text/plain", "text/markdown"}
 
@@ -67,6 +67,20 @@ def create_source_revision(
     source.processing_status = SourceProcessingStatus.PARSING
     source.parser_version = "markdown-text-v1"
     source.processing_status = SourceProcessingStatus.CHUNKING
+    text = content.decode("utf-8")
+    paragraphs = [part.strip() for part in text.replace("\r\n", "\n").split("\n\n") if part.strip()]
+    for index, paragraph in enumerate(paragraphs or [text.strip()]):
+        start = text.find(paragraph)
+        session.add(
+            DocumentChunk(
+                source_revision_id=source.id,
+                chunk_index=index,
+                content=paragraph,
+                text_hash=f"sha256:{hashlib.sha256(paragraph.encode('utf-8')).hexdigest()}",
+                locator={"paragraph": index + 1, "charStart": max(start, 0), "charEnd": max(start, 0) + len(paragraph)},
+                index_version="markdown-text-v1",
+            )
+        )
     source.processing_status = SourceProcessingStatus.INDEXING
     source.processing_status = SourceProcessingStatus.READY
     append_audit_event(

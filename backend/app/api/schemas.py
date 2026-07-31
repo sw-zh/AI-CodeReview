@@ -64,3 +64,13 @@ class SnapshotResponse(BaseModel):
     policy_version: str
     workflow_version: str
     created_at: datetime
+
+
+class EvidenceResponse(BaseModel):
+    id: UUID
+    snapshot_id: UUID
+    source_type: str
+    evidence_kind: str
+    excerpt_safe: str
+    locator: dict
+    locator_precision: str
