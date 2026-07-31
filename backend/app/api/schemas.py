@@ -74,3 +74,31 @@ class EvidenceResponse(BaseModel):
     excerpt_safe: str
     locator: dict
     locator_precision: str
+
+
+class GitRepositoryCreateRequest(BaseModel):
+    display_url: str = Field(min_length=8, max_length=2000)
+
+
+class GitRepositoryResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    display_url: str
+    read_only: bool
+
+
+class GitSnapshotCreateRequest(BaseModel):
+    repository_id: UUID
+    base_ref: str = Field(min_length=1, max_length=255)
+    target_ref: str = Field(min_length=1, max_length=255)
+    diff_mode: str = Field(pattern="^(TWO_DOT|THREE_DOT)$")
+
+
+class GitSnapshotResponse(BaseModel):
+    id: UUID
+    base_sha: str
+    target_sha: str
+    merge_base_sha: str
+    diff_mode: str
+    diff_hash: str
+    coverage: dict
