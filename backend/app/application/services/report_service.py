@@ -1,5 +1,3 @@
-import hashlib
-import json
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -10,15 +8,15 @@ from app.application.services.common import append_audit_event, require_project_
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, VerificationCycle, VerificationResult, VerificationTask
+from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
 
 
 def _content_hash(*, results: list[VerificationResult], editorial_note: str, dispositions: dict[str, str | None]) -> str:
-    canonical = {
-        "results": [{"id": str(item.id), "status": item.status, "evidence": item.evidence_ids} for item in results],
-        "editorialNote": editorial_note,
-        "dispositions": dispositions,
-    }
-    return f"sha256:{hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()}"
+    return CanonicalJsonReportRenderer().render(
+        results=[{"id": str(item.id), "status": item.status, "evidence": item.evidence_ids} for item in results],
+        editorial_note=editorial_note,
+        dispositions=dispositions,
+    ).content_hash
 
 
 def _draft_cycle_status(results: list[VerificationResult]) -> str:
@@ -148,7 +146,11 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
         raise DomainError("STATE_CONFLICT", "批准记录未绑定当前报告哈希、快照哈希和分析运行")
     existing = session.query(PublishedRecord).filter_by(report_version_id=report.id).one_or_none()
     if existing: return existing
-    record_hash = f"sha256:{hashlib.sha256(f'{report.content_hash}:{report.snapshot_hash}'.encode()).hexdigest()}"
+    record_hash = CanonicalJsonReportRenderer().render(
+        results=[{"reportContentHash": report.content_hash, "snapshotHash": report.snapshot_hash}],
+        editorial_note="published-record-v1",
+        dispositions={},
+    ).content_hash
     record = PublishedRecord(task_id=task.id, cycle_id=cycle.id, report_version_id=report.id, record_no=f"{task.requirement_key}-{cycle.sequence_no}-{report.sequence_no}", record_hash=record_hash, published_by=actor_id)
     session.add(record); session.flush(); report.status = "PUBLISHED"; cycle.business_status = "PUBLISHED"
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="PublishedRecord", aggregate_id=record.id, action="REPORT_PUBLISHED", correlation_id=correlation_id)

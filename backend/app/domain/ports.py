@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from uuid import UUID
 
 from app.domain.model_contracts import EmbeddingRequest, EmbeddingResult, EvidenceAnswerRequest, EvidenceAnswerResult, GenerationRequest, GenerationResult
 
@@ -24,6 +25,20 @@ class FrozenGitDiff:
 class ParsedDocumentChunk:
     content: str
     locator: dict
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    chunk_id: UUID
+    fts_rank: int | None = None
+    fts_score: float | None = None
+    vector_rank: int | None = None
+    vector_score: float | None = None
+
+
+@dataclass(frozen=True)
+class RenderedReport:
+    content_hash: str
 
 
 class GitReaderPort:
@@ -79,4 +94,18 @@ class ArtifactStoragePort:
         raise NotImplementedError
 
     def read_text(self, uri: str) -> str:
+        raise NotImplementedError
+
+
+class RetrieverPort:
+    """Performs scoped hybrid retrieval without leaking ORM concerns to callers."""
+
+    def search(self, *, source_revision_ids: list[UUID], query: str, limit: int, query_embedding: list[float] | None) -> list[RetrievedChunk]:
+        raise NotImplementedError
+
+
+class ReportRendererPort:
+    """Creates a canonical, hashable representation of a report draft."""
+
+    def render(self, *, results: list[dict], editorial_note: str, dispositions: dict[str, str | None]) -> RenderedReport:
         raise NotImplementedError
