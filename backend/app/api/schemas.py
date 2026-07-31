@@ -113,3 +113,14 @@ class AnalysisRunResponse(BaseModel):
     snapshot_id: UUID
     run_status: str
     poll_url: str
+
+
+class ReportResponse(BaseModel):
+    id: UUID
+    cycle_id: UUID
+    status: str
+    content_hash: str
+
+
+class ApprovalRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
