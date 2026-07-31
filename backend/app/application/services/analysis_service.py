@@ -15,6 +15,9 @@ from app.infrastructure.persistence.models import (
     AnalysisRunManifest,
     InputSnapshot,
     InputSnapshotGit,
+    Claim,
+    EvidenceItem,
+    VerificationResult,
     VerificationCycle,
     VerificationTask,
 )
@@ -76,3 +79,46 @@ def get_analysis_run(session: Session, *, run_id: UUID, actor_id: UUID) -> Analy
         raise DomainError("RESOURCE_NOT_FOUND", "分析运行不存在")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
     return run
+
+
+def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> list[dict]:
+    """Read model for the workbench; every returned citation stays in the run snapshot."""
+    run = get_analysis_run(session, run_id=run_id, actor_id=actor_id)
+    snapshot = session.get(InputSnapshot, run.snapshot_id)
+    results = (
+        session.query(VerificationResult, Claim)
+        .join(Claim, Claim.id == VerificationResult.claim_id)
+        .filter(VerificationResult.analysis_run_id == run.id)
+        .order_by(Claim.claim_key)
+        .all()
+    )
+    items: list[dict] = []
+    for result, claim in results:
+        evidence_ids = [UUID(item) for item in result.evidence_ids]
+        evidence = (
+            session.query(EvidenceItem)
+            .filter(EvidenceItem.id.in_(evidence_ids), EvidenceItem.snapshot_id == snapshot.id)
+            .all()
+            if evidence_ids
+            else []
+        )
+        items.append({
+            "id": result.id,
+            "claim_id": claim.id,
+            "claim_key": claim.claim_key,
+            "claim_text": claim.text,
+            "status": result.status,
+            "reason": result.reason,
+            "requires_human_confirmation": result.requires_human_confirmation,
+            "evidence": [
+                {
+                    "id": str(item.id),
+                    "sourceType": item.source_type,
+                    "excerpt": item.excerpt_safe,
+                    "locator": item.locator,
+                    "precision": item.locator_precision,
+                }
+                for item in evidence
+            ],
+        })
+    return items

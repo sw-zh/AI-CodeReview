@@ -117,6 +117,17 @@ class AnalysisRunResponse(BaseModel):
     poll_url: str
 
 
+class AnalysisResultResponse(BaseModel):
+    id: UUID
+    claim_id: UUID
+    claim_key: str
+    claim_text: str
+    status: str
+    reason: str
+    requires_human_confirmation: bool
+    evidence: list[dict]
+
+
 class ReportResponse(BaseModel):
     id: UUID
     cycle_id: UUID
