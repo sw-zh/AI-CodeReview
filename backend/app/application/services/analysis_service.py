@@ -65,3 +65,14 @@ def request_cancel(session: Session, *, run_id: UUID, actor_id: UUID, correlatio
     run.cancel_requested_at = datetime.now(UTC)
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="AnalysisRun", aggregate_id=run.id, action="ANALYSIS_CANCEL_REQUESTED", correlation_id=correlation_id)
     return run
+
+
+def get_analysis_run(session: Session, *, run_id: UUID, actor_id: UUID) -> AnalysisRun:
+    run = session.get(AnalysisRun, run_id)
+    snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
+    cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+    task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    if task is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "分析运行不存在")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    return run

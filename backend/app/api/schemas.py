@@ -106,3 +106,10 @@ class GitSnapshotResponse(BaseModel):
     diff_mode: str
     diff_hash: str
     coverage: dict
+
+
+class AnalysisRunResponse(BaseModel):
+    id: UUID
+    snapshot_id: UUID
+    run_status: str
+    poll_url: str
