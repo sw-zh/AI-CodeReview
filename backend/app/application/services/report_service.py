@@ -5,6 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
+from app.application.services.citation_resolver import resolve_citation
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, VerificationCycle, VerificationResult, VerificationTask
@@ -25,6 +26,17 @@ def _draft_cycle_status(results: list[VerificationResult]) -> str:
     if any(item.requires_human_confirmation for item in results):
         return "NEEDS_CONFIRMATION"
     return "DRAFT_READY"
+
+
+def _assert_publishable_citations(session: Session, *, report: ReportVersion, actor_id: UUID) -> None:
+    """Published report references are re-resolved against the immutable run snapshot."""
+    run = session.get(AnalysisRun, report.run_id)
+    snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
+    if snapshot is None or snapshot.snapshot_hash != report.snapshot_hash:
+        raise DomainError("INPUT_STALE", "报告绑定的输入快照不存在或哈希不一致")
+    for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
+        for evidence_id in item.citation_snapshot.get("evidenceIds", []):
+            resolve_citation(session, evidence_id=UUID(str(evidence_id)), snapshot_id=snapshot.id, actor_id=actor_id)
 
 
 def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UUID, correlation_id: str) -> ReportVersion:
@@ -144,6 +156,7 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
     ).order_by(ApprovalAction.created_at.desc()).first()
     if approval is None:
         raise DomainError("STATE_CONFLICT", "批准记录未绑定当前报告哈希、快照哈希和分析运行")
+    _assert_publishable_citations(session, report=report, actor_id=actor_id)
     existing = session.query(PublishedRecord).filter_by(report_version_id=report.id).one_or_none()
     if existing: return existing
     record_hash = CanonicalJsonReportRenderer().render(
