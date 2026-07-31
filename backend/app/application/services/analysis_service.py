@@ -17,6 +17,7 @@ from app.infrastructure.persistence.models import (
     InputSnapshotGit,
     Claim,
     EvidenceItem,
+    RiskFinding,
     VerificationResult,
     VerificationCycle,
     VerificationTask,
@@ -111,6 +112,7 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
             if evidence_ids
             else []
         )
+        risks = session.query(RiskFinding).filter_by(analysis_run_id=run.id, claim_id=claim.id).all()
         items.append({
             "id": result.id,
             "claim_id": claim.id,
@@ -128,6 +130,16 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
                     "precision": item.locator_precision,
                 }
                 for item in evidence
+            ],
+            "risks": [
+                {
+                    "id": str(item.id),
+                    "severity": item.severity,
+                    "category": item.category,
+                    "findingKind": item.finding_kind,
+                    "recommendation": item.recommendation,
+                }
+                for item in risks
             ],
         })
     return items

@@ -128,6 +128,7 @@ class AnalysisResultResponse(BaseModel):
     reason: str
     requires_human_confirmation: bool
     evidence: list[dict]
+    risks: list[dict] = Field(default_factory=list)
 
 
 class ReportResponse(BaseModel):
