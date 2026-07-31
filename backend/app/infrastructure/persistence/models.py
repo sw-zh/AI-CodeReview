@@ -227,6 +227,64 @@ class AnalysisCoverage(Base):
     reason_code: Mapped[str | None] = mapped_column(String(64))
 
 
+class ReportVersion(TimestampedEntity, Base):
+    __tablename__ = "report_versions"
+    __table_args__ = (UniqueConstraint("cycle_id", "sequence_no", name="uq_report_cycle_sequence"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    cycle_id: Mapped[UUID] = mapped_column(ForeignKey("verification_cycles.id", ondelete="CASCADE"), nullable=False)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
+    parent_report_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("report_versions.id"))
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id"), nullable=False)
+    submitted_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ReportItem(Base):
+    __tablename__ = "report_items"
+    __table_args__ = (UniqueConstraint("report_version_id", "display_order", name="uq_report_item_order"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    report_version_id: Mapped[UUID] = mapped_column(ForeignKey("report_versions.id", ondelete="CASCADE"), nullable=False)
+    result_id: Mapped[UUID] = mapped_column(ForeignKey("verification_results.id"), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    citation_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    disposition: Mapped[str | None] = mapped_column(Text)
+
+
+class ApprovalAction(Base):
+    __tablename__ = "approval_actions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    report_version_id: Mapped[UUID] = mapped_column(ForeignKey("report_versions.id", ondelete="CASCADE"), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    report_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PublishedRecord(Base):
+    __tablename__ = "published_records"
+    __table_args__ = (UniqueConstraint("report_version_id", name="uq_published_report"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("verification_tasks.id"), nullable=False)
+    cycle_id: Mapped[UUID] = mapped_column(ForeignKey("verification_cycles.id"), nullable=False)
+    report_version_id: Mapped[UUID] = mapped_column(ForeignKey("report_versions.id"), nullable=False)
+    record_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    record_hash: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    published_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class InputSnapshot(TimestampedEntity, Base):
     __tablename__ = "input_snapshots"
 
