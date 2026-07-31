@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import get_settings
 from app.core.db import SessionLocal, engine
 from app.infrastructure.persistence.models import AnalysisJob, AnalysisRun, RunEvent
+from app.workflows.verification_graph import run_verification_graph
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,15 @@ def _claim_and_complete_one(worker_id: str, lease_seconds: int) -> None:
             job.attempt_no += 1
             run.run_status = "RUNNING"
             run.started_at = run.started_at or now
-            # A later LangGraph slice replaces this terminal transition with typed workflow execution.
-            job.job_status = "PARTIALLY_COMPLETED"
-            run.run_status = "PARTIALLY_COMPLETED"
+            try:
+                run_verification_graph(session, run.id, run.snapshot_id)
+                job.job_status = "SUCCEEDED"
+                run.run_status = "SUCCEEDED"
+            except Exception:
+                logger.exception("workflow_failed run_id=%s", run.id)
+                job.last_error_code = "WORKFLOW_FAILED"
+                job.job_status = "FAILED" if job.attempt_no >= job.max_attempts else "QUEUED"
+                run.run_status = "FAILED" if job.job_status == "FAILED" else "PARTIALLY_COMPLETED"
             run.finished_at = datetime.now(UTC)
         session.add(RunEvent(run_id=run.id, node_id=None, event_type="JOB_EXECUTION", status=run.run_status, correlation_id=str(run.id), payload_redacted={"workerId": worker_id, "attempt": job.attempt_no}))
 
