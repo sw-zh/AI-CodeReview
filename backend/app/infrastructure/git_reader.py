@@ -53,7 +53,7 @@ class ReadOnlyGitReader(GitReaderPort):
         environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         command = ["git", "-c", "core.hooksPath=/dev/null", "-C", str(cwd), *args]
         try:
-            result = subprocess.run(command, capture_output=True, check=True, text=True, timeout=60, env=environment)
+            result = subprocess.run(command, capture_output=True, check=True, text=False, timeout=60, env=environment)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             raise DomainError("GIT_RANGE_INVALID", "无法读取只读 Git 范围") from exc
-        return result.stdout.strip()
+        return result.stdout.decode("utf-8", errors="replace").strip()
