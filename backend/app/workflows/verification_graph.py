@@ -14,6 +14,7 @@ from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.infrastructure.persistence.models import (
     AnalysisCoverage,
     AnalysisRun,
+    AnalysisRunManifest,
     Claim,
     ClaimEvidenceLink,
     EvidenceItem,
@@ -22,6 +23,7 @@ from app.infrastructure.persistence.models import (
     InputSnapshot,
     InputSnapshotGit,
     ModelCall,
+    RunEvent,
     SourceRevision,
     VerificationCycle,
     VerificationResult,
@@ -115,6 +117,14 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         run = session.get(AnalysisRun, run_id)
         if run is not None and run.cancel_requested_at is not None:
             raise DomainError("RUN_CANCELLED", "analysis run was cancelled at a workflow boundary")
+
+    def observed(node_id: str, handler):
+        def invoke(state: VerificationGraphState) -> VerificationGraphState:
+            session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="RUNNING", correlation_id=str(run_id), payload_redacted={"workflowVersion": state.get("workflow_schema_version", "v1")}))
+            result = handler(state)
+            session.add(RunEvent(run_id=run_id, node_id=node_id, event_type="NODE_EXECUTION", status="SUCCEEDED", correlation_id=str(run_id), payload_redacted={"outputKeys": sorted(result.keys())}))
+            return result
+        return invoke
 
     def load_snapshot(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
@@ -321,6 +331,9 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             session.flush()
             return {}
         except DomainError as exc:
+            manifest = session.query(AnalysisRunManifest).filter_by(run_id=run_id).one_or_none()
+            if manifest is not None:
+                manifest.degradation = {**manifest.degradation, "generation": {"code": exc.code, "promptVersion": request.prompt_version, "schemaVersion": request.schema_version}}
             session.add(ModelCall(
                 run_id=run_id,
                 provider=settings.generation_provider,
@@ -392,12 +405,12 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         return {"verification_result_ids": results}
 
     graph = StateGraph(VerificationGraphState)
-    graph.add_node("load_snapshot", load_snapshot)
-    graph.add_node("collect_git_evidence", collect_git_evidence)
-    graph.add_node("create_claims", create_claims)
-    graph.add_node("link_deterministic", link_deterministic)
-    graph.add_node("propose_model_links", propose_model_links)
-    graph.add_node("reconcile", reconcile)
+    graph.add_node("load_snapshot", observed("load_snapshot", load_snapshot))
+    graph.add_node("collect_git_evidence", observed("collect_git_evidence", collect_git_evidence))
+    graph.add_node("create_claims", observed("create_claims", create_claims))
+    graph.add_node("link_deterministic", observed("link_deterministic", link_deterministic))
+    graph.add_node("propose_model_links", observed("propose_model_links", propose_model_links))
+    graph.add_node("reconcile", observed("reconcile", reconcile))
     graph.add_edge(START, "load_snapshot")
     graph.add_edge("load_snapshot", "collect_git_evidence")
     graph.add_edge("collect_git_evidence", "create_claims")
