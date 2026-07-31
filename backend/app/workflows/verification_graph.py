@@ -1,16 +1,34 @@
+import hashlib
+import re
 from typing import TypedDict
 from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
-from app.infrastructure.persistence.models import AnalysisCoverage, Claim, EvidenceItem, InputSnapshot, VerificationResult
+from app.domain.errors import DomainError
+from app.infrastructure.git_reader import ReadOnlyGitReader
+from app.infrastructure.persistence.models import (
+    AnalysisCoverage,
+    Claim,
+    ClaimEvidenceLink,
+    EvidenceItem,
+    GitRepository,
+    GitSnapshot,
+    InputSnapshot,
+    InputSnapshotGit,
+    SourceRevision,
+    VerificationCycle,
+    VerificationResult,
+    VerificationTask,
+)
 
 
 class VerificationGraphState(TypedDict, total=False):
     analysis_run_id: str
     input_snapshot_id: str
     evidence_ids: list[str]
+    git_evidence_ids: list[str]
     claim_ids: list[str]
     verification_result_ids: list[str]
     coverage_id: str
@@ -18,44 +36,247 @@ class VerificationGraphState(TypedDict, total=False):
     workflow_schema_version: str
 
 
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(api[_-]?key|password|passwd|secret|token)\b(\s*[:=]\s*)([^\s,;]+)"
+)
+_ASCII_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+_KEY_TOKEN = re.compile(r"[A-Za-z]{2,}-\d+")
+_CJK_TOKEN = re.compile(r"[\u4e00-\u9fff]{2,}")
+_STOP_WORDS = {"this", "that", "with", "from", "true", "false", "none", "null", "return", "class", "function", "const", "import", "async", "await"}
+
+
+def _safe_excerpt(text: str, limit: int = 1600) -> str:
+    return _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)[:limit]
+
+
+def _tokens(text: str) -> set[str]:
+    ascii_tokens = {item.lower() for item in _ASCII_TOKEN.findall(text)}
+    key_tokens = {item.lower() for item in _KEY_TOKEN.findall(text)}
+    cjk_tokens = set(_CJK_TOKEN.findall(text))
+    return (ascii_tokens | key_tokens | cjk_tokens) - _STOP_WORDS
+
+
+def _claim_authority(source_role: str) -> int:
+    return {"ACCEPTANCE": 4, "REQUIREMENT": 4, "DESIGN": 3, "MEETING": 2}.get(source_role.upper(), 1)
+
+
+def _parse_hunks(diff: str) -> list[tuple[str, str, int | None, int | None, str]]:
+    """Return path, header, new start/end and the immutable hunk payload."""
+    hunks: list[tuple[str, str, int | None, int | None, str]] = []
+    path: str | None = None
+    header: str | None = None
+    new_start: int | None = None
+    new_line: int | None = None
+    lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal lines
+        if path and header and lines:
+            added = [line[1:] for line in lines if line.startswith("+") and not line.startswith("+++")]
+            payload = "\n".join(added or lines)
+            end = (new_line - 1) if new_line is not None else None
+            hunks.append((path, header, new_start, end, payload))
+        lines = []
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            path = None
+            header = None
+            new_start = None
+            new_line = None
+        elif line.startswith("+++ "):
+            candidate = line[4:].strip()
+            path = candidate[2:] if candidate.startswith("b/") else (None if candidate == "/dev/null" else candidate)
+        elif line.startswith("@@ "):
+            flush()
+            header = line
+            match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            new_start = int(match.group(1)) if match else None
+            new_line = new_start
+        elif header is not None:
+            lines.append(line)
+            if new_line is not None and (line.startswith("+") or line.startswith(" ")) and not line.startswith("+++"):
+                new_line += 1
+    flush()
+    return hunks
+
+
 def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) -> VerificationGraphState:
-    """Small deterministic v1 graph; model enrichment is an adapter added after this safe baseline."""
+    """Persist deterministic evidence first; heuristic matches never become CONFIRMED."""
 
     def load_snapshot(state: VerificationGraphState) -> VerificationGraphState:
-        snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
-        evidence = session.query(EvidenceItem).filter_by(snapshot_id=snapshot.id).all() if snapshot else []
+        evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="DOCUMENT").all()
         return {"evidence_ids": [str(item.id) for item in evidence]}
+
+    def collect_git_evidence(state: VerificationGraphState) -> VerificationGraphState:
+        snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
+        binding = session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none() if snapshot else None
+        git_snapshot = session.get(GitSnapshot, binding.git_snapshot_id) if binding else None
+        cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+        task = session.get(VerificationTask, cycle.task_id) if cycle else None
+        repository = session.get(GitRepository, git_snapshot.repository_id) if git_snapshot else None
+        if not all((snapshot, binding, git_snapshot, task, repository)):
+            return {"node_errors": [*state.get("node_errors", []), "GIT_SNAPSHOT_MISSING"]}
+
+        try:
+            frozen = ReadOnlyGitReader().read_frozen_diff(
+                repository.display_url,
+                base_sha=git_snapshot.base_sha,
+                target_sha=git_snapshot.target_sha,
+                merge_base_sha=git_snapshot.merge_base_sha,
+                diff_mode=git_snapshot.diff_mode,
+                include_paths=git_snapshot.include_paths,
+                exclude_paths=git_snapshot.exclude_paths,
+                expected_diff_hash=binding.diff_hash,
+            )
+        except DomainError as exc:
+            coverage = AnalysisCoverage(
+                analysis_run_id=run_id,
+                scope_kind="GIT",
+                scope_ref="formal-snapshot",
+                state="UNAVAILABLE",
+                reason_code=exc.code,
+            )
+            session.add(coverage)
+            session.flush()
+            return {"coverage_id": str(coverage.id), "node_errors": [*state.get("node_errors", []), exc.code]}
+
+        evidence_ids: list[str] = []
+        for path, header, line_start, line_end, payload in _parse_hunks(frozen.diff):
+            identity = f"{git_snapshot.target_sha}|{path}|{header}|{payload}"
+            content_hash = f"sha256:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+            evidence = session.query(EvidenceItem).filter_by(
+                snapshot_id=snapshot.id,
+                source_type="CODE",
+                commit_sha=git_snapshot.target_sha,
+                content_hash=content_hash,
+            ).one_or_none()
+            if evidence is None:
+                evidence = EvidenceItem(
+                    project_id=task.project_id,
+                    snapshot_id=snapshot.id,
+                    source_type="CODE",
+                    evidence_kind="TOOL_FINDING",
+                    commit_sha=git_snapshot.target_sha,
+                    content_hash=content_hash,
+                    excerpt_safe=_safe_excerpt(payload),
+                    locator={
+                        "commitSha": git_snapshot.target_sha,
+                        "path": path,
+                        "hunk": header,
+                        "side": "NEW",
+                        "lineStart": line_start,
+                        "lineEnd": line_end,
+                    },
+                    locator_precision="EXACT" if line_start is not None else "APPROXIMATE",
+                    extractor_version="git-diff-v1",
+                )
+                session.add(evidence)
+                session.flush()
+            evidence_ids.append(str(evidence.id))
+
+        coverage = AnalysisCoverage(
+            analysis_run_id=run_id,
+            scope_kind="GIT",
+            scope_ref="formal-snapshot",
+            state="ANALYZED" if evidence_ids else "PARTIAL",
+            reason_code=None if evidence_ids else "NO_TEXT_HUNKS",
+        )
+        session.add(coverage)
+        session.flush()
+        return {"git_evidence_ids": evidence_ids, "coverage_id": str(coverage.id)}
 
     def create_claims(state: VerificationGraphState) -> VerificationGraphState:
         claims: list[str] = []
         for index, evidence_id in enumerate(state.get("evidence_ids", []), start=1):
             evidence = session.get(EvidenceItem, UUID(evidence_id))
+            source = session.get(SourceRevision, evidence.source_revision_id) if evidence and evidence.source_revision_id else None
             if evidence is None:
                 continue
-            claim = Claim(analysis_run_id=run_id, claim_key=f"DOC-{index}", claim_type="ACCEPTANCE_CANDIDATE", text=evidence.excerpt_safe, authority_level=3, source_revision_id=evidence.source_revision_id)
-            session.add(claim)
-            session.flush()
+            claim = session.query(Claim).filter_by(analysis_run_id=run_id, claim_key=f"DOC-{index}").one_or_none()
+            if claim is None:
+                claim = Claim(
+                    analysis_run_id=run_id,
+                    claim_key=f"DOC-{index}",
+                    claim_type="ACCEPTANCE_CANDIDATE",
+                    text=evidence.excerpt_safe,
+                    authority_level=_claim_authority(source.source_role) if source else 1,
+                    source_revision_id=evidence.source_revision_id,
+                )
+                session.add(claim)
+                session.flush()
+            link = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id, evidence_id=evidence.id, relation="CONTEXT_ONLY").one_or_none()
+            if link is None:
+                session.add(ClaimEvidenceLink(claim_id=claim.id, evidence_id=evidence.id, relation="CONTEXT_ONLY", reason="资料原文定义待核验目标", confidence=1.0, produced_by="DETERMINISTIC"))
             claims.append(str(claim.id))
         return {"claim_ids": claims}
 
     def reconcile(state: VerificationGraphState) -> VerificationGraphState:
         results: list[str] = []
+        code_evidence = [session.get(EvidenceItem, UUID(item)) for item in state.get("git_evidence_ids", [])]
+        code_evidence = [item for item in code_evidence if item is not None]
         for claim_id in state.get("claim_ids", []):
-            result = VerificationResult(analysis_run_id=run_id, claim_id=UUID(claim_id), protocol_version="v1", status="INSUFFICIENT_EVIDENCE", reason="当前运行仅有资料证据，尚无冻结代码范围的有效支持或反驳证据", evidence_ids=state.get("evidence_ids", []), requires_human_confirmation=False, produced_by="DETERMINISTIC")
-            session.add(result)
-            session.flush()
+            claim = session.get(Claim, UUID(claim_id))
+            if claim is None:
+                continue
+            claim_tokens = _tokens(claim.text)
+            supporting: list[EvidenceItem] = []
+            for evidence in code_evidence:
+                overlap = claim_tokens & _tokens(evidence.excerpt_safe)
+                if not overlap:
+                    continue
+                supporting.append(evidence)
+                link = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id, evidence_id=evidence.id, relation="SUPPORTS").one_or_none()
+                if link is None:
+                    session.add(ClaimEvidenceLink(
+                        claim_id=claim.id,
+                        evidence_id=evidence.id,
+                        relation="SUPPORTS",
+                        reason=f"确定性标识符命中：{', '.join(sorted(overlap)[:5])}",
+                        confidence=0.75,
+                        produced_by="DETERMINISTIC",
+                        requires_human_confirmation=True,
+                    ))
+            evidence_ids = [str(item.id) for item in supporting]
+            if supporting:
+                status = "PARTIALLY_SUPPORTED"
+                reason = "已发现冻结 Git 范围内的确定性标识符命中；语义满足度仍需人工确认"
+                needs_confirmation = True
+            else:
+                status = "INSUFFICIENT_EVIDENCE"
+                reason = "冻结 Git 范围内没有可验证的确定性代码支持证据"
+                needs_confirmation = False
+            result = session.query(VerificationResult).filter_by(analysis_run_id=run_id, claim_id=claim.id).one_or_none()
+            if result is None:
+                result = VerificationResult(
+                    analysis_run_id=run_id,
+                    claim_id=claim.id,
+                    protocol_version="v1",
+                    status=status,
+                    reason=reason,
+                    evidence_ids=evidence_ids,
+                    requires_human_confirmation=needs_confirmation,
+                    produced_by="DETERMINISTIC",
+                )
+                session.add(result)
+                session.flush()
             results.append(str(result.id))
-        coverage = AnalysisCoverage(analysis_run_id=run_id, scope_kind="GIT", scope_ref="formal-snapshot", state="NOT_ANALYZED", reason_code="GIT_ANALYZER_PENDING")
-        session.add(coverage)
-        session.flush()
-        return {"verification_result_ids": results, "coverage_id": str(coverage.id)}
+        return {"verification_result_ids": results}
 
     graph = StateGraph(VerificationGraphState)
     graph.add_node("load_snapshot", load_snapshot)
+    graph.add_node("collect_git_evidence", collect_git_evidence)
     graph.add_node("create_claims", create_claims)
     graph.add_node("reconcile", reconcile)
     graph.add_edge(START, "load_snapshot")
-    graph.add_edge("load_snapshot", "create_claims")
+    graph.add_edge("load_snapshot", "collect_git_evidence")
+    graph.add_edge("collect_git_evidence", "create_claims")
     graph.add_edge("create_claims", "reconcile")
     graph.add_edge("reconcile", END)
-    return graph.compile().invoke({"analysis_run_id": str(run_id), "input_snapshot_id": str(snapshot_id), "workflow_schema_version": "v1", "node_errors": []})
+    return graph.compile().invoke({
+        "analysis_run_id": str(run_id),
+        "input_snapshot_id": str(snapshot_id),
+        "workflow_schema_version": "v1",
+        "node_errors": [],
+    })

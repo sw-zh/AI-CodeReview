@@ -93,13 +93,13 @@ def freeze_preparation_snapshot(
                 parser_version=source.parser_version or "unknown",
             )
         )
-        chunk = (
+        chunks = (
             session.query(DocumentChunk)
             .filter_by(source_revision_id=source.id, index_version=source.parser_version)
             .order_by(DocumentChunk.chunk_index)
-            .first()
+            .all()
         )
-        if chunk is not None:
+        for chunk in chunks:
             session.add(
                 EvidenceItem(
                     project_id=task.project_id,
@@ -152,8 +152,8 @@ def freeze_formal_snapshot(
     session.add(snapshot); session.flush()
     for source in sources:
         session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
-        chunk = session.query(DocumentChunk).filter_by(source_revision_id=source.id, index_version=source.parser_version).order_by(DocumentChunk.chunk_index).first()
-        if chunk is not None:
+        chunks = session.query(DocumentChunk).filter_by(source_revision_id=source.id, index_version=source.parser_version).order_by(DocumentChunk.chunk_index).all()
+        for chunk in chunks:
             session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="DOCUMENT", evidence_kind="RAW_FACT", source_revision_id=source.id, content_hash=chunk.text_hash, excerpt_safe=chunk.content[:1000], locator={"sourceRevisionId": str(source.id), "chunkId": str(chunk.id), "chunkIndex": chunk.chunk_index, **chunk.locator}, locator_precision="EXACT", extractor_version=source.parser_version or "markdown-text-v1"))
     session.add(InputSnapshotGit(snapshot_id=snapshot.id, git_snapshot_id=git.id, diff_hash=git.diff_hash))
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id)})

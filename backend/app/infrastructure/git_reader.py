@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from app.core.config import get_settings
 from app.domain.errors import DomainError
-from app.domain.ports import FrozenGitRange, GitReaderPort
+from app.domain.ports import FrozenGitDiff, FrozenGitRange, GitReaderPort
 
 
 class ReadOnlyGitReader(GitReaderPort):
@@ -40,6 +40,41 @@ class ReadOnlyGitReader(GitReaderPort):
             merge_base_sha=merge_base_sha,
             diff_hash=f"sha256:{hashlib.sha256(diff.encode('utf-8')).hexdigest()}",
             coverage=coverage,
+        )
+
+    def read_frozen_diff(
+        self,
+        repository_url: str,
+        *,
+        base_sha: str,
+        target_sha: str,
+        merge_base_sha: str,
+        diff_mode: str,
+        include_paths: list[str],
+        exclude_paths: list[str],
+        expected_diff_hash: str,
+    ) -> FrozenGitDiff:
+        """Re-read the range using frozen SHAs, never the user-selected branch names."""
+        repository = self._ensure_read_only_clone(repository_url)
+        self._run(repository, "cat-file", "-e", f"{base_sha}^{{commit}}")
+        self._run(repository, "cat-file", "-e", f"{target_sha}^{{commit}}")
+        comparison = f"{base_sha}..{target_sha}" if diff_mode == "TWO_DOT" else f"{merge_base_sha}..{target_sha}"
+        pathspecs = [*include_paths, *(f":(exclude){path}" for path in exclude_paths)]
+        suffix = ("--", *pathspecs) if pathspecs else ()
+        diff = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--binary", comparison, *suffix)
+        actual_hash = f"sha256:{hashlib.sha256(diff.encode('utf-8')).hexdigest()}"
+        if actual_hash != expected_diff_hash:
+            raise DomainError("INPUT_STALE", "冻结 Git 差异校验失败，不能使用已变化的输入继续分析")
+        name_status = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", comparison, *suffix)
+        return FrozenGitDiff(
+            diff=diff,
+            coverage={
+                "comparison": comparison,
+                "changedFiles": [line for line in name_status.splitlines() if line],
+                "includePaths": include_paths,
+                "excludePaths": exclude_paths,
+                "skipped": [],
+            },
         )
 
     def _ensure_read_only_clone(self, repository_url: str) -> Path:
