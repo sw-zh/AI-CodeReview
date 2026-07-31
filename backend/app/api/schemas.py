@@ -131,8 +131,17 @@ class AnalysisResultResponse(BaseModel):
 class ReportResponse(BaseModel):
     id: UUID
     cycle_id: UUID
+    sequence_no: int
     status: str
     content_hash: str
+    editorial_note: str
+    version: int
+
+
+class ReportDraftUpdateRequest(BaseModel):
+    editorial_note: str = Field(default="", max_length=8000)
+    item_dispositions: dict[UUID, str | None] = Field(default_factory=dict, max_length=500)
+    expected_version: int = Field(ge=1)
 
 
 class ApprovalRequest(BaseModel):

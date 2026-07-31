@@ -241,6 +241,7 @@ class ReportVersion(TimestampedEntity, Base):
     run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id"), nullable=False)
     submitted_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    editorial_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 

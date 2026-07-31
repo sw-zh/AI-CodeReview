@@ -10,7 +10,7 @@ type Snapshot = { id: string; snapshot_hash: string; purpose: string }
 type Run = { id: string; snapshot_id: string; run_status: string; poll_url: string }
 type Evidence = { id: string; sourceType: string; excerpt: string; locator: Record<string, unknown>; precision: string }
 type Result = { id: string; claim_id: string; claim_key: string; claim_text: string; status: string; reason: string; requires_human_confirmation: boolean; evidence: Evidence[] }
-type Report = { id: string; status: string; content_hash: string }
+type Report = { id: string; status: string; content_hash: string; editorial_note: string; version: number }
 
 const token = ref(sessionStorage.getItem('accessToken') ?? '')
 const email = ref('submitter@example.local')
@@ -34,6 +34,7 @@ const formalSnapshot = ref<Snapshot | null>(null)
 const run = ref<Run | null>(null)
 const results = ref<Result[]>([])
 const report = ref<Report | null>(null)
+const reportNote = ref('')
 const selectedResult = ref<Result | null>(null)
 const question = ref('这条核验结论的依据是什么？')
 const answer = ref<{ answer: string; fact_status: string; citations: Array<Record<string, unknown>> } | null>(null)
@@ -173,7 +174,17 @@ async function createDraft() {
   busy.value = true
   try {
     report.value = await request<Report>(`/cycles/${task.value.cycle_id}/reports/from-run/${run.value.id}`, { method: 'POST', headers: headers() })
+    reportNote.value = report.value.editorial_note
     message.value = '报告草稿已从当前运行的结果快照生成。'
+  } catch (error) { showError(error) } finally { busy.value = false }
+}
+
+async function saveDraft() {
+  if (!report.value) return
+  busy.value = true
+  try {
+    report.value = await request<Report>(`/report-versions/${report.value.id}`, { method: 'PUT', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ editorial_note: reportNote.value, item_dispositions: {}, expected_version: report.value.version }) })
+    message.value = '草稿说明已保存，报告哈希已更新。'
   } catch (error) { showError(error) } finally { busy.value = false }
 }
 
@@ -244,7 +255,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
       <aside class="inspector-panel panel">
         <div class="panel-heading"><div><p class="overline">03 · 复核</p><h2>核验详情</h2></div></div>
         <div class="tabs"><button :class="{ active: activeTab === 'record' }" @click="activeTab = 'record'">交付记录</button><button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">证据问答</button></div>
-        <template v-if="activeTab === 'record'"><div v-if="selectedResult" class="evidence-detail"><p class="detail-label">当前 Claim</p><strong>{{ selectedResult.claim_key }}</strong><p>{{ selectedResult.claim_text }}</p><div v-for="evidence in selectedResult.evidence" :key="evidence.id" class="evidence-row"><span>{{ evidence.sourceType }}</span><div><strong>{{ String(evidence.locator.path ?? '文件级定位') }}</strong><p>{{ evidence.excerpt }}</p><small>{{ evidence.precision }} · {{ String(evidence.locator.hunk ?? '') }}</small></div></div></div><div class="report-actions"><p class="detail-label">报告版本</p><strong>{{ report ? `${report.status} · ${report.content_hash.slice(0, 18)}…` : '尚未生成' }}</strong><button :disabled="busy || !run || !['SUCCEEDED', 'PARTIALLY_COMPLETED'].includes(run.run_status) || !!report" @click="createDraft">从结果创建草稿</button><button :disabled="busy || report?.status !== 'DRAFT'" @click="reportAction('submit')">提交审核</button><label>审核理由<textarea v-model="reviewReason" rows="2"></textarea></label><div class="review-actions"><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('approve')">批准</button><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('request-changes')">要求补证</button></div><button class="publish-action" :disabled="busy || report?.status !== 'APPROVED'" @click="reportAction('publish')">发布交付记录</button><small>后端会拒绝提交者自审；批准和发布始终以服务端状态为准。</small></div></template>
+        <template v-if="activeTab === 'record'"><div v-if="selectedResult" class="evidence-detail"><p class="detail-label">当前 Claim</p><strong>{{ selectedResult.claim_key }}</strong><p>{{ selectedResult.claim_text }}</p><div v-for="evidence in selectedResult.evidence" :key="evidence.id" class="evidence-row"><span>{{ evidence.sourceType }}</span><div><strong>{{ String(evidence.locator.path ?? '文件级定位') }}</strong><p>{{ evidence.excerpt }}</p><small>{{ evidence.precision }} · {{ String(evidence.locator.hunk ?? '') }}</small></div></div></div><div class="report-actions"><p class="detail-label">报告版本</p><strong>{{ report ? `${report.status} · ${report.content_hash.slice(0, 18)}…` : '尚未生成' }}</strong><button :disabled="busy || !run || !['SUCCEEDED', 'PARTIALLY_COMPLETED'].includes(run.run_status) || !!report" @click="createDraft">从结果创建草稿</button><label>草稿说明<textarea v-model="reportNote" :disabled="report?.status !== 'DRAFT'" rows="3"></textarea></label><button :disabled="busy || report?.status !== 'DRAFT'" @click="saveDraft">保存草稿</button><button :disabled="busy || report?.status !== 'DRAFT'" @click="reportAction('submit')">提交审核</button><label>审核理由<textarea v-model="reviewReason" rows="2"></textarea></label><div class="review-actions"><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('approve')">批准</button><button :disabled="busy || report?.status !== 'SUBMITTED'" @click="reportAction('request-changes')">要求补证</button></div><button class="publish-action" :disabled="busy || report?.status !== 'APPROVED'" @click="reportAction('publish')">发布交付记录</button><small>后端会拒绝提交者自审；批准和发布始终以服务端状态为准。</small></div></template>
         <template v-else><div class="question-panel"><p>问答只读取当前快照中已授权的证据，不会修改任务、审批或发布状态。</p><textarea v-model="question" rows="4"></textarea><button :disabled="busy || !resultEvidenceIds.length" @click="askEvidence">基于已选证据回答</button><div v-if="answer" class="answer"><span :class="['result-status', answer.fact_status.toLowerCase()]">{{ answer.fact_status }}</span><p>{{ answer.answer }}</p><small>{{ answer.citations.length }} 条可解析引用</small></div></div></template>
       </aside>
     </section>
