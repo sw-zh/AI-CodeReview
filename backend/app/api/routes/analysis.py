@@ -6,7 +6,7 @@ from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, ide
 from app.api.schemas import AnalysisRunResponse
 from app.application.services.analysis_service import get_analysis_run, request_cancel, start_analysis_run
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import AnalysisRun
+from app.infrastructure.persistence.models import RunEvent
 
 snapshot_router = APIRouter(prefix="/input-snapshots/{snapshot_id}/analysis-runs")
 run_router = APIRouter(prefix="/analysis-runs")
@@ -39,3 +39,13 @@ def cancel(run_id: UUID, request: Request, session: SessionDep, user: CurrentUse
         return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
     except DomainError as exc:
         session.rollback(); raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
+
+
+@run_router.get("/{run_id}/events")
+def events(run_id: UUID, session: SessionDep, user: CurrentUserDep) -> dict:
+    try:
+        get_analysis_run(session, run_id=run_id, actor_id=user.id)
+        items = session.query(RunEvent).filter_by(run_id=run_id).order_by(RunEvent.created_at).all()
+        return {"items": [{"id": str(item.id), "nodeId": item.node_id, "eventType": item.event_type, "status": item.status, "createdAt": item.created_at.isoformat()} for item in items]}
+    except DomainError as exc:
+        raise HTTPException(status_code=404 if exc.code == "RESOURCE_NOT_FOUND" else 403, detail={"code": exc.code, "message": exc.message})
