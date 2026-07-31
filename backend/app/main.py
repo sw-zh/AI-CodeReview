@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
-from app.infrastructure.idempotency import complete, replay_or_reserve
+from app.infrastructure.idempotency import abort, complete, replay_or_reserve
 
 
 @asynccontextmanager
@@ -39,7 +39,7 @@ async def idempotency_middleware(request, call_next):
         body = b"".join([chunk async for chunk in response.body_iterator])
         return complete(record.id, request_hash, response, body)
     except Exception:
-        # An unhandled failure is deliberately not replayed as a completed command.
+        abort(record.id, request_hash)
         raise
 
 

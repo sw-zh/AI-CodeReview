@@ -65,3 +65,11 @@ def complete(record_id, request_hash: str, response: Response, body: bytes) -> R
             record.completed_at = datetime.now(UTC)
     headers = {key: value for key, value in response.headers.items() if key.lower() not in {"content-length", "content-type"}}
     return Response(content=body, status_code=response.status_code, media_type=response.media_type or "application/json", headers=headers)
+
+
+def abort(record_id, request_hash: str) -> None:
+    """Do not leave a failed handler permanently reserving a client retry key."""
+    with SessionLocal.begin() as session:
+        record = session.get(IdempotencyRecord, record_id)
+        if record is not None and record.request_hash == request_hash and record.state == "IN_PROGRESS":
+            session.delete(record)

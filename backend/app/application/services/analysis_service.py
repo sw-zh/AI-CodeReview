@@ -47,8 +47,8 @@ def start_analysis_run(
         "generationModel": settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1",
     }
     config_hash = f"sha256:{hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()}"
-    existing_run = session.query(AnalysisRun).filter_by(snapshot_id=snapshot.id, analysis_config_hash=config_hash).one_or_none()
-    if existing_run is not None and existing_run.run_status in {"QUEUED", "RUNNING"}:
+    existing_run = session.query(AnalysisRun).filter(AnalysisRun.snapshot_id == snapshot.id, AnalysisRun.analysis_config_hash == config_hash, AnalysisRun.run_status.in_(("QUEUED", "RUNNING"))).one_or_none()
+    if existing_run is not None:
         return existing_run
     manifest_hash = f"sha256:{hashlib.sha256(json.dumps({**config, 'snapshot': snapshot.snapshot_hash}, sort_keys=True).encode()).hexdigest()}"
     run = AnalysisRun(snapshot_id=snapshot.id, analysis_config_hash=config_hash, manifest_hash=manifest_hash, checkpoint_ns=f"run-{uuid4()}")

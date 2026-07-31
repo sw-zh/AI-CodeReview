@@ -1,18 +1,22 @@
-"""Worker process baseline; job polling is added with the AnalysisJob aggregate."""
+"""Durable worker: short claim transaction, visible lease heartbeat, bounded retry."""
 
 import logging
+import threading
 import time
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
-from sqlalchemy import or_, text
+from sqlalchemy import and_, or_, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal, engine
+from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import AnalysisJob, AnalysisRun, InputSnapshot, RunEvent, VerificationCycle, VerificationResult
 from app.workflows.verification_graph import run_verification_graph
 
 logger = logging.getLogger(__name__)
+_RETRY_SECONDS = (30, 120, 300)
 
 
 def main() -> None:
@@ -30,64 +34,145 @@ def main() -> None:
         time.sleep(15)
 
 
-def _claim_and_complete_one(worker_id: str, lease_seconds: int) -> None:
-    """Claim one job, persist graph output, then derive only the cycle's business view."""
+class _LeaseHeartbeat:
+    def __init__(self, job_id: UUID, worker_id: str, lease_seconds: int) -> None:
+        self._job_id = job_id
+        self._worker_id = worker_id
+        self._lease_seconds = lease_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"lease-{job_id}")
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+
+    def _run(self) -> None:
+        interval = max(5, min(15, self._lease_seconds // 3))
+        while not self._stop.wait(interval):
+            now = datetime.now(UTC)
+            try:
+                with SessionLocal.begin() as session:
+                    job = session.get(AnalysisJob, self._job_id)
+                    if job is None or job.job_status != "RUNNING" or job.lease_owner != self._worker_id:
+                        return
+                    job.heartbeat_at = now
+                    job.lease_expires_at = now + timedelta(seconds=self._lease_seconds)
+            except SQLAlchemyError:
+                logger.exception("lease_heartbeat_failed job_id=%s", self._job_id)
+
+
+def _claim_one(worker_id: str, lease_seconds: int) -> tuple[UUID, UUID] | None:
     now = datetime.now(UTC)
     with SessionLocal.begin() as session:
         job = (
             session.query(AnalysisJob)
             .filter(
-                or_(AnalysisJob.job_status == "QUEUED", (AnalysisJob.job_status == "RUNNING") & (AnalysisJob.lease_expires_at < now))
+                or_(
+                    and_(AnalysisJob.job_status == "QUEUED", or_(AnalysisJob.available_at.is_(None), AnalysisJob.available_at <= now)),
+                    and_(AnalysisJob.job_status == "RUNNING", AnalysisJob.lease_expires_at < now),
+                )
             )
-            .order_by(AnalysisJob.created_at)
+            .order_by(AnalysisJob.available_at.nullsfirst(), AnalysisJob.created_at)
             .with_for_update(skip_locked=True)
             .first()
         )
         if job is None:
-            return
+            return None
         run = session.get(AnalysisRun, job.run_id)
         if run is None:
             job.job_status = "FAILED"
             job.last_error_code = "RUN_MISSING"
-            return
+            return None
         if run.cancel_requested_at is not None:
-            job.job_status = "CANCELLED"
-            run.run_status = "CANCELLED"
+            _cancel(session, job, run, now, worker_id)
+            return None
+        job.job_status = "RUNNING"
+        job.lease_owner = worker_id
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.heartbeat_at = now
+        job.available_at = None
+        job.attempt_no += 1
+        run.run_status = "RUNNING"
+        run.started_at = run.started_at or now
+        session.add(RunEvent(run_id=run.id, node_id=None, event_type="JOB_CLAIMED", status="RUNNING", correlation_id=str(run.id), payload_redacted={"workerId": worker_id, "attempt": job.attempt_no}))
+        return job.id, run.id
+
+
+def _claim_and_complete_one(worker_id: str, lease_seconds: int) -> None:
+    claimed = _claim_one(worker_id, lease_seconds)
+    if claimed is None:
+        return
+    job_id, run_id = claimed
+    heartbeat = _LeaseHeartbeat(job_id, worker_id, lease_seconds)
+    heartbeat.start()
+    graph_state: dict | None = None
+    failure: Exception | None = None
+    try:
+        with SessionLocal.begin() as session:
+            run = session.get(AnalysisRun, run_id)
+            if run is None:
+                raise DomainError("RUN_MISSING", "analysis run is missing")
+            graph_state = run_verification_graph(session, run.id, run.snapshot_id)
+    except Exception as exc:
+        failure = exc
+        logger.exception("workflow_failed run_id=%s", run_id)
+    finally:
+        heartbeat.stop()
+    _complete(job_id, run_id, worker_id, graph_state, failure)
+
+
+def _complete(job_id: UUID, run_id: UUID, worker_id: str, graph_state: dict | None, failure: Exception | None) -> None:
+    now = datetime.now(UTC)
+    with SessionLocal.begin() as session:
+        job = session.get(AnalysisJob, job_id)
+        run = session.get(AnalysisRun, run_id)
+        if job is None or run is None or job.lease_owner != worker_id:
+            return
+        if run.cancel_requested_at is not None or (isinstance(failure, DomainError) and failure.code == "RUN_CANCELLED"):
+            _cancel(session, job, run, now, worker_id)
+            return
+        if failure is None:
+            job.job_status = "SUCCEEDED"
+            run.run_status = "PARTIALLY_COMPLETED" if graph_state and graph_state.get("node_errors") else "SUCCEEDED"
             run.finished_at = now
-            snapshot = session.get(InputSnapshot, run.snapshot_id)
-            cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
-            if cycle is not None:
-                cycle.business_status = "DRAFT"
+            job.lease_owner = None
+            job.lease_expires_at = None
+            _derive_cycle_status(session, run)
         else:
-            job.job_status = "RUNNING"
-            job.lease_owner = worker_id
-            job.lease_expires_at = now + timedelta(seconds=lease_seconds)
-            job.heartbeat_at = now
-            job.attempt_no += 1
-            run.run_status = "RUNNING"
-            run.started_at = run.started_at or now
-            run_id = run.id
-            try:
-                # A graph failure must not poison the durable lease update in the outer transaction.
-                with session.begin_nested():
-                    graph_state = run_verification_graph(session, run.id, run.snapshot_id)
-                job.job_status = "SUCCEEDED"
-                run.run_status = "PARTIALLY_COMPLETED" if graph_state.get("node_errors") else "SUCCEEDED"
+            job.last_error_code = "WORKFLOW_FAILED"
+            if job.attempt_no >= job.max_attempts:
+                job.job_status = "FAILED"
+                run.run_status = "FAILED"
+                run.finished_at = now
+                job.lease_owner = None
+                job.lease_expires_at = None
                 _derive_cycle_status(session, run)
-            except Exception:
-                logger.exception("workflow_failed run_id=%s", run_id)
-                job.last_error_code = "WORKFLOW_FAILED"
-                job.job_status = "FAILED" if job.attempt_no >= job.max_attempts else "QUEUED"
-                run.run_status = "FAILED" if job.job_status == "FAILED" else "QUEUED"
-                if run.run_status == "FAILED":
-                    _derive_cycle_status(session, run)
-            if run.run_status in {"SUCCEEDED", "PARTIALLY_COMPLETED", "FAILED"}:
-                run.finished_at = datetime.now(UTC)
-        session.add(RunEvent(run_id=run.id, node_id=None, event_type="JOB_EXECUTION", status=run.run_status, correlation_id=str(run.id), payload_redacted={"workerId": worker_id, "attempt": job.attempt_no}))
+            else:
+                job.job_status = "QUEUED"
+                job.available_at = now + timedelta(seconds=_RETRY_SECONDS[min(job.attempt_no - 1, len(_RETRY_SECONDS) - 1)])
+                job.lease_owner = None
+                job.lease_expires_at = None
+                run.run_status = "QUEUED"
+        session.add(RunEvent(run_id=run.id, node_id=None, event_type="JOB_EXECUTION", status=run.run_status, correlation_id=str(run.id), payload_redacted={"workerId": worker_id, "attempt": job.attempt_no, "error": job.last_error_code}))
+
+
+def _cancel(session, job: AnalysisJob, run: AnalysisRun, now: datetime, worker_id: str) -> None:
+    job.job_status = "CANCELLED"
+    job.lease_owner = None
+    job.lease_expires_at = None
+    run.run_status = "CANCELLED"
+    run.finished_at = now
+    snapshot = session.get(InputSnapshot, run.snapshot_id)
+    cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+    if cycle is not None:
+        cycle.business_status = "DRAFT"
+    session.add(RunEvent(run_id=run.id, node_id=None, event_type="JOB_CANCELLED", status="CANCELLED", correlation_id=str(run.id), payload_redacted={"workerId": worker_id}))
 
 
 def _derive_cycle_status(session, run: AnalysisRun) -> None:
-    """Run status remains technical; the cycle exposes evidence readiness separately."""
     snapshot = session.get(InputSnapshot, run.snapshot_id)
     cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
     if cycle is None:

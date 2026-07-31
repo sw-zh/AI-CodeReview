@@ -13,6 +13,7 @@ from app.infrastructure.generation_model import create_generation_model
 from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.infrastructure.persistence.models import (
     AnalysisCoverage,
+    AnalysisRun,
     Claim,
     ClaimEvidenceLink,
     EvidenceItem,
@@ -110,12 +111,19 @@ def _parse_hunks(diff: str) -> list[tuple[str, str, int | None, int | None, str]
 def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) -> VerificationGraphState:
     """Persist deterministic evidence first; heuristic matches never become CONFIRMED."""
 
+    def ensure_not_cancelled() -> None:
+        run = session.get(AnalysisRun, run_id)
+        if run is not None and run.cancel_requested_at is not None:
+            raise DomainError("RUN_CANCELLED", "analysis run was cancelled at a workflow boundary")
+
     def load_snapshot(state: VerificationGraphState) -> VerificationGraphState:
+        ensure_not_cancelled()
         document_evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="DOCUMENT").all()
         external_evidence = session.query(EvidenceItem).filter(EvidenceItem.snapshot_id == UUID(state["input_snapshot_id"]), EvidenceItem.source_type.in_(("TEST", "BUILD"))).all()
         return {"evidence_ids": [str(item.id) for item in document_evidence], "external_evidence_ids": [str(item.id) for item in external_evidence]}
 
     def collect_git_evidence(state: VerificationGraphState) -> VerificationGraphState:
+        ensure_not_cancelled()
         snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
         binding = session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none() if snapshot else None
         git_snapshot = session.get(GitSnapshot, binding.git_snapshot_id) if binding else None
@@ -194,6 +202,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         return {"git_evidence_ids": evidence_ids, "coverage_id": str(coverage.id)}
 
     def create_claims(state: VerificationGraphState) -> VerificationGraphState:
+        ensure_not_cancelled()
         claims: list[str] = []
         for index, evidence_id in enumerate(state.get("evidence_ids", []), start=1):
             evidence = session.get(EvidenceItem, UUID(evidence_id))
@@ -219,6 +228,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         return {"claim_ids": claims}
 
     def link_deterministic(state: VerificationGraphState) -> VerificationGraphState:
+        ensure_not_cancelled()
         actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", [])]]
         actual_evidence = [item for item in actual_evidence if item is not None]
         for claim_id in state.get("claim_ids", []):
@@ -248,6 +258,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         return {}
 
     def propose_model_links(state: VerificationGraphState) -> VerificationGraphState:
+        ensure_not_cancelled()
         actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", [])]]
         actual_evidence = [item for item in actual_evidence if item is not None]
         claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
@@ -325,6 +336,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             return {"node_errors": [*state.get("node_errors", []), exc.code]}
 
     def reconcile(state: VerificationGraphState) -> VerificationGraphState:
+        ensure_not_cancelled()
         results: list[str] = []
         for claim_id in state.get("claim_ids", []):
             claim = session.get(Claim, UUID(claim_id))

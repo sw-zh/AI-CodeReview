@@ -430,6 +430,7 @@ class AnalysisJob(TimestampedEntity, Base):
     lease_owner: Mapped[str | None] = mapped_column(String(128))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     last_error_code: Mapped[str | None] = mapped_column(String(64))
