@@ -386,7 +386,7 @@ class ModelCall(Base):
     __tablename__ = "model_calls"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[UUID | None] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"))
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)

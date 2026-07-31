@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.domain.model_contracts import EmbeddingRequest, EmbeddingResult, GenerationRequest, GenerationResult
+from app.domain.model_contracts import EmbeddingRequest, EmbeddingResult, EvidenceAnswerRequest, EvidenceAnswerResult, GenerationRequest, GenerationResult
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,9 @@ class GenerationModelPort:
     """Generation boundary: implementations may propose links but never final results."""
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
+        raise NotImplementedError
+
+    def answer_evidence(self, request: EvidenceAnswerRequest) -> EvidenceAnswerResult:
         raise NotImplementedError
 
 

@@ -45,3 +45,25 @@ class EmbeddingResult:
     provider: str
     model: str
     vector: list[float]
+
+
+class EvidenceAnswerPayload(BaseModel):
+    answer: str = Field(min_length=1, max_length=4000)
+    fact_status: Literal["CONFIRMED", "PARTIALLY_SUPPORTED", "CONFLICTING", "INSUFFICIENT_EVIDENCE", "INFERENCE_REQUIRES_CONFIRMATION"]
+
+
+@dataclass(frozen=True)
+class EvidenceAnswerRequest:
+    question: str
+    prompt_version: str
+    schema_version: str
+    evidence: list[dict]
+
+
+@dataclass(frozen=True)
+class EvidenceAnswerResult:
+    provider: str
+    model: str
+    attempts: int
+    latency_ms: int
+    payload: EvidenceAnswerPayload
