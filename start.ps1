@@ -9,6 +9,8 @@ Set-StrictMode -Version Latest
 $repoRoot = $PSScriptRoot
 $composeFile = Join-Path $repoRoot "infra/docker-compose.yml"
 $environmentFile = Join-Path $repoRoot "infra/.env"
+$composeProject = Split-Path (Split-Path $composeFile -Parent) -Leaf
+$postgresDataVolume = "${composeProject}_postgres-data"
 
 function New-LocalSecret {
     param([int]$ByteLength)
@@ -69,6 +71,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (-not (Test-Path -LiteralPath $environmentFile)) {
+    & docker volume inspect $postgresDataVolume *> $null
+    if ($LASTEXITCODE -eq 0) {
+        throw "Existing PostgreSQL data volume '$postgresDataVolume' was found, but infra/.env is missing. Restore the original POSTGRES_PASSWORD in infra/.env or remove that volume only when its data can be discarded."
+    }
+
     $postgresPassword = New-LocalSecret -ByteLength 24
     $jwtSecret = New-LocalSecret -ByteLength 48
     @"
