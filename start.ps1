@@ -28,7 +28,7 @@ function New-LocalSecret {
 }
 
 function Invoke-Compose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArguments)
+    param([string[]]$ComposeArguments)
 
     & docker compose --env-file $environmentFile -f $composeFile @ComposeArguments
     if ($LASTEXITCODE -ne 0) {
@@ -91,29 +91,29 @@ EMBEDDING_PROVIDER=fake
 }
 
 Write-Host "Starting PostgreSQL..."
-Invoke-Compose up -d postgres
+Invoke-Compose -ComposeArguments @("up", "-d", "postgres")
 
 Write-Host "Running database migrations..."
 if ($Rebuild) {
-    Invoke-Compose run --rm --build migrate
+    Invoke-Compose -ComposeArguments @("run", "--rm", "--build", "migrate")
 }
 else {
-    Invoke-Compose run --rm migrate
+    Invoke-Compose -ComposeArguments @("run", "--rm", "migrate")
 }
 
 Write-Host "Starting API, worker, and frontend..."
 if ($Rebuild) {
-    Invoke-Compose up -d --build api worker frontend
+    Invoke-Compose -ComposeArguments @("up", "-d", "--build", "api", "worker", "frontend")
 }
 else {
-    Invoke-Compose up -d api worker frontend
+    Invoke-Compose -ComposeArguments @("up", "-d", "api", "worker", "frontend")
 }
 
 Write-Host "Waiting for API readiness..."
 Wait-ForApiReady
 
 Write-Host "Creating demo users..."
-Invoke-Compose exec -T api python -m app.management.seed_demo_users
+Invoke-Compose -ComposeArguments @("exec", "-T", "api", "python", "-m", "app.management.seed_demo_users")
 
 Write-Host "Startup complete."
 Write-Host "Frontend: http://localhost:5173"
