@@ -1,0 +1,7 @@
+<script setup lang="ts">
+import { verificationTasks } from '../features/workbench/workbench-fixtures'
+</script>
+
+<template>
+  <section class="page page-tasks"><header class="page-heading"><div><h1>任务中心</h1><p>定位核验任务与最新分析运行，进入 Notebook 完成审查。</p></div><button class="primary-button" type="button">创建核验任务</button></header><div class="filter-row task-filters"><select aria-label="项目"><option>全部项目</option></select><div class="filter-tabs"><button class="active" type="button">全部</button><button type="button">待分配</button><button type="button">进行中</button><button type="button">待复核</button><button type="button">已完成</button></div><select aria-label="负责人"><option>全部负责人</option></select><select aria-label="报告状态"><option>全部报告状态</option></select><input placeholder="搜索任务标题 / 编号" /></div><section class="surface"><div class="data-table task-table"><div class="table-row table-header"><span>任务标题</span><span>输入快照</span><span>最新分析运行</span><span>报告状态</span><span>风险摘要</span><span>负责人</span><span>更新时间</span></div><RouterLink v-for="task in verificationTasks" :key="task.id" class="table-row table-button" :to="`/tasks/${task.id}/notebook`"><strong>{{ task.title }}</strong><span>{{ task.snapshot }}</span><span>{{ task.analysisRun }}</span><span>{{ task.reportStatus }}</span><span>{{ task.riskSummary }}</span><span>{{ task.owner }}</span><time>{{ task.updatedAt }}</time></RouterLink></div></section></section>
+</template>
