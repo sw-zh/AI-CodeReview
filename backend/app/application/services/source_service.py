@@ -95,3 +95,91 @@ def create_source_revision(
         payload={"contentHash": source.content_hash, "revisionNo": revision_no},
     )
     return source
+
+
+def list_project_sources(
+    session: Session, *, project_id: UUID, actor_id: UUID
+) -> list[dict]:
+    require_project_role(
+        session, project_id, actor_id,
+        {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN},
+    )
+    from app.infrastructure.persistence.models import InputSnapshotSource
+    sources = (
+        session.query(SourceRevision)
+        .filter_by(project_id=project_id)
+        .order_by(SourceRevision.created_at.desc())
+        .all()
+    )
+    frozen: set[UUID] = set()
+    if sources:
+        rows = (
+            session.query(InputSnapshotSource.source_revision_id)
+            .filter(InputSnapshotSource.source_revision_id.in_([s.id for s in sources]))
+            .distinct()
+            .all()
+        )
+        frozen = {row[0] for row in rows}
+    return [
+        {
+            "id": s.id,
+            "project_id": s.project_id,
+            "logical_name": s.logical_name,
+            "source_role": s.source_role,
+            "revision_no": s.revision_no,
+            "content_hash": s.content_hash,
+            "media_type": s.media_type,
+            "processing_status": s.processing_status,
+            "parser_version": s.parser_version,
+            "in_snapshot": s.id in frozen,
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+        }
+        for s in sources
+    ]
+
+
+def read_source_content(
+    session: Session, *, project_id: UUID, source_id: UUID, actor_id: UUID
+) -> dict:
+    require_project_role(
+        session, project_id, actor_id,
+        {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN},
+    )
+    source = session.get(SourceRevision, source_id)
+    if source is None or source.project_id != project_id:
+        raise DomainError("RESOURCE_NOT_FOUND", "资料版本不存在")
+    storage = LocalArtifactStorage(get_settings().artifact_root)
+    return {
+        "content": storage.read_text(source.artifact_uri),
+        "media_type": source.media_type,
+        "logical_name": source.logical_name,
+    }
+
+
+def list_source_chunks(
+    session: Session, *, project_id: UUID, source_id: UUID, actor_id: UUID
+) -> list[dict]:
+    require_project_role(
+        session, project_id, actor_id,
+        {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN},
+    )
+    source = session.get(SourceRevision, source_id)
+    if source is None or source.project_id != project_id:
+        raise DomainError("RESOURCE_NOT_FOUND", "资料版本不存在")
+    chunks = (
+        session.query(DocumentChunk)
+        .filter_by(source_revision_id=source_id)
+        .order_by(DocumentChunk.chunk_index)
+        .all()
+    )
+    return [
+        {
+            "id": c.id,
+            "chunk_index": c.chunk_index,
+            "content": c.content,
+            "locator": c.locator,
+            "index_version": c.index_version,
+        }
+        for c in chunks
+    ]

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
+const router = useRouter()
 const projectTabs = [
   { label: '项目知识库', to: '/knowledge-base' },
   { label: '任务中心', to: '/tasks' },
@@ -10,6 +11,11 @@ const projectTabs = [
 ]
 const title = computed(() => String(route.meta.title ?? 'AI-CodeReview'))
 const isProjectArea = computed(() => route.meta.area === 'project')
+
+function logout() {
+  sessionStorage.removeItem('accessToken')
+  router.replace('/login')
+}
 </script>
 
 <template>
@@ -30,7 +36,7 @@ const isProjectArea = computed(() => route.meta.area === 'project')
       </button>
     </aside>
     <div class="workbench-content">
-      <header class="global-topbar"><div class="topbar-page-title"><h1>{{ title }}</h1></div><label class="project-switch">项目：<select aria-label="切换项目"><option>全部项目</option><option>支付平台重构</option><option>风控引擎升级</option></select></label><label class="global-search"><span class="sr-only">全局搜索</span><input type="search" placeholder="搜索任务、报告、知识库" /></label><div class="topbar-actions"><button type="button" aria-label="通知">通知</button><button type="button" aria-label="当前用户">张伟</button></div></header>
+      <header class="global-topbar"><div class="topbar-page-title"><h1>{{ title }}</h1></div><label class="project-switch">项目：<select aria-label="切换项目"><option>全部项目</option><option>支付平台重构</option><option>风控引擎升级</option></select></label><label class="global-search"><span class="sr-only">全局搜索</span><input type="search" placeholder="搜索任务、报告、知识库" /></label><div class="topbar-actions"><button type="button" aria-label="通知">通知</button><button type="button" @click="logout" aria-label="退出登录">退出</button></div></header>
       <main class="workbench-main" :aria-label="title"><RouterView /></main>
     </div>
   </div>

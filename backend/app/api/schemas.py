@@ -52,6 +52,35 @@ class SourceResponse(BaseModel):
     parser_version: str | None
 
 
+class SourceDetailResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    logical_name: str
+    source_role: str
+    revision_no: int
+    content_hash: str
+    media_type: str
+    processing_status: str
+    parser_version: str | None
+    in_snapshot: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceContentResponse(BaseModel):
+    content: str
+    media_type: str
+    logical_name: str
+
+
+class ChunkItemResponse(BaseModel):
+    id: UUID
+    chunk_index: int
+    content: str
+    locator: dict
+    index_version: str
+
+
 class SnapshotCreateRequest(BaseModel):
     source_revision_ids: list[UUID] = Field(min_length=1)
 

@@ -3,11 +3,35 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import SourceResponse
-from app.application.services.source_service import create_source_revision
+from app.api.schemas import ChunkItemResponse, SourceContentResponse, SourceDetailResponse, SourceResponse
+from app.application.services.source_service import create_source_revision, list_project_sources, list_source_chunks, read_source_content
 from app.domain.errors import DomainError
 
 router = APIRouter(prefix="/projects/{project_id}/sources")
+
+
+@router.get("", response_model=list[SourceDetailResponse])
+def list_sources(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[SourceDetailResponse]:
+    try:
+        return [SourceDetailResponse(**item) for item in list_project_sources(session, project_id=project_id, actor_id=user.id)]
+    except DomainError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_404_NOT_FOUND, detail={"code": exc.code, "message": exc.message})
+
+
+@router.get("/{source_id}", response_model=SourceContentResponse)
+def read_content(project_id: UUID, source_id: UUID, session: SessionDep, user: CurrentUserDep) -> SourceContentResponse:
+    try:
+        return SourceContentResponse(**read_source_content(session, project_id=project_id, source_id=source_id, actor_id=user.id))
+    except DomainError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_404_NOT_FOUND, detail={"code": exc.code, "message": exc.message})
+
+
+@router.get("/{source_id}/chunks", response_model=list[ChunkItemResponse])
+def list_chunks(project_id: UUID, source_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[ChunkItemResponse]:
+    try:
+        return [ChunkItemResponse(**item) for item in list_source_chunks(session, project_id=project_id, source_id=source_id, actor_id=user.id)]
+    except DomainError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_404_NOT_FOUND, detail={"code": exc.code, "message": exc.message})
 
 
 @router.post("", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)
