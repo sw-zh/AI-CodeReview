@@ -20,6 +20,10 @@
 - 系统 Python 的离线 Alembic 校验失败，原因是未安装 `alembic`；将改用仓库既有 `.venv`，不新增依赖。
 - `.venv` 已具备 Alembic，但离线脚本因 shell 没有 `JWT_SECRET` 无法创建 Settings；下一次校验仅传入临时占位值，不写入配置文件或数据库。
 - `.venv` 的 `alembic upgrade head --sql` 已通过，包含 016 与 017；临时 JWT 只存在于该命令进程。`git diff --check` 也已通过，未调用 GitHub 或运行测试套件。
+- 已提交 `8b8993b 功能：同步研发事项与外部来源`；未执行推送。开始研发事项与 PR/Git Diff 关联切片。
+- 已为核验任务增加可空研发事项归属；历史已固化记录保持未归属，不能在事后补写归因。Git Snapshot 只有先绑定同一事项的任务才能确认关联。
+- 已增加 PR/Git 范围关联、GitHub Issue 时间线发现、人工确认、文档来源关联和审计 API；平台交叉引用只确认“事项—PR 关系”，不确认交付已经完成，交付结论仍须由双核读取具体 Diff。
+- 本切片已通过 Python 静态编译、空白字符检查和 Alembic 离线 SQL 校验；离线 SQL 已包含 018 迁移。未运行测试套件、未调用 GitHub、未推送远端。
 
 ## 2026-07-31
 

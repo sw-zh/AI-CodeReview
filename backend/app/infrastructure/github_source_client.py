@@ -46,6 +46,12 @@ class GitHubSourceClient:
         milestones, milestones_truncated = self._list_paginated(f"/repos/{self._repository_slug}/milestones", {"state": "all"})
         return GitHubSyncPayload(issues=issues, milestones=milestones, truncated=issues_truncated or milestones_truncated)
 
+    def fetch_issue_timeline(self, issue_number: str) -> list[dict]:
+        if not issue_number.isdigit():
+            raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub Issue 编号无效")
+        events, _ = self._list_paginated(f"/repos/{self._repository_slug}/issues/{issue_number}/timeline", {})
+        return events
+
     def _list_paginated(self, path: str, query: dict[str, str]) -> tuple[list[dict], bool]:
         items: list[dict] = []
         for page in range(1, _MAX_PAGES + 1):

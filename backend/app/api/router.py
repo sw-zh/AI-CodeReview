@@ -5,6 +5,7 @@ from app.api.routes.analysis import run_router, snapshot_router as analysis_snap
 from app.api.routes.evidence import router as evidence_router
 from app.api.routes.external_evidence import router as external_evidence_router
 from app.api.routes.external_sources import router as external_sources_router
+from app.api.routes.delivery_associations import router as delivery_associations_router
 from app.api.routes.git import repository_router, snapshot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.manual_evidence import router as manual_evidence_router
@@ -26,6 +27,7 @@ api_router.include_router(analysis_task_router, tags=["analysis"])
 api_router.include_router(evidence_router, tags=["evidence"])
 api_router.include_router(external_evidence_router, tags=["evidence"])
 api_router.include_router(external_sources_router, tags=["external-sources"])
+api_router.include_router(delivery_associations_router, tags=["delivery-associations"])
 api_router.include_router(manual_evidence_router, tags=["evidence"])
 api_router.include_router(orchestration_project_router, tags=["agent-orchestration"])
 api_router.include_router(orchestration_task_router, tags=["agent-orchestration"])

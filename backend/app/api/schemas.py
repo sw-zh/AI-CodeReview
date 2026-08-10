@@ -30,12 +30,14 @@ class ProjectResponse(BaseModel):
 class TaskCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     requirement_key: str = Field(min_length=1, max_length=100)
+    delivery_item_id: UUID | None = None
     orchestration_template_id: UUID | None = None
 
 
 class TaskResponse(BaseModel):
     id: UUID
     project_id: UUID
+    delivery_item_id: UUID | None
     title: str
     requirement_key: str
     cycle_id: UUID
@@ -341,3 +343,52 @@ class DeliveryItemResponse(BaseModel):
     web_url: str
     milestone_key: str | None
     resource_revision: int
+
+
+class TaskDeliveryItemBindingRequest(BaseModel):
+    delivery_item_id: UUID
+
+
+class DeliveryChangeLinkCreateRequest(BaseModel):
+    pull_request_resource_id: UUID | None = None
+    git_snapshot_id: UUID | None = None
+    reason: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="after")
+    def require_exactly_one_target(self):
+        if (self.pull_request_resource_id is None) == (self.git_snapshot_id is None):
+            raise ValueError("exactly one change target is required")
+        return self
+
+
+class DeliveryChangeLinkResponse(BaseModel):
+    id: UUID
+    delivery_item_id: UUID
+    target_kind: str
+    target_id: UUID
+    target_label: str
+    target_url: str | None
+    link_status: str
+    link_source: str
+    confidence: float | None
+    reason: str
+    confirmed_at: datetime | None
+
+
+class PlatformLinkDiscoveryResponse(BaseModel):
+    changed_count: int
+    skipped_count: int
+
+
+class DeliveryItemDocumentSourceLinkCreateRequest(BaseModel):
+    source_revision_id: UUID
+    link_role: str = Field(pattern="^(ACCEPTANCE|DESIGN|PLAN)$")
+
+
+class DeliveryItemSourceLinkResponse(BaseModel):
+    id: UUID
+    delivery_item_id: UUID
+    source_kind: str
+    source_id: UUID
+    source_label: str
+    link_role: str

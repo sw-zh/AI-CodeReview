@@ -41,6 +41,19 @@
 - 已有 `SourceRevision` 是项目文档的版本化证据来源。新交付项模型将为后续文档关联预留关系，不复制文档内容或用本系统手工文本覆盖外部事实。
 - `agent_tool_runner` 的 HTTP 能力不适合承担正式来源同步：其结果是运行期临时工具证据，且 URL 由 Agent 模板配置。GitHub 同步必须走独立的服务端连接适配器、凭据引用和同步审计。
 
+## 2026-08-10 事项关联切片审计
+
+- `VerificationTask` 目前没有交付项外键，因此一次核验尚不能正式归属到同步事项；需要新增可空外键，以保留历史任务未归属状态。
+- `GitSnapshot` 已通过 `VerificationCycle -> VerificationTask` 链接到项目；确认 Git Diff 与事项关系时必须要求该任务已绑定同一事项，避免跨事项误归属。
+- GitHub 同步已将 PR 保存为 `ExternalResource(PULL_REQUEST)`，但尚未读取 Issue timeline 中的平台关联；可在本切片通过受控 GitHub timeline 请求生成平台来源的正式 PR 关系。
+
+## 2026-08-10 事项关联切片已实施内容
+
+- `VerificationTask.delivery_item_id` 允许新任务在创建时归属研发事项；已存在且已固化正式记录的任务保持历史未关联，不能被事后改写。
+- `DeliveryChangeLink` 区分 `PLATFORM`、`USER` 与预留的 `AGENT` 来源，并区分 `CONFIRMED` 与 `CANDIDATE` 状态；数据库确保一次关联只指向一个 PR 或一个 Git Snapshot，且同一事项的同一目标不重复。
+- 平台发现只把 GitHub Issue 时间线的 PR 交叉引用确认成“平台已记录的关联”。它不确认需求已实现、不更新事项核验状态；事项完成仍必须经由同一事项下的冻结 Diff、双核核验和正式记录。
+- 文档资料继续复用既有 `SourceRevision`，通过 `ACCEPTANCE`、`DESIGN` 或 `PLAN` 角色链接到事项，不复制资料内容。
+
 ## 2026-08-10 开发方案结论
 
 - 实施必须先完成运行配置与快照规则收敛，再建立外部来源和交付项；项目态势、安全基线、真实工作台均不能跳过这两个前置层。

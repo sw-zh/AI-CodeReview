@@ -161,12 +161,41 @@ class DeliveryItemSourceLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class DeliveryChangeLink(Base):
+    __tablename__ = "delivery_change_links"
+    __table_args__ = (
+        CheckConstraint("link_status IN ('CANDIDATE', 'CONFIRMED')", name="ck_delivery_change_link_status"),
+        CheckConstraint("link_source IN ('PLATFORM', 'USER', 'AGENT')", name="ck_delivery_change_link_source"),
+        CheckConstraint(
+            "(pull_request_resource_id IS NOT NULL AND git_snapshot_id IS NULL) OR "
+            "(pull_request_resource_id IS NULL AND git_snapshot_id IS NOT NULL)",
+            name="ck_delivery_change_link_exactly_one_target",
+        ),
+        UniqueConstraint("delivery_item_id", "pull_request_resource_id", name="uq_delivery_change_link_item_pr"),
+        UniqueConstraint("delivery_item_id", "git_snapshot_id", name="uq_delivery_change_link_item_git_snapshot"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    delivery_item_id: Mapped[UUID] = mapped_column(ForeignKey("delivery_items.id", ondelete="CASCADE"), nullable=False)
+    pull_request_resource_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_resources.id", ondelete="RESTRICT"))
+    git_snapshot_id: Mapped[UUID | None] = mapped_column(ForeignKey("git_snapshots.id", ondelete="RESTRICT"))
+    link_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    link_source: Mapped[str] = mapped_column(String(24), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class VerificationTask(TimestampedEntity, Base):
     __tablename__ = "verification_tasks"
     __table_args__ = (UniqueConstraint("project_id", "requirement_key", name="uq_task_project_requirement"),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    delivery_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("delivery_items.id", ondelete="RESTRICT"))
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     requirement_key: Mapped[str] = mapped_column(String(100), nullable=False)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)

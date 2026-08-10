@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.application.services.common import append_audit_event, require_project_role
 from app.domain.enums import CycleStatus, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import VerificationCycle, VerificationTask
+from app.infrastructure.persistence.models import DeliveryItem, VerificationCycle, VerificationTask
 from app.application.services.orchestration_service import bind_task_default_orchestration, bind_task_template
 
 
@@ -18,11 +18,16 @@ def create_task(
     requirement_key: str,
     actor_id: UUID,
     correlation_id: str,
+    delivery_item_id: UUID | None = None,
     orchestration_template_id: UUID | None = None,
 ) -> tuple[VerificationTask, VerificationCycle]:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    if delivery_item_id is not None:
+        item = session.get(DeliveryItem, delivery_item_id)
+        if item is None or item.project_id != project_id:
+            raise DomainError("INPUT_INVALID", "研发事项不存在或不属于当前项目")
     task = VerificationTask(
-        project_id=project_id, title=title, requirement_key=requirement_key, created_by=actor_id
+        project_id=project_id, delivery_item_id=delivery_item_id, title=title, requirement_key=requirement_key, created_by=actor_id
     )
     session.add(task)
     try:
@@ -45,7 +50,7 @@ def create_task(
         action="VERIFICATION_TASK_CREATED",
         correlation_id=correlation_id,
         after_version=task.version,
-        payload={"cycleId": str(cycle.id)},
+        payload={"cycleId": str(cycle.id), "deliveryItemId": str(delivery_item_id) if delivery_item_id else None},
     )
     return task, cycle
 
