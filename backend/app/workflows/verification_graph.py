@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.domain.errors import DomainError
 from app.domain.model_contracts import GenerationRequest
+from app.infrastructure.agent_tool_runner import execute_http_query
 from app.infrastructure.generation_model import create_generation_model
 from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.infrastructure.persistence.models import (
@@ -438,10 +439,82 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         evidence = [item for item in evidence if item is not None]
         claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
         claims = [item for item in claims if item is not None]
-        allowed_ids = {str(item.id) for item in evidence}
+        snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
+        cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+        task = session.get(VerificationTask, cycle.task_id) if cycle else None
+        if snapshot is None or task is None:
+            raise DomainError("INPUT_STALE", "自定义 Agent 缺少正式输入快照")
         settings = get_settings()
+        node_errors = [*state.get("node_errors", [])]
         for node in custom_agent_nodes:
             key = str(node.get("capabilityKey"))
+            agent_evidence = [*evidence]
+            for tool in node.get("tools", []):
+                if tool.get("type") != "HTTP_QUERY":
+                    continue
+                tool_id = str(tool.get("toolId", "unknown"))
+                event_node_id = f"tool:{tool_id}"[:64]
+                try:
+                    outcome = execute_http_query(
+                        tool,
+                        analysis_run_id=str(run_id),
+                        input_snapshot_id=str(snapshot.id),
+                        capability_key=key,
+                        settings=settings,
+                    )
+                    tool_evidence = session.query(EvidenceItem).filter_by(
+                        snapshot_id=snapshot.id,
+                        source_type="TOOL",
+                        content_hash=outcome.content_hash,
+                    ).one_or_none()
+                    if tool_evidence is None:
+                        tool_evidence = EvidenceItem(
+                            project_id=task.project_id,
+                            snapshot_id=snapshot.id,
+                            source_type="TOOL",
+                            evidence_kind="HTTP_QUERY",
+                            content_hash=outcome.content_hash,
+                            excerpt_safe=_safe_excerpt(outcome.excerpt),
+                            locator={**outcome.locator, "capabilityKey": key, "analysisRunId": str(run_id)},
+                            locator_precision="EXACT",
+                            extractor_version="agent-http-tool-v1",
+                            requires_human_confirmation=True,
+                        )
+                        session.add(tool_evidence)
+                        session.flush()
+                    agent_evidence.append(tool_evidence)
+                    session.add(AnalysisCoverage(
+                        analysis_run_id=run_id,
+                        scope_kind="AGENT_TOOL",
+                        scope_ref=f"{key}:{tool.get('key', tool_id)}",
+                        state="ANALYZED",
+                    ))
+                    session.add(RunEvent(
+                        run_id=run_id,
+                        node_id=event_node_id,
+                        event_type="TOOL_EXECUTION",
+                        status="SUCCEEDED",
+                        correlation_id=str(run_id),
+                        payload_redacted={"toolKey": tool.get("key"), "capabilityKey": key, "automatic": True},
+                    ))
+                except DomainError as exc:
+                    node_errors.append(f"{key}:{tool.get('key', tool_id)}:{exc.code}")
+                    session.add(AnalysisCoverage(
+                        analysis_run_id=run_id,
+                        scope_kind="AGENT_TOOL",
+                        scope_ref=f"{key}:{tool.get('key', tool_id)}",
+                        state="UNAVAILABLE",
+                        reason_code=exc.code,
+                    ))
+                    session.add(RunEvent(
+                        run_id=run_id,
+                        node_id=event_node_id,
+                        event_type="TOOL_EXECUTION",
+                        status="FAILED",
+                        correlation_id=str(run_id),
+                        payload_redacted={"toolKey": tool.get("key"), "capabilityKey": key, "errorCode": exc.code},
+                    ))
+            allowed_ids = {str(item.id) for item in agent_evidence}
             request = GenerationRequest(
                 run_id=run_id,
                 prompt_version=f"agent-{node.get('capabilityVersion', 1)}",
@@ -449,7 +522,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 instruction=str(node.get("promptTemplate", ""))[:20_000],
                 operation=f"CUSTOM_AGENT:{key}",
                 claims=[{"id": str(claim.id), "text": claim.text, "candidateEvidenceIds": sorted(allowed_ids)} for claim in claims],
-                evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in evidence],
+                evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in agent_evidence],
             )
             try:
                 generated = create_generation_model(settings).generate(request)
@@ -465,9 +538,9 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             except DomainError as exc:
                 session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
                 session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="UNAVAILABLE", reason_code=exc.code))
-                state["node_errors"] = [*state.get("node_errors", []), f"{key}:{exc.code}"]
+                node_errors.append(f"{key}:{exc.code}")
         session.flush()
-        return {"node_errors": state.get("node_errors", [])}
+        return {"node_errors": node_errors}
 
     def reconcile(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()

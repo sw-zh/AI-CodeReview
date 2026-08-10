@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     deepseek_api_key: str | None = None
     deepseek_generation_model: str = "deepseek-v4-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
+    agent_tool_allowed_hosts: list[str] = Field(default_factory=list)
+    agent_tool_timeout_seconds: int = Field(default=10, ge=1, le=30)
+    agent_tool_response_limit_bytes: int = Field(default=262_144, ge=4_096, le=1_048_576)
     embedding_model: str = "text-embedding-004"
 
     @property

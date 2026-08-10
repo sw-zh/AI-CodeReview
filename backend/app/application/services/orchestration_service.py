@@ -1,12 +1,14 @@
 import hashlib
 import json
 import re
+from urllib.parse import urlparse
 from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
+from app.core.config import get_settings
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import (
@@ -25,6 +27,7 @@ from app.infrastructure.persistence.models import (
 
 
 _KEY = re.compile(r"^[a-z][a-z0-9-]{2,95}$")
+_ENV_REF = re.compile(r"^[A-Z][A-Z0-9_]{2,159}$")
 _CORE_KEYS = {"requirement-claim-core", "delivery-git-diff", "evidence-reconciliation"}
 _SYSTEM_CAPABILITIES = (
     ("requirement-claim-core", "需求/验收核验核心", "REQUIREMENT", True, "从冻结的需求和验收资料提取可引用 Claim。", ["document-retrieval"]),
@@ -63,6 +66,33 @@ def _assert_tools(session: Session, *, project_id: UUID, tool_ids: list[UUID]) -
     return tools
 
 
+def _tool_binding(tool: AgentTool) -> dict:
+    return {
+        "toolId": str(tool.id),
+        "key": tool.key,
+        "type": tool.tool_type,
+        "endpointUrl": tool.endpoint_url,
+        "secretRef": tool.secret_ref,
+        "inputSchema": tool.input_schema,
+        "outputSchema": tool.output_schema,
+    }
+
+
+def _validate_http_endpoint(endpoint_url: str) -> str:
+    parsed = urlparse(endpoint_url.strip())
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    try:
+        valid_port = parsed.port in {None, 443}
+    except ValueError as exc:
+        raise DomainError("INPUT_INVALID", "HTTP 查询工具端口无效") from exc
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.query or parsed.fragment or not valid_port:
+        raise DomainError("INPUT_INVALID", "HTTP 查询工具仅支持无凭据的 HTTPS 地址")
+    allowed_hosts = {item.strip().lower() for item in get_settings().agent_tool_allowed_hosts if item.strip()}
+    if host not in allowed_hosts:
+        raise DomainError("AUTH_FORBIDDEN", "HTTP 查询端点必须先由服务端 AGENT_TOOL_ALLOWED_HOSTS 白名单授权")
+    return endpoint_url.strip()
+
+
 def ensure_default_orchestration(session: Session, *, project_id: UUID, actor_id: UUID) -> OrchestrationTemplate:
     existing = session.query(OrchestrationTemplate).filter_by(project_id=project_id, is_default=True).one_or_none()
     if existing is not None:
@@ -90,7 +120,7 @@ def ensure_default_orchestration(session: Session, *, project_id: UUID, actor_id
         )
         session.add(capability)
         session.flush()
-        bindings = [{"toolId": str(tools[tool_key].id), "key": tool_key} for tool_key in tool_keys]
+        bindings = [_tool_binding(tools[tool_key]) for tool_key in tool_keys]
         content = {"key": key, "prompt": "", "input": {}, "output": {}, "tools": bindings, "parameters": {}}
         version = AgentCapabilityVersion(
             capability_id=capability.id,
@@ -203,7 +233,7 @@ def create_custom_capability(
     capability = AgentCapability(project_id=project_id, key=key, name=name.strip(), description=description.strip(), core_scope=core_scope, kind="CUSTOM", created_by=actor_id)
     session.add(capability)
     session.flush()
-    bindings = [{"toolId": str(tool.id), "key": tool.key, "type": tool.tool_type} for tool in tools]
+    bindings = [_tool_binding(tool) for tool in tools]
     content = {"key": key, "prompt": prompt_template, "input": input_schema, "output": output_schema, "tools": bindings, "parameters": parameter_schema}
     session.add(AgentCapabilityVersion(capability_id=capability.id, version_no=1, prompt_template=prompt_template, input_schema=input_schema, output_schema=output_schema, tool_bindings=bindings, parameter_schema=parameter_schema, content_hash=_hash(content), created_by=actor_id))
     append_audit_event(session, project_id=project_id, actor_id=actor_id, aggregate_type="AgentCapability", aggregate_id=capability.id, action="AGENT_CAPABILITY_CREATED", correlation_id=correlation_id)
@@ -230,7 +260,7 @@ def create_capability_version(
         raise DomainError("AUTH_FORBIDDEN", "系统主干能力不能编辑 Prompt 或工具授权")
     tools = _assert_tools(session, project_id=capability.project_id, tool_ids=tool_ids)
     previous = session.query(func.coalesce(func.max(AgentCapabilityVersion.version_no), 0)).filter_by(capability_id=capability.id).scalar()
-    bindings = [{"toolId": str(tool.id), "key": tool.key, "type": tool.tool_type} for tool in tools]
+    bindings = [_tool_binding(tool) for tool in tools]
     content = {"key": capability.key, "prompt": prompt_template, "input": input_schema, "output": output_schema, "tools": bindings, "parameters": parameter_schema}
     version = AgentCapabilityVersion(capability_id=capability.id, version_no=previous + 1, prompt_template=prompt_template, input_schema=input_schema, output_schema=output_schema, tool_bindings=bindings, parameter_schema=parameter_schema, content_hash=_hash(content), created_by=actor_id)
     session.add(version)
@@ -247,6 +277,11 @@ def create_custom_tool(session: Session, *, project_id: UUID, actor_id: UUID, co
         raise DomainError("INPUT_INVALID", "HTTP 查询工具必须提供登记的只读端点")
     if tool_type != "HTTP_QUERY" and endpoint_url:
         raise DomainError("INPUT_INVALID", "内置只读工具不能配置外部端点")
+    if tool_type == "HTTP_QUERY":
+        require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
+        endpoint_url = _validate_http_endpoint(endpoint_url)
+    if secret_ref and not _ENV_REF.fullmatch(secret_ref):
+        raise DomainError("INPUT_INVALID", "密钥引用只能是服务端大写环境变量名")
     key = _validate_key(key)
     if session.query(AgentTool).filter_by(project_id=project_id, key=key).one_or_none() is not None:
         raise DomainError("STATE_CONFLICT", "项目内工具标识已存在")
