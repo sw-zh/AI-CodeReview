@@ -58,6 +58,53 @@ def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UU
     return report
 
 
+def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: str) -> ReportVersion:
+    """Create the enabled report-draft block's output without bypassing review or publish gates."""
+    run = session.get(AnalysisRun, run_id)
+    snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
+    cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+    task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    if task is None or run is None or snapshot is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "分析运行或其正式输入快照不存在")
+    if run.run_status not in {"SUCCEEDED", "PARTIALLY_COMPLETED"} or snapshot.purpose != "FORMAL":
+        raise DomainError("STATE_CONFLICT", "仅终态正式分析运行可自动生成报告草稿")
+    existing = session.query(ReportVersion).filter_by(run_id=run.id).order_by(ReportVersion.sequence_no).first()
+    if existing is not None:
+        return existing
+    results = session.query(VerificationResult).filter_by(analysis_run_id=run.id).all()
+    content_hash = _content_hash(results=results, editorial_note="", dispositions={})
+    next_no = session.query(func.coalesce(func.max(ReportVersion.sequence_no), 0)).filter_by(cycle_id=cycle.id).scalar() + 1
+    report = ReportVersion(
+        cycle_id=cycle.id,
+        sequence_no=next_no,
+        status="DRAFT",
+        content_hash=content_hash,
+        snapshot_hash=snapshot.snapshot_hash,
+        run_id=run.id,
+    )
+    session.add(report)
+    session.flush()
+    for order, result in enumerate(results, start=1):
+        session.add(ReportItem(
+            report_version_id=report.id,
+            result_id=result.id,
+            display_order=order,
+            result_snapshot={"status": result.status, "reason": result.reason},
+            citation_snapshot={"evidenceIds": result.evidence_ids},
+        ))
+    append_audit_event(
+        session,
+        project_id=task.project_id,
+        actor_id=task.created_by,
+        aggregate_type="ReportVersion",
+        aggregate_id=report.id,
+        action="REPORT_DRAFT_CREATED",
+        correlation_id=correlation_id,
+        payload={"createdBy": "REPORT_DRAFT_BLOCK", "runId": str(run.id)},
+    )
+    return report
+
+
 def update_draft(
     session: Session,
     *,

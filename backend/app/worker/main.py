@@ -12,7 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import get_settings
 from app.core.db import SessionLocal, engine
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import AnalysisJob, AnalysisRun, InputSnapshot, RunEvent, VerificationCycle, VerificationResult
+from app.application.services.report_service import create_automatic_draft
+from app.infrastructure.persistence.models import AnalysisJob, AnalysisRun, AnalysisRunManifest, AnalysisRunOrchestrationSnapshot, InputSnapshot, RunEvent, VerificationCycle, VerificationResult
 from app.workflows.verification_graph import run_verification_graph
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ def _complete(job_id: UUID, run_id: UUID, worker_id: str, graph_state: dict | No
             job.lease_owner = None
             job.lease_expires_at = None
             _derive_cycle_status(session, run)
+            _create_report_draft_when_enabled(session, run)
         else:
             job.last_error_code = "WORKFLOW_FAILED"
             if job.attempt_no >= job.max_attempts:
@@ -157,6 +159,40 @@ def _complete(job_id: UUID, run_id: UUID, worker_id: str, graph_state: dict | No
                 job.lease_expires_at = None
                 run.run_status = "QUEUED"
         session.add(RunEvent(run_id=run.id, node_id=None, event_type="JOB_EXECUTION", status=run.run_status, correlation_id=str(run.id), payload_redacted={"workerId": worker_id, "attempt": job.attempt_no, "error": job.last_error_code}))
+
+
+def _create_report_draft_when_enabled(session, run: AnalysisRun) -> None:
+    orchestration = session.query(AnalysisRunOrchestrationSnapshot).filter_by(run_id=run.id).one_or_none()
+    is_enabled = orchestration is not None and any(
+        item.get("capabilityKey") == "report-draft" and item.get("enabled")
+        for item in orchestration.nodes_snapshot
+    )
+    if not is_enabled:
+        return
+    try:
+        report = create_automatic_draft(session, run_id=run.id, correlation_id=str(run.id))
+        session.add(RunEvent(
+            run_id=run.id,
+            node_id="report-draft",
+            event_type="REPORT_DRAFT",
+            status="SUCCEEDED",
+            correlation_id=str(run.id),
+            payload_redacted={"reportId": str(report.id), "automatic": True},
+        ))
+    except DomainError as exc:
+        manifest = session.query(AnalysisRunManifest).filter_by(run_id=run.id).one_or_none()
+        if manifest is not None:
+            manifest.degradation = {**manifest.degradation, "reportDraft": {"code": exc.code}}
+        if run.run_status == "SUCCEEDED":
+            run.run_status = "PARTIALLY_COMPLETED"
+        session.add(RunEvent(
+            run_id=run.id,
+            node_id="report-draft",
+            event_type="REPORT_DRAFT",
+            status="FAILED",
+            correlation_id=str(run.id),
+            payload_redacted={"errorCode": exc.code, "automatic": True},
+        ))
 
 
 def _cancel(session, job: AnalysisJob, run: AnalysisRun, now: datetime, worker_id: str) -> None:
