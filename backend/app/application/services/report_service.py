@@ -6,10 +6,18 @@ from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
 from app.application.services.citation_resolver import resolve_citation
-from app.domain.enums import ProjectRole
+from app.domain.enums import AssessmentProfile, ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, VerificationCycle, VerificationResult, VerificationTask
 from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
+
+
+_DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
+
+
+def _assert_delivery_report_run(*, run: AnalysisRun, snapshot: InputSnapshot) -> None:
+    if run.assessment_profile != _DELIVERY_PROFILE or snapshot.assessment_profile != _DELIVERY_PROFILE:
+        raise DomainError("ASSESSMENT_PROFILE_NOT_ENABLED", "当前仅交付核验运行支持报告草稿、审批和正式记录")
 
 
 def _content_hash(*, results: list[VerificationResult], editorial_note: str, dispositions: dict[str, str | None]) -> str:
@@ -47,10 +55,11 @@ def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UU
     snapshot = session.get(InputSnapshot, run.snapshot_id)
     if snapshot is None or snapshot.cycle_id != cycle.id or snapshot.purpose != "FORMAL":
         raise DomainError("INPUT_STALE", "报告草稿必须绑定当前轮次的正式输入快照")
+    _assert_delivery_report_run(run=run, snapshot=snapshot)
     results = session.query(VerificationResult).filter_by(analysis_run_id=run.id).all()
     content_hash = _content_hash(results=results, editorial_note="", dispositions={})
     next_no = session.query(func.coalesce(func.max(ReportVersion.sequence_no), 0)).filter_by(cycle_id=cycle.id).scalar() + 1
-    report = ReportVersion(cycle_id=cycle.id, sequence_no=next_no, status="DRAFT", content_hash=content_hash, snapshot_hash=snapshot.snapshot_hash, run_id=run.id)
+    report = ReportVersion(cycle_id=cycle.id, sequence_no=next_no, status="DRAFT", record_type=run.assessment_profile, content_hash=content_hash, snapshot_hash=snapshot.snapshot_hash, run_id=run.id)
     session.add(report); session.flush()
     for order, result in enumerate(results, start=1):
         session.add(ReportItem(report_version_id=report.id, result_id=result.id, display_order=order, result_snapshot={"status": result.status, "reason": result.reason}, citation_snapshot={"evidenceIds": result.evidence_ids}))
@@ -68,6 +77,7 @@ def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: st
         raise DomainError("RESOURCE_NOT_FOUND", "分析运行或其正式输入快照不存在")
     if run.run_status not in {"SUCCEEDED", "PARTIALLY_COMPLETED"} or snapshot.purpose != "FORMAL":
         raise DomainError("STATE_CONFLICT", "仅终态正式分析运行可自动生成报告草稿")
+    _assert_delivery_report_run(run=run, snapshot=snapshot)
     existing = session.query(ReportVersion).filter_by(run_id=run.id).order_by(ReportVersion.sequence_no).first()
     if existing is not None:
         return existing
@@ -78,6 +88,7 @@ def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: st
         cycle_id=cycle.id,
         sequence_no=next_no,
         status="DRAFT",
+        record_type=run.assessment_profile,
         content_hash=content_hash,
         snapshot_hash=snapshot.snapshot_hash,
         run_id=run.id,
@@ -170,7 +181,7 @@ def request_changes(session: Session, *, report_id: UUID, actor_id: UUID, reason
     report.status = "CHANGES_REQUESTED"
     session.add(ApprovalAction(report_version_id=report.id, action="CHANGES_REQUESTED", actor_id=actor_id, reason=reason, report_hash=report.content_hash, snapshot_hash=report.snapshot_hash, run_id=report.run_id))
     next_no = session.query(func.coalesce(func.max(ReportVersion.sequence_no), 0)).filter_by(cycle_id=cycle.id).scalar() + 1
-    draft = ReportVersion(cycle_id=cycle.id, sequence_no=next_no, status="DRAFT", parent_report_version_id=report.id, content_hash=report.content_hash, snapshot_hash=report.snapshot_hash, run_id=report.run_id, editorial_note=report.editorial_note)
+    draft = ReportVersion(cycle_id=cycle.id, sequence_no=next_no, status="DRAFT", parent_report_version_id=report.id, record_type=report.record_type, content_hash=report.content_hash, snapshot_hash=report.snapshot_hash, run_id=report.run_id, editorial_note=report.editorial_note)
     session.add(draft); session.flush()
     for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
         session.add(ReportItem(report_version_id=draft.id, result_id=item.result_id, display_order=item.display_order, result_snapshot=item.result_snapshot, citation_snapshot=item.citation_snapshot, disposition=item.disposition))
@@ -194,6 +205,11 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
     report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "APPROVED": raise DomainError("STATE_CONFLICT", "仅已批准报告可发布")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    run = session.get(AnalysisRun, report.run_id)
+    snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
+    if run is None or snapshot is None or report.record_type != run.assessment_profile:
+        raise DomainError("INPUT_STALE", "正式记录的运行配置与报告不一致")
+    _assert_delivery_report_run(run=run, snapshot=snapshot)
     approval = session.query(ApprovalAction).filter_by(
         report_version_id=report.id,
         action="APPROVED",
@@ -211,7 +227,7 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
         editorial_note="published-record-v1",
         dispositions={},
     ).content_hash
-    record = PublishedRecord(task_id=task.id, cycle_id=cycle.id, report_version_id=report.id, record_no=f"{task.requirement_key}-{cycle.sequence_no}-{report.sequence_no}", record_hash=record_hash, published_by=actor_id)
+    record = PublishedRecord(task_id=task.id, cycle_id=cycle.id, report_version_id=report.id, record_type=report.record_type, record_no=f"{task.requirement_key}-{cycle.sequence_no}-{report.sequence_no}", record_hash=record_hash, published_by=actor_id)
     session.add(record); session.flush(); report.status = "PUBLISHED"; cycle.business_status = "PUBLISHED"
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="PublishedRecord", aggregate_id=record.id, action="REPORT_PUBLISHED", correlation_id=correlation_id)
     return record

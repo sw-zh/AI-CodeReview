@@ -12,7 +12,7 @@ report_router = APIRouter(prefix="/report-versions")
 
 
 def to_response(report) -> ReportResponse:
-    return ReportResponse(id=report.id, cycle_id=report.cycle_id, sequence_no=report.sequence_no, status=report.status, content_hash=report.content_hash, editorial_note=report.editorial_note, version=report.version)
+    return ReportResponse(id=report.id, cycle_id=report.cycle_id, sequence_no=report.sequence_no, status=report.status, record_type=report.record_type, content_hash=report.content_hash, editorial_note=report.editorial_note, version=report.version)
 
 
 @cycle_router.post("/from-run/{run_id}", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
@@ -68,6 +68,6 @@ def reject_report(report_id: UUID, payload: ApprovalRequest, request: Request, s
 @report_router.post("/{report_id}/publish", status_code=status.HTTP_201_CREATED)
 def publish_report(report_id: UUID, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> dict:
     try:
-        record = publish(session, report_id=report_id, actor_id=user.id, correlation_id=correlation_id(request)); session.commit(); return {"id": str(record.id), "recordNo": record.record_no, "recordHash": record.record_hash}
+        record = publish(session, report_id=report_id, actor_id=user.id, correlation_id=correlation_id(request)); session.commit(); return {"id": str(record.id), "recordType": record.record_type, "recordNo": record.record_no, "recordHash": record.record_hash}
     except DomainError as exc:
         session.rollback(); raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})

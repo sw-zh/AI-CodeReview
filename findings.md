@@ -18,6 +18,22 @@
 - Worker 固定调用 `run_verification_graph`，运行完成后依照现有核验结果更新轮次状态并生成报告草稿；未来的项目态势和安全基线必须有独立 workflow/worker dispatch，而不是塞进该图。
 - 当前数据库迁移最新为 `015_dual_core_agent_orchestration.py`。后续扩展应使用追加迁移、保留既有交付核验历史，不能重写或复用历史快照与报告语义。
 
+## 2026-08-10 运行范围切片实现审计
+
+- `InputSnapshot` 目前只有 `purpose`，`AnalysisRun`、`OrchestrationTemplate`、`ReportVersion` 与 `PublishedRecord` 都没有运行配置/记录类型字段。
+- `freeze_formal_snapshot` 将 Git SHA/Diff 纳入正式快照哈希，并总是创建 `InputSnapshotGit`；该逻辑应明确为交付核验专用函数和 Profile 校验。
+- `start_analysis_run` 固定工作流为 `dual-core-v1`，固定调用编排指纹，也只允许含 Git 的正式快照；应将其改为 Profile 分发入口，但本切片只允许执行 `DELIVERY_VERIFICATION`。
+- 现有历史数据可安全兼容：新增列的数据库默认值和非空约束均使用 `DELIVERY_VERIFICATION`，不会改变现有输入快照、报告内容哈希或记录哈希。
+- Profile 字段将落在 `InputSnapshot`、`AnalysisRun`、`OrchestrationTemplate`、`AnalysisRunOrchestrationSnapshot`、`ReportVersion` 和 `PublishedRecord`；现有列与哈希不重算，新增字段由迁移默认值兼容。
+- 对外响应需要显示快照和运行的 Profile；新建编排模板的请求可以声明 Profile，但本切片只允许创建和绑定 `DELIVERY_VERIFICATION` 模板，防止未实现外围 workflow 被提前启用。
+- Worker 应保留单独的 Profile dispatcher：当前仅路由 `DELIVERY_VERIFICATION` 到既有 `run_verification_graph`，其他值一律报明确的“未开放”领域错误。
+
+## 2026-08-10 运行范围切片已实施内容
+
+- 已新增 `AssessmentProfile` 及 016 追加迁移：历史数据通过默认 `DELIVERY_VERIFICATION` 保持原有语义。
+- 已将 Profile 写入快照、运行、模板、运行编排快照、报告和正式记录；新的交付快照哈希显式包含该 Profile。
+- 已将 Git 范围约束改为交付核验专用校验，并加入未开放 Profile 的显式拒绝逻辑；Worker 使用 Profile dispatcher 且当前只路由到既有双核图。
+
 ## 2026-08-10 开发方案结论
 
 - 实施必须先完成运行配置与快照规则收敛，再建立外部来源和交付项；项目态势、安全基线、真实工作台均不能跳过这两个前置层。

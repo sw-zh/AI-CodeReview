@@ -18,7 +18,7 @@ def start(snapshot_id: UUID, request: Request, session: SessionDep, user: Curren
     try:
         run = start_analysis_run(session, snapshot_id=snapshot_id, actor_id=user.id, idempotency_key=key, correlation_id=correlation_id(request))
         session.commit()
-        return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
+        return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, assessment_profile=run.assessment_profile, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
     except DomainError as exc:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message})
@@ -28,7 +28,7 @@ def start(snapshot_id: UUID, request: Request, session: SessionDep, user: Curren
 def get_run(run_id: UUID, session: SessionDep, user: CurrentUserDep) -> AnalysisRunResponse:
     try:
         run = get_analysis_run(session, run_id=run_id, actor_id=user.id)
-        return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
+        return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, assessment_profile=run.assessment_profile, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
     except DomainError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND if exc.code == "RESOURCE_NOT_FOUND" else status.HTTP_403_FORBIDDEN, detail={"code": exc.code, "message": exc.message})
 
@@ -40,6 +40,7 @@ def get_latest_task_run(task_id: UUID, session: SessionDep, user: CurrentUserDep
         return AnalysisRunResponse(
             id=run.id,
             snapshot_id=run.snapshot_id,
+            assessment_profile=run.assessment_profile,
             run_status=run.run_status,
             poll_url=f"/api/v1/analysis-runs/{run.id}",
         )
@@ -54,7 +55,7 @@ def get_latest_task_run(task_id: UUID, session: SessionDep, user: CurrentUserDep
 def cancel(run_id: UUID, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> AnalysisRunResponse:
     try:
         run = request_cancel(session, run_id=run_id, actor_id=user.id, correlation_id=correlation_id(request)); session.commit()
-        return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
+        return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, assessment_profile=run.assessment_profile, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
     except DomainError as exc:
         session.rollback(); raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
 

@@ -264,6 +264,7 @@ class ReportVersion(TimestampedEntity, Base):
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
     parent_report_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("report_versions.id"))
+    record_type: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id"), nullable=False)
@@ -308,6 +309,7 @@ class PublishedRecord(Base):
     task_id: Mapped[UUID] = mapped_column(ForeignKey("verification_tasks.id"), nullable=False)
     cycle_id: Mapped[UUID] = mapped_column(ForeignKey("verification_cycles.id"), nullable=False)
     report_version_id: Mapped[UUID] = mapped_column(ForeignKey("report_versions.id"), nullable=False)
+    record_type: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
     record_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     record_hash: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     published_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -324,6 +326,7 @@ class InputSnapshot(TimestampedEntity, Base):
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     purpose: Mapped[str] = mapped_column(String(32), nullable=False, default="PREPARATION")
+    assessment_profile: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
 
 
 class InputSnapshotSource(Base):
@@ -411,6 +414,7 @@ class AnalysisRun(TimestampedEntity, Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
+    assessment_profile: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
     analysis_config_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     run_status: Mapped[str] = mapped_column(String(32), nullable=False, default="QUEUED")
     manifest_hash: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -591,6 +595,7 @@ class OrchestrationTemplate(TimestampedEntity, Base):
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    assessment_profile: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
     is_default: Mapped[bool] = mapped_column(nullable=False, default=False)
     is_system: Mapped[bool] = mapped_column(nullable=False, default=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -631,6 +636,7 @@ class AnalysisRunOrchestrationSnapshot(Base):
     run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), unique=True, nullable=False)
     template_id: Mapped[UUID] = mapped_column(ForeignKey("orchestration_templates.id"), nullable=False)
     template_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    assessment_profile: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     template_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
     nodes_snapshot: Mapped[list] = mapped_column(JSONB, nullable=False)

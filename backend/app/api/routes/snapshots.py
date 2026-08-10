@@ -33,6 +33,7 @@ def freeze(
             cycle_id=snapshot.cycle_id,
             snapshot_hash=snapshot.snapshot_hash,
             purpose=snapshot.purpose,
+            assessment_profile=snapshot.assessment_profile,
             policy_version=snapshot.policy_version,
             workflow_version=snapshot.workflow_version,
             created_at=snapshot.created_at,
@@ -48,7 +49,7 @@ def freeze_formal(cycle_id: UUID, payload: FormalSnapshotCreateRequest, request:
     try:
         snapshot = freeze_formal_snapshot(session, cycle_id=cycle_id, source_revision_ids=payload.source_revision_ids, git_snapshot_id=payload.git_snapshot_id, external_evidence_ids=payload.external_evidence_ids, manual_evidence_ids=payload.manual_evidence_ids, actor_id=user.id, correlation_id=correlation_id(request))
         session.commit()
-        return SnapshotResponse(id=snapshot.id, cycle_id=snapshot.cycle_id, snapshot_hash=snapshot.snapshot_hash, purpose=snapshot.purpose, policy_version=snapshot.policy_version, workflow_version=snapshot.workflow_version, created_at=snapshot.created_at)
+        return SnapshotResponse(id=snapshot.id, cycle_id=snapshot.cycle_id, snapshot_hash=snapshot.snapshot_hash, purpose=snapshot.purpose, assessment_profile=snapshot.assessment_profile, policy_version=snapshot.policy_version, workflow_version=snapshot.workflow_version, created_at=snapshot.created_at)
     except DomainError as exc:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": exc.code, "message": exc.message})

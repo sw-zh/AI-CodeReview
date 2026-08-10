@@ -82,9 +82,9 @@ def version_capability(project_id: UUID, capability_id: UUID, payload: AgentCapa
 @project_router.post("/templates", status_code=status.HTTP_201_CREATED)
 def create_orchestration_template(project_id: UUID, payload: OrchestrationTemplateCreateRequest, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> dict:
     try:
-        template = create_template(session, project_id=project_id, actor_id=user.id, correlation_id=correlation_id(request), name=payload.name, description=payload.description, nodes=[item.model_dump() for item in payload.nodes])
+        template = create_template(session, project_id=project_id, actor_id=user.id, correlation_id=correlation_id(request), name=payload.name, description=payload.description, assessment_profile=payload.assessment_profile, nodes=[item.model_dump() for item in payload.nodes])
         session.commit()
-        return {"id": str(template.id), "name": template.name, "version": template.version}
+        return {"id": str(template.id), "name": template.name, "assessmentProfile": template.assessment_profile, "version": template.version}
     except DomainError as exc:
         session.rollback()
         raise _failure(exc)

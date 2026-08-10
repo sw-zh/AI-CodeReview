@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.application.services.common import append_audit_event, require_project_role
 from app.application.services.redaction import safe_excerpt
 from app.core.config import get_settings
-from app.domain.enums import ProjectRole, SourceProcessingStatus
+from app.domain.enums import AssessmentProfile, ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import (
     DocumentChunk,
@@ -25,6 +25,9 @@ from app.infrastructure.persistence.models import (
     SourceRevision,
 )
 from app.infrastructure.artifact_storage import LocalArtifactStorage
+
+
+_DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
 
 
 def freeze_preparation_snapshot(
@@ -61,6 +64,7 @@ def freeze_preparation_snapshot(
     normalized = {
         "cycleId": str(cycle.id),
         "purpose": "PREPARATION",
+        "assessmentProfile": _DELIVERY_PROFILE,
         "policyVersion": "v1",
         "workflowVersion": "v1",
         "sources": sorted(
@@ -88,6 +92,7 @@ def freeze_preparation_snapshot(
         workflow_version="v1",
         created_by=actor_id,
         purpose="PREPARATION",
+        assessment_profile=_DELIVERY_PROFILE,
     )
     session.add(snapshot)
     session.flush()
@@ -178,11 +183,11 @@ def freeze_formal_snapshot(
     if len(manual_evidence) != len(manual_evidence_ids):
         raise DomainError("INPUT_INVALID", "manual evidence does not belong to this verification cycle")
     storage = LocalArtifactStorage(get_settings().artifact_root)
-    normalized = {"purpose": "FORMAL", "cycleId": str(cycle.id), "policyVersion": "v1", "workflowVersion": "v1", "git": {"baseSha": git.base_sha, "targetSha": git.target_sha, "mergeBaseSha": git.merge_base_sha, "diffMode": git.diff_mode, "diffHash": git.diff_hash}, "sources": sorted([{"id": str(x.id), "hash": x.content_hash, "parser": x.parser_version} for x in sources], key=lambda x: x["id"]), "externalEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "commitSha": x.commit_sha, "type": x.evidence_type} for x in external_evidence], key=lambda x: x["id"]), "manualEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "submittedBy": str(x.submitted_by)} for x in manual_evidence], key=lambda x: x["id"])}
+    normalized = {"purpose": "FORMAL", "assessmentProfile": _DELIVERY_PROFILE, "cycleId": str(cycle.id), "policyVersion": "v1", "workflowVersion": "v1", "git": {"baseSha": git.base_sha, "targetSha": git.target_sha, "mergeBaseSha": git.merge_base_sha, "diffMode": git.diff_mode, "diffHash": git.diff_hash}, "sources": sorted([{"id": str(x.id), "hash": x.content_hash, "parser": x.parser_version} for x in sources], key=lambda x: x["id"]), "externalEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "commitSha": x.commit_sha, "type": x.evidence_type} for x in external_evidence], key=lambda x: x["id"]), "manualEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "submittedBy": str(x.submitted_by)} for x in manual_evidence], key=lambda x: x["id"])}
     snapshot_hash = f"sha256:{hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
     existing = session.query(InputSnapshot).filter_by(snapshot_hash=snapshot_hash).one_or_none()
     if existing is not None: return existing
-    snapshot = InputSnapshot(cycle_id=cycle.id, snapshot_hash=snapshot_hash, policy_version="v1", workflow_version="v1", created_by=actor_id, purpose="FORMAL")
+    snapshot = InputSnapshot(cycle_id=cycle.id, snapshot_hash=snapshot_hash, policy_version="v1", workflow_version="v1", created_by=actor_id, purpose="FORMAL", assessment_profile=_DELIVERY_PROFILE)
     session.add(snapshot); session.flush()
     for source in sources:
         session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
@@ -209,5 +214,5 @@ def freeze_formal_snapshot(
             requires_human_confirmation=True,
         ))
     session.add(InputSnapshotGit(snapshot_id=snapshot.id, git_snapshot_id=git.id, diff_hash=git.diff_hash))
-    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id)})
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id), "assessmentProfile": _DELIVERY_PROFILE})
     return snapshot

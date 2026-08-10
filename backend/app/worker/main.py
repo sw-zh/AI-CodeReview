@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal, engine
+from app.domain.enums import AssessmentProfile
 from app.domain.errors import DomainError
 from app.application.services.report_service import create_automatic_draft
 from app.infrastructure.persistence.models import AnalysisJob, AnalysisRun, AnalysisRunManifest, AnalysisRunOrchestrationSnapshot, InputSnapshot, RunEvent, VerificationCycle, VerificationResult
@@ -18,6 +19,7 @@ from app.workflows.verification_graph import run_verification_graph
 
 logger = logging.getLogger(__name__)
 _RETRY_SECONDS = (30, 120, 300)
+_DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
 
 
 def main() -> None:
@@ -116,7 +118,7 @@ def _claim_and_complete_one(worker_id: str, lease_seconds: int) -> None:
             run = session.get(AnalysisRun, run_id)
             if run is None:
                 raise DomainError("RUN_MISSING", "analysis run is missing")
-            graph_state = run_verification_graph(session, run.id, run.snapshot_id)
+            graph_state = _run_profile_workflow(session, run)
     except Exception as exc:
         failure = exc
         logger.exception("workflow_failed run_id=%s", run_id)
@@ -162,6 +164,8 @@ def _complete(job_id: UUID, run_id: UUID, worker_id: str, graph_state: dict | No
 
 
 def _create_report_draft_when_enabled(session, run: AnalysisRun) -> None:
+    if run.assessment_profile != _DELIVERY_PROFILE:
+        return
     orchestration = session.query(AnalysisRunOrchestrationSnapshot).filter_by(run_id=run.id).one_or_none()
     is_enabled = orchestration is not None and any(
         item.get("capabilityKey") == "report-draft" and item.get("enabled")
@@ -209,6 +213,8 @@ def _cancel(session, job: AnalysisJob, run: AnalysisRun, now: datetime, worker_i
 
 
 def _derive_cycle_status(session, run: AnalysisRun) -> None:
+    if run.assessment_profile != _DELIVERY_PROFILE:
+        return
     snapshot = session.get(InputSnapshot, run.snapshot_id)
     cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
     if cycle is None:
@@ -222,6 +228,12 @@ def _derive_cycle_status(session, run: AnalysisRun) -> None:
         cycle.business_status = "NEEDS_EVIDENCE"
     else:
         cycle.business_status = "DRAFT_READY"
+
+
+def _run_profile_workflow(session, run: AnalysisRun) -> dict:
+    if run.assessment_profile == _DELIVERY_PROFILE:
+        return run_verification_graph(session, run.id, run.snapshot_id)
+    raise DomainError("ASSESSMENT_PROFILE_NOT_ENABLED", f"运行配置 {run.assessment_profile} 尚未开放 Worker workflow")
 
 
 if __name__ == "__main__":

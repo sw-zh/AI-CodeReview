@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
 from app.core.config import get_settings
-from app.domain.enums import ProjectRole
+from app.domain.enums import AssessmentProfile, ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import (
     AgentCapability,
@@ -29,6 +29,7 @@ from app.infrastructure.persistence.models import (
 _KEY = re.compile(r"^[a-z][a-z0-9-]{2,95}$")
 _ENV_REF = re.compile(r"^[A-Z][A-Z0-9_]{2,159}$")
 _CORE_KEYS = {"requirement-claim-core", "delivery-git-diff", "evidence-reconciliation"}
+_DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
 _SYSTEM_CAPABILITIES = (
     ("requirement-claim-core", "需求/验收核验核心", "REQUIREMENT", True, "从冻结的需求和验收资料提取可引用 Claim。", ["document-retrieval"]),
     ("delivery-git-diff", "Git Diff 代码证据", "DELIVERY", True, "读取冻结 Git 范围并生成可定位的代码证据。", ["git-diff-reader"]),
@@ -55,6 +56,16 @@ def _validate_key(key: str) -> str:
     if not _KEY.fullmatch(normalized):
         raise DomainError("INPUT_INVALID", "标识仅允许小写字母、数字和连字符，且长度为 3-96")
     return normalized
+
+
+def _enabled_template_profile(value: str) -> str:
+    try:
+        profile = AssessmentProfile(value)
+    except ValueError as exc:
+        raise DomainError("INPUT_INVALID", "未知的运行配置") from exc
+    if profile is not AssessmentProfile.DELIVERY_VERIFICATION:
+        raise DomainError("ASSESSMENT_PROFILE_NOT_ENABLED", f"运行配置 {profile.value} 尚未开放模板编排")
+    return profile.value
 
 
 def _assert_tools(session: Session, *, project_id: UUID, tool_ids: list[UUID]) -> list[AgentTool]:
@@ -137,6 +148,7 @@ def ensure_default_orchestration(session: Session, *, project_id: UUID, actor_id
         project_id=project_id,
         name="默认交付核验",
         description="固定双核、锁定 Git Diff，并按证据协议执行的默认模板。",
+        assessment_profile=_DELIVERY_PROFILE,
         is_default=True,
         is_system=True,
         created_by=actor_id,
@@ -178,7 +190,9 @@ def _template_nodes(session: Session, template_id: UUID) -> list[tuple[Orchestra
     )
 
 
-def _validate_template_nodes(session: Session, *, project_id: UUID, nodes: list[dict]) -> list[tuple[AgentCapabilityVersion, AgentCapability, dict]]:
+def _validate_template_nodes(
+    session: Session, *, project_id: UUID, assessment_profile: str, nodes: list[dict]
+) -> list[tuple[AgentCapabilityVersion, AgentCapability, dict]]:
     if not nodes:
         raise DomainError("INPUT_INVALID", "编排模板至少需要一个能力块")
     version_ids = [UUID(str(node["capability_version_id"])) for node in nodes]
@@ -200,10 +214,10 @@ def _validate_template_nodes(session: Session, *, project_id: UUID, nodes: list[
         if capability.is_locked and not enabled:
             raise DomainError("INPUT_INVALID", f"系统主干能力 {capability.name} 不可停用")
         resolved.append((version, capability, {"enabled": enabled, "parameters": node.get("parameters", {})}))
-    mandatory = {"requirement-claim-core", "delivery-git-diff", "evidence-reconciliation"}
+    mandatory = _CORE_KEYS if assessment_profile == _DELIVERY_PROFILE else set()
     enabled_keys = {capability.key for _, capability, node in resolved if node["enabled"]}
     if not mandatory.issubset(enabled_keys):
-        raise DomainError("INPUT_INVALID", "模板必须包含需求核心、锁定 Git Diff 和证据裁决主干")
+        raise DomainError("INPUT_INVALID", "交付核验模板必须包含需求核心、锁定 Git Diff 和证据裁决主干")
     return resolved
 
 
@@ -292,12 +306,23 @@ def create_custom_tool(session: Session, *, project_id: UUID, actor_id: UUID, co
     return tool
 
 
-def create_template(session: Session, *, project_id: UUID, actor_id: UUID, correlation_id: str, name: str, description: str, nodes: list[dict]) -> OrchestrationTemplate:
+def create_template(
+    session: Session,
+    *,
+    project_id: UUID,
+    actor_id: UUID,
+    correlation_id: str,
+    name: str,
+    description: str,
+    assessment_profile: str,
+    nodes: list[dict],
+) -> OrchestrationTemplate:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if session.query(OrchestrationTemplate).filter_by(project_id=project_id, name=name.strip()).one_or_none() is not None:
         raise DomainError("STATE_CONFLICT", "项目内编排模板名称已存在")
-    resolved = _validate_template_nodes(session, project_id=project_id, nodes=nodes)
-    template = OrchestrationTemplate(project_id=project_id, name=name.strip(), description=description.strip(), created_by=actor_id)
+    profile = _enabled_template_profile(assessment_profile)
+    resolved = _validate_template_nodes(session, project_id=project_id, assessment_profile=profile, nodes=nodes)
+    template = OrchestrationTemplate(project_id=project_id, name=name.strip(), description=description.strip(), assessment_profile=profile, created_by=actor_id)
     session.add(template)
     session.flush()
     for order, (version, capability, node) in enumerate(resolved, start=1):
@@ -312,7 +337,8 @@ def bind_task_template(session: Session, *, task_id: UUID, template_id: UUID, ac
     if task is None or template is None or task.project_id != template.project_id:
         raise DomainError("RESOURCE_NOT_FOUND", "核验任务或编排模板不存在")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
-    _validate_template_nodes(session, project_id=task.project_id, nodes=[{"capability_version_id": node.capability_version_id, "enabled": node.enabled, "parameters": node.parameters} for node, _, _ in _template_nodes(session, template.id)])
+    profile = _enabled_template_profile(template.assessment_profile)
+    _validate_template_nodes(session, project_id=task.project_id, assessment_profile=profile, nodes=[{"capability_version_id": node.capability_version_id, "enabled": node.enabled, "parameters": node.parameters} for node, _, _ in _template_nodes(session, template.id)])
     binding = session.query(TaskOrchestrationBinding).filter_by(task_id=task.id).one_or_none()
     if binding is None:
         binding = TaskOrchestrationBinding(task_id=task.id, template_id=template.id, template_version=template.version, bound_by=actor_id)
@@ -328,6 +354,9 @@ def bind_task_template(session: Session, *, task_id: UUID, template_id: UUID, ac
 def _orchestration_payload(session: Session, *, task: VerificationTask, actor_id: UUID) -> tuple[OrchestrationTemplate, list[dict]]:
     binding = bind_task_default_orchestration(session, task_id=task.id, project_id=task.project_id, actor_id=actor_id)
     template = session.get(OrchestrationTemplate, binding.template_id)
+    if template is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "核验任务未绑定编排模板")
+    profile = _enabled_template_profile(template.assessment_profile)
     rows = _template_nodes(session, template.id)
     nodes = [
         {
@@ -346,19 +375,21 @@ def _orchestration_payload(session: Session, *, task: VerificationTask, actor_id
         }
         for node, version, capability in rows
     ]
-    _validate_template_nodes(session, project_id=task.project_id, nodes=[{"capability_version_id": row[1].id, "enabled": row[0].enabled, "parameters": row[0].parameters} for row in rows])
+    _validate_template_nodes(session, project_id=task.project_id, assessment_profile=profile, nodes=[{"capability_version_id": row[1].id, "enabled": row[0].enabled, "parameters": row[0].parameters} for row in rows])
     return template, nodes
 
 
 def orchestration_fingerprint(session: Session, *, task: VerificationTask, actor_id: UUID) -> str:
     template, nodes = _orchestration_payload(session, task=task, actor_id=actor_id)
-    return _hash({"template": {"id": str(template.id), "version": template.version}, "nodes": nodes})
+    return _hash({"template": {"id": str(template.id), "version": template.version, "assessmentProfile": template.assessment_profile}, "nodes": nodes})
 
 
 def freeze_run_orchestration(session: Session, *, run: AnalysisRun, task: VerificationTask, actor_id: UUID) -> AnalysisRunOrchestrationSnapshot:
     template, nodes = _orchestration_payload(session, task=task, actor_id=actor_id)
-    template_snapshot = {"id": str(template.id), "name": template.name, "version": template.version}
-    return AnalysisRunOrchestrationSnapshot(run_id=run.id, template_id=template.id, template_version=template.version, content_hash=_hash({"template": template_snapshot, "nodes": nodes}), template_snapshot=template_snapshot, nodes_snapshot=nodes)
+    if run.assessment_profile != template.assessment_profile:
+        raise DomainError("STATE_CONFLICT", "分析运行与编排模板的运行配置不一致")
+    template_snapshot = {"id": str(template.id), "name": template.name, "version": template.version, "assessmentProfile": template.assessment_profile}
+    return AnalysisRunOrchestrationSnapshot(run_id=run.id, template_id=template.id, template_version=template.version, assessment_profile=template.assessment_profile, content_hash=_hash({"template": template_snapshot, "nodes": nodes}), template_snapshot=template_snapshot, nodes_snapshot=nodes)
 
 
 def list_orchestration(session: Session, *, project_id: UUID, actor_id: UUID) -> dict:
@@ -373,7 +404,7 @@ def list_orchestration(session: Session, *, project_id: UUID, actor_id: UUID) ->
     return {
         "capabilities": [{"id": str(item.id), "key": item.key, "name": item.name, "description": item.description, "coreScope": item.core_scope, "kind": item.kind, "isLocked": item.is_locked, "isDefaultEnabled": item.is_default_enabled, "isActive": item.is_active, "latestVersionId": str(latest_versions[item.id].id) if latest_versions[item.id] else None, "latestVersion": latest_versions[item.id].version_no if latest_versions[item.id] else None} for item in capabilities],
         "tools": [{"id": str(item.id), "key": item.key, "name": item.name, "toolType": item.tool_type, "endpointUrl": item.endpoint_url, "secretRef": item.secret_ref, "isSystem": item.is_system, "isActive": item.is_active} for item in tools],
-        "templates": [{"id": str(item.id), "name": item.name, "description": item.description, "isDefault": item.is_default, "isSystem": item.is_system, "version": item.version, "nodes": [{"capabilityVersionId": str(version.id), "capabilityKey": capability.key, "capabilityName": capability.name, "coreScope": node.core_scope, "displayOrder": node.display_order, "enabled": node.enabled, "locked": capability.is_locked, "parameters": node.parameters} for node, version, capability in _template_nodes(session, item.id)]} for item in templates],
+        "templates": [{"id": str(item.id), "name": item.name, "description": item.description, "assessmentProfile": item.assessment_profile, "isDefault": item.is_default, "isSystem": item.is_system, "version": item.version, "nodes": [{"capabilityVersionId": str(version.id), "capabilityKey": capability.key, "capabilityName": capability.name, "coreScope": node.core_scope, "displayOrder": node.display_order, "enabled": node.enabled, "locked": capability.is_locked, "parameters": node.parameters} for node, version, capability in _template_nodes(session, item.id)]} for item in templates],
     }
 
 
@@ -394,4 +425,4 @@ def get_run_orchestration(session: Session, *, run_id: UUID, actor_id: UUID) -> 
     snapshot = session.query(AnalysisRunOrchestrationSnapshot).filter_by(run_id=run.id).one_or_none()
     if snapshot is None:
         raise DomainError("RESOURCE_NOT_FOUND", "分析运行没有编排快照")
-    return {"contentHash": snapshot.content_hash, "template": snapshot.template_snapshot, "nodes": snapshot.nodes_snapshot}
+    return {"assessmentProfile": snapshot.assessment_profile, "contentHash": snapshot.content_hash, "template": snapshot.template_snapshot, "nodes": snapshot.nodes_snapshot}

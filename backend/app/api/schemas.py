@@ -97,6 +97,7 @@ class SnapshotResponse(BaseModel):
     cycle_id: UUID
     snapshot_hash: str
     purpose: str
+    assessment_profile: str
     policy_version: str
     workflow_version: str
     created_at: datetime
@@ -145,6 +146,7 @@ class GitSnapshotResponse(BaseModel):
 class AnalysisRunResponse(BaseModel):
     id: UUID
     snapshot_id: UUID
+    assessment_profile: str
     run_status: str
     poll_url: str
 
@@ -166,6 +168,7 @@ class ReportResponse(BaseModel):
     cycle_id: UUID
     sequence_no: int
     status: str
+    record_type: str
     content_hash: str
     editorial_note: str
     version: int
@@ -284,6 +287,10 @@ class OrchestrationTemplateNodeInput(BaseModel):
 class OrchestrationTemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=4000)
+    assessment_profile: str = Field(
+        default="DELIVERY_VERIFICATION",
+        pattern="^(DELIVERY_VERIFICATION|PROJECT_STATUS_SUMMARY|SECURITY_BASELINE|QUALITY_TREND)$",
+    )
     nodes: list[OrchestrationTemplateNodeInput] = Field(min_length=1, max_length=30)
 
 
