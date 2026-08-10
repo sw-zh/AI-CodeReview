@@ -243,6 +243,79 @@ class ProjectSummaryRecord(Base):
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SecurityScanArtifact(TimestampedEntity, Base):
+    """An immutable scanner/CI result bound to one project repository SHA."""
+
+    __tablename__ = "security_scan_artifacts"
+    __table_args__ = (
+        CheckConstraint("scan_type IN ('SAST', 'DEPENDENCY', 'SECRET', 'CONFIG', 'CI')", name="ck_security_scan_artifact_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    repository_id: Mapped[UUID] = mapped_column(ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False)
+    target_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    scan_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    scanner_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    scanner_version: Mapped[str] = mapped_column(String(160), nullable=False)
+    rule_set_version: Mapped[str] = mapped_column(String(160), nullable=False)
+    coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    imported_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class SecurityFinding(TimestampedEntity, Base):
+    __tablename__ = "security_findings"
+    __table_args__ = (
+        UniqueConstraint("scan_artifact_id", "fingerprint", name="uq_security_finding_artifact_fingerprint"),
+        CheckConstraint("severity IN ('INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL')", name="ck_security_finding_severity"),
+        CheckConstraint("finding_status IN ('OPEN', 'ACCEPTED_RISK', 'REMEDIATION_CLAIMED')", name="ck_security_finding_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    scan_artifact_id: Mapped[UUID] = mapped_column(ForeignKey("security_scan_artifacts.id", ondelete="CASCADE"), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    category: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    locator: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    finding_status: Mapped[str] = mapped_column(String(32), nullable=False, default="OPEN")
+    status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status_updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SecurityBaselineSnapshot(Base):
+    __tablename__ = "security_baseline_snapshots"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    repository_id: Mapped[UUID] = mapped_column(ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False)
+    target_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    input_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SecurityBaselineRecord(Base):
+    __tablename__ = "security_baseline_records"
+    __table_args__ = (UniqueConstraint("baseline_snapshot_id", name="uq_security_baseline_record_snapshot"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    baseline_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("security_baseline_snapshots.id", ondelete="RESTRICT"), nullable=False)
+    record_no: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    record_hash: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    confirmation_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class VerificationTask(TimestampedEntity, Base):
     __tablename__ = "verification_tasks"
     __table_args__ = (UniqueConstraint("project_id", "requirement_key", name="uq_task_project_requirement"),)

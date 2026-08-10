@@ -439,3 +439,89 @@ class ProjectSummaryRecordResponse(BaseModel):
     record_hash: str
     confirmation_type: str
     published_at: datetime
+
+
+class SecurityFindingInput(BaseModel):
+    fingerprint: str = Field(min_length=1, max_length=255)
+    severity: str = Field(pattern="^(INFO|LOW|MEDIUM|HIGH|CRITICAL)$")
+    category: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=4000)
+    locator: dict = Field(default_factory=dict)
+
+
+class SecurityScanArtifactCreateRequest(BaseModel):
+    repository_id: UUID
+    target_sha: str = Field(pattern="^[0-9a-fA-F]{40}$")
+    scan_type: str = Field(pattern="^(SAST|DEPENDENCY|SECRET|CONFIG|CI)$")
+    scanner_name: str = Field(min_length=1, max_length=160)
+    scanner_version: str = Field(min_length=1, max_length=160)
+    rule_set_version: str = Field(min_length=1, max_length=160)
+    coverage: dict = Field(default_factory=dict)
+    content: str = Field(min_length=1, max_length=2 * 1024 * 1024)
+    findings: list[SecurityFindingInput] = Field(default_factory=list, max_length=2000)
+
+
+class SecurityScanArtifactResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    repository_id: UUID
+    target_sha: str
+    scan_type: str
+    scanner_name: str
+    scanner_version: str
+    rule_set_version: str
+    coverage: dict
+    content_hash: str
+    finding_count: int
+    created_at: datetime
+
+
+class SecurityFindingStatusUpdateRequest(BaseModel):
+    finding_status: str = Field(pattern="^(OPEN|ACCEPTED_RISK|REMEDIATION_CLAIMED)$")
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class SecurityFindingResponse(BaseModel):
+    id: UUID
+    scan_artifact_id: UUID
+    fingerprint: str
+    severity: str
+    category: str
+    title: str
+    locator: dict
+    finding_status: str
+    status_reason: str
+    status_updated_at: datetime | None
+
+
+class SecurityBaselineCreateRequest(BaseModel):
+    repository_id: UUID
+    target_sha: str = Field(pattern="^[0-9a-fA-F]{40}$")
+    scan_artifact_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class SecurityBaselineSnapshotResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    repository_id: UUID
+    target_sha: str
+    input_manifest: dict
+    input_hash: str
+    snapshot_hash: str
+    summary: dict
+    coverage: dict
+    created_at: datetime
+
+
+class SecurityBaselineConfirmRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class SecurityBaselineRecordResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    baseline_snapshot_id: UUID
+    record_no: str
+    record_hash: str
+    confirmation_reason: str
+    confirmed_at: datetime
