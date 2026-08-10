@@ -392,3 +392,50 @@ class DeliveryItemSourceLinkResponse(BaseModel):
     source_id: UUID
     source_label: str
     link_role: str
+
+
+class ProjectHealthSnapshotCreateRequest(BaseModel):
+    milestone_key: str | None = Field(default=None, max_length=160)
+
+
+class ProjectHealthSnapshotResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    scope: dict
+    input_manifest: dict
+    input_hash: str
+    snapshot_hash: str
+    summary: dict
+    coverage: dict
+    as_of: datetime
+    created_at: datetime
+
+
+class ProjectSummaryDraftCreateRequest(BaseModel):
+    health_snapshot_id: UUID
+    period_type: str = Field(pattern="^(DAILY|WEEKLY|ITERATION)$")
+    title: str | None = Field(default=None, max_length=300)
+
+
+class ProjectSummaryDraftResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    health_snapshot_id: UUID
+    period_type: str
+    title: str
+    content: dict
+    content_hash: str
+    draft_status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectSummaryRecordResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    health_snapshot_id: UUID
+    summary_draft_id: UUID
+    record_no: str
+    record_hash: str
+    confirmation_type: str
+    published_at: datetime

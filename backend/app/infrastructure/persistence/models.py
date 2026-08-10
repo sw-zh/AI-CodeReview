@@ -189,6 +189,60 @@ class DeliveryChangeLink(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ProjectHealthSnapshot(Base):
+    """Immutable, evidence-scoped project-status input; not a delivery-verification run."""
+
+    __tablename__ = "project_health_snapshots"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    input_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    input_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProjectSummaryDraft(TimestampedEntity, Base):
+    __tablename__ = "project_summary_drafts"
+    __table_args__ = (
+        CheckConstraint("period_type IN ('DAILY', 'WEEKLY', 'ITERATION')", name="ck_project_summary_draft_period_type"),
+        CheckConstraint("draft_status IN ('DRAFT', 'PUBLISHED')", name="ck_project_summary_draft_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    health_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("project_health_snapshots.id", ondelete="RESTRICT"), nullable=False)
+    period_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    content: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    draft_status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class ProjectSummaryRecord(Base):
+    __tablename__ = "project_summary_records"
+    __table_args__ = (
+        UniqueConstraint("summary_draft_id", name="uq_project_summary_record_draft"),
+        CheckConstraint("confirmation_type IN ('PERSONAL_CONFIRMED')", name="ck_project_summary_record_confirmation_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    health_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("project_health_snapshots.id", ondelete="RESTRICT"), nullable=False)
+    summary_draft_id: Mapped[UUID] = mapped_column(ForeignKey("project_summary_drafts.id", ondelete="RESTRICT"), nullable=False)
+    record_no: Mapped[str] = mapped_column(String(96), unique=True, nullable=False)
+    record_hash: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    confirmation_type: Mapped[str] = mapped_column(String(32), nullable=False, default="PERSONAL_CONFIRMED")
+    published_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class VerificationTask(TimestampedEntity, Base):
     __tablename__ = "verification_tasks"
     __table_args__ = (UniqueConstraint("project_id", "requirement_key", name="uq_task_project_requirement"),)

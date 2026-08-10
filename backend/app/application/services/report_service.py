@@ -8,7 +8,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.application.services.citation_resolver import resolve_citation
 from app.domain.enums import AssessmentProfile, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, VerificationCycle, VerificationResult, VerificationTask
+from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, DeliveryItem, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, VerificationCycle, VerificationResult, VerificationTask
 from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
 
 
@@ -45,6 +45,17 @@ def _assert_publishable_citations(session: Session, *, report: ReportVersion, ac
     for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
         for evidence_id in item.citation_snapshot.get("evidenceIds", []):
             resolve_citation(session, evidence_id=UUID(str(evidence_id)), snapshot_id=snapshot.id, actor_id=actor_id)
+
+
+def _delivery_item_verification_status(session: Session, *, report: ReportVersion) -> str:
+    statuses = [item.result_snapshot.get("status") for item in session.query(ReportItem).filter_by(report_version_id=report.id).all()]
+    if statuses and all(status == "CONFIRMED" for status in statuses):
+        return "CONFIRMED"
+    if any(status in {"CONFLICT", "CONFLICTING"} for status in statuses):
+        return "CONFLICT"
+    if not statuses or all(status == "INSUFFICIENT_EVIDENCE" for status in statuses):
+        return "INSUFFICIENT_EVIDENCE"
+    return "PARTIALLY_SUPPORTED"
 
 
 def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UUID, correlation_id: str) -> ReportVersion:
@@ -229,5 +240,19 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
     ).content_hash
     record = PublishedRecord(task_id=task.id, cycle_id=cycle.id, report_version_id=report.id, record_type=report.record_type, record_no=f"{task.requirement_key}-{cycle.sequence_no}-{report.sequence_no}", record_hash=record_hash, published_by=actor_id)
     session.add(record); session.flush(); report.status = "PUBLISHED"; cycle.business_status = "PUBLISHED"
+    if task.delivery_item_id is not None:
+        item = session.get(DeliveryItem, task.delivery_item_id)
+        if item is not None and item.project_id == task.project_id:
+            item.verification_status = _delivery_item_verification_status(session, report=report)
+            append_audit_event(
+                session,
+                project_id=task.project_id,
+                actor_id=actor_id,
+                aggregate_type="DeliveryItem",
+                aggregate_id=item.id,
+                action="DELIVERY_ITEM_VERIFICATION_STATUS_UPDATED",
+                correlation_id=correlation_id,
+                payload={"verificationStatus": item.verification_status, "publishedRecordId": str(record.id)},
+            )
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="PublishedRecord", aggregate_id=record.id, action="REPORT_PUBLISHED", correlation_id=correlation_id)
     return record
