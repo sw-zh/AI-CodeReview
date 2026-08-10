@@ -7,6 +7,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.domain.enums import CycleStatus, ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import VerificationCycle, VerificationTask
+from app.application.services.orchestration_service import bind_task_default_orchestration, bind_task_template
 
 
 def create_task(
@@ -17,6 +18,7 @@ def create_task(
     requirement_key: str,
     actor_id: UUID,
     correlation_id: str,
+    orchestration_template_id: UUID | None = None,
 ) -> tuple[VerificationTask, VerificationCycle]:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     task = VerificationTask(
@@ -30,6 +32,10 @@ def create_task(
     cycle = VerificationCycle(task_id=task.id, sequence_no=1, business_status=CycleStatus.DRAFT)
     session.add(cycle)
     session.flush()
+    if orchestration_template_id is None:
+        bind_task_default_orchestration(session, task_id=task.id, project_id=project_id, actor_id=actor_id)
+    else:
+        bind_task_template(session, task_id=task.id, template_id=orchestration_template_id, actor_id=actor_id, correlation_id=correlation_id)
     append_audit_event(
         session,
         project_id=project_id,

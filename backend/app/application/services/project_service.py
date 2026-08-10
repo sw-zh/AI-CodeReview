@@ -6,6 +6,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import Project, ProjectMember, User
+from app.application.services.orchestration_service import ensure_default_orchestration
 
 
 def create_project(
@@ -15,6 +16,7 @@ def create_project(
     session.add(project)
     session.flush()
     session.add(ProjectMember(project_id=project.id, user_id=actor_id, role=ProjectRole.ADMIN))
+    ensure_default_orchestration(session, project_id=project.id, actor_id=actor_id)
     append_audit_event(
         session,
         project_id=project.id,

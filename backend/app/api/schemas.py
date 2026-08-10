@@ -30,6 +30,7 @@ class ProjectResponse(BaseModel):
 class TaskCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     requirement_key: str = Field(min_length=1, max_length=100)
+    orchestration_template_id: UUID | None = None
 
 
 class TaskResponse(BaseModel):
@@ -242,3 +243,49 @@ class SnapshotSearchRequest(BaseModel):
 
 class SnapshotSearchResponse(BaseModel):
     items: list[dict]
+
+
+class AgentToolCreateRequest(BaseModel):
+    key: str = Field(min_length=3, max_length=96)
+    name: str = Field(min_length=1, max_length=160)
+    tool_type: str = Field(pattern="^(DOCUMENT_RETRIEVAL|GIT_DIFF|CI_EVIDENCE|EVIDENCE_QUERY|HTTP_QUERY)$")
+    endpoint_url: str | None = Field(default=None, max_length=2000)
+    secret_ref: str | None = Field(default=None, max_length=160)
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
+
+
+class AgentCapabilityCreateRequest(BaseModel):
+    key: str = Field(min_length=3, max_length=96)
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=4000)
+    core_scope: str = Field(pattern="^(REQUIREMENT|DELIVERY|SHARED)$")
+    prompt_template: str = Field(default="", max_length=20_000)
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
+    parameter_schema: dict = Field(default_factory=dict)
+    tool_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+
+class AgentCapabilityVersionCreateRequest(BaseModel):
+    prompt_template: str = Field(default="", max_length=20_000)
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
+    parameter_schema: dict = Field(default_factory=dict)
+    tool_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+
+class OrchestrationTemplateNodeInput(BaseModel):
+    capability_version_id: UUID
+    enabled: bool = True
+    parameters: dict = Field(default_factory=dict)
+
+
+class OrchestrationTemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=4000)
+    nodes: list[OrchestrationTemplateNodeInput] = Field(min_length=1, max_length=30)
+
+
+class TaskOrchestrationBindingRequest(BaseModel):
+    template_id: UUID

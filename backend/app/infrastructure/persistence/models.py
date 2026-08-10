@@ -515,3 +515,123 @@ class AuditEvent(Base):
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentTool(TimestampedEntity, Base):
+    """A project-scoped, read-only tool that may be granted to an Agent capability."""
+
+    __tablename__ = "agent_tools"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_agent_tool_project_key"),
+        CheckConstraint(
+            "tool_type IN ('DOCUMENT_RETRIEVAL', 'GIT_DIFF', 'CI_EVIDENCE', 'EVIDENCE_QUERY', 'HTTP_QUERY')",
+            name="ck_agent_tool_type",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String(96), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    tool_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    endpoint_url: Mapped[str | None] = mapped_column(Text)
+    secret_ref: Mapped[str | None] = mapped_column(String(160))
+    input_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    output_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    is_system: Mapped[bool] = mapped_column(nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class AgentCapability(TimestampedEntity, Base):
+    """A core or user-defined Agent. Runtime behaviour always comes from a version."""
+
+    __tablename__ = "agent_capabilities"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_agent_capability_project_key"),
+        CheckConstraint("core_scope IN ('REQUIREMENT', 'DELIVERY', 'SHARED')", name="ck_agent_capability_core_scope"),
+        CheckConstraint("kind IN ('SYSTEM', 'CUSTOM')", name="ck_agent_capability_kind"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String(96), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    core_scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_locked: Mapped[bool] = mapped_column(nullable=False, default=False)
+    is_default_enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class AgentCapabilityVersion(Base):
+    __tablename__ = "agent_capability_versions"
+    __table_args__ = (UniqueConstraint("capability_id", "version_no", name="uq_agent_capability_version"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    capability_id: Mapped[UUID] = mapped_column(ForeignKey("agent_capabilities.id", ondelete="CASCADE"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    input_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    output_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    tool_bindings: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    parameter_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OrchestrationTemplate(TimestampedEntity, Base):
+    __tablename__ = "orchestration_templates"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_orchestration_template_project_name"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_default: Mapped[bool] = mapped_column(nullable=False, default=False)
+    is_system: Mapped[bool] = mapped_column(nullable=False, default=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class OrchestrationTemplateNode(Base):
+    __tablename__ = "orchestration_template_nodes"
+    __table_args__ = (
+        UniqueConstraint("template_id", "display_order", name="uq_orchestration_template_node_order"),
+        UniqueConstraint("template_id", "capability_version_id", name="uq_orchestration_template_capability"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    template_id: Mapped[UUID] = mapped_column(ForeignKey("orchestration_templates.id", ondelete="CASCADE"), nullable=False)
+    capability_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_capability_versions.id"), nullable=False)
+    core_scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
+    parameters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class TaskOrchestrationBinding(Base):
+    __tablename__ = "task_orchestration_bindings"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("verification_tasks.id", ondelete="CASCADE"), unique=True, nullable=False)
+    template_id: Mapped[UUID] = mapped_column(ForeignKey("orchestration_templates.id"), nullable=False)
+    template_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    bound_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalysisRunOrchestrationSnapshot(Base):
+    __tablename__ = "analysis_run_orchestration_snapshots"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), unique=True, nullable=False)
+    template_id: Mapped[UUID] = mapped_column(ForeignKey("orchestration_templates.id"), nullable=False)
+    template_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    template_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    nodes_snapshot: Mapped[list] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

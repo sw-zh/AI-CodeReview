@@ -22,6 +22,7 @@ from app.infrastructure.persistence.models import (
     VerificationCycle,
     VerificationTask,
 )
+from app.application.services.orchestration_service import freeze_run_orchestration, orchestration_fingerprint
 
 
 def start_analysis_run(
@@ -42,12 +43,13 @@ def start_analysis_run(
         return session.get(AnalysisRun, existing_job.run_id)
     settings = get_settings()
     config = {
-        "workflow": "v1",
+        "workflow": "dual-core-v1",
         "rules": "v1",
         "prompt": "v1",
         "schema": "v1",
         "generationProvider": settings.generation_provider,
         "generationModel": settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1",
+        "orchestrationHash": orchestration_fingerprint(session, task=task, actor_id=actor_id),
     }
     config_hash = f"sha256:{hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()}"
     existing_run = session.query(AnalysisRun).filter(AnalysisRun.snapshot_id == snapshot.id, AnalysisRun.analysis_config_hash == config_hash, AnalysisRun.run_status.in_(("QUEUED", "RUNNING"))).one_or_none()
@@ -57,11 +59,15 @@ def start_analysis_run(
     run = AnalysisRun(snapshot_id=snapshot.id, analysis_config_hash=config_hash, manifest_hash=manifest_hash, checkpoint_ns=f"run-{uuid4()}")
     session.add(run)
     session.flush()
-    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="v1", rule_set_version="v1", prompt_set_version="v1", generation_model=config["generationModel"], embedding_model=settings.embedding_model, schema_version="v1"))
+    orchestration_snapshot = freeze_run_orchestration(session, run=run, task=task, actor_id=actor_id)
+    if config["orchestrationHash"] != orchestration_snapshot.content_hash:
+        raise DomainError("ORCHESTRATION_CHANGED", "启动过程中编排模板发生变化，请重新发起分析")
+    session.add(orchestration_snapshot)
+    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="dual-core-v1", rule_set_version="v1", prompt_set_version="v1", generation_model=config["generationModel"], embedding_model=settings.embedding_model, schema_version="v1"))
     session.add(AnalysisJob(run_id=run.id, idempotency_key=idempotency_key, max_attempts=settings.job_max_attempts))
     cycle.business_status = "ANALYZING"
     cycle.active_run_id = run.id
-    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="AnalysisRun", aggregate_id=run.id, action="ANALYSIS_RUN_QUEUED", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash})
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="AnalysisRun", aggregate_id=run.id, action="ANALYSIS_RUN_QUEUED", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "orchestrationHash": orchestration_snapshot.content_hash})
     return run
 
 

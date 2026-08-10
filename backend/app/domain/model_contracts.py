@@ -23,6 +23,8 @@ class GenerationRequest:
     schema_version: str
     claims: list[dict]
     evidence: list[dict]
+    instruction: str = ""
+    operation: str = "LINK_PROPOSAL"
 
 
 @dataclass(frozen=True)

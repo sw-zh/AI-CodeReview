@@ -16,6 +16,7 @@ from app.infrastructure.persistence.models import (
     AnalysisCoverage,
     AnalysisRun,
     AnalysisRunManifest,
+    AnalysisRunOrchestrationSnapshot,
     Claim,
     ClaimEvidenceLink,
     EvidenceItem,
@@ -116,6 +117,25 @@ def _parse_hunks(diff: str) -> list[tuple[str, str, int | None, int | None, str]
 
 def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) -> VerificationGraphState:
     """Persist deterministic evidence first; heuristic matches never become CONFIRMED."""
+
+    orchestration = session.query(AnalysisRunOrchestrationSnapshot).filter_by(run_id=run_id).one_or_none()
+    if orchestration is None:
+        raise DomainError("ORCHESTRATION_SNAPSHOT_MISSING", "analysis run has no frozen orchestration snapshot")
+    enabled_nodes = [item for item in orchestration.nodes_snapshot if item.get("enabled")]
+    enabled_keys = {str(item.get("capabilityKey")) for item in enabled_nodes}
+    required_keys = {"requirement-claim-core", "delivery-git-diff", "evidence-reconciliation"}
+    if not required_keys.issubset(enabled_keys):
+        raise DomainError("ORCHESTRATION_INVALID", "frozen orchestration is missing a required dual-core node")
+    built_in_keys = {
+        "requirement-claim-core",
+        "delivery-git-diff",
+        "ci-evidence-import",
+        "risk-scan",
+        "model-link-proposal",
+        "evidence-reconciliation",
+        "report-draft",
+    }
+    custom_agent_nodes = [item for item in enabled_nodes if item.get("capabilityKey") not in built_in_keys]
 
     def ensure_not_cancelled() -> None:
         run = session.get(AnalysisRun, run_id)
@@ -319,6 +339,9 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
 
     def propose_model_links(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
+        if "model-link-proposal" not in enabled_keys:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="SKIPPED", reason_code="DISABLED_BY_TEMPLATE"))
+            return {}
         actual_evidence = [session.get(EvidenceItem, UUID(item)) for item in [*state.get("git_evidence_ids", []), *state.get("external_evidence_ids", []), *state.get("manual_evidence_ids", [])]]
         actual_evidence = [item for item in actual_evidence if item is not None]
         claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
@@ -398,6 +421,54 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="UNAVAILABLE", reason_code=exc.code))
             return {"node_errors": [*state.get("node_errors", []), exc.code]}
 
+    def run_custom_agents(state: VerificationGraphState) -> VerificationGraphState:
+        """Custom Prompt Agents may suggest links, but never bypass the deterministic verdict."""
+        ensure_not_cancelled()
+        if not custom_agent_nodes:
+            return {}
+        evidence = [
+            session.get(EvidenceItem, UUID(item))
+            for item in [
+                *state.get("evidence_ids", []),
+                *state.get("git_evidence_ids", []),
+                *state.get("external_evidence_ids", []),
+                *state.get("manual_evidence_ids", []),
+            ]
+        ]
+        evidence = [item for item in evidence if item is not None]
+        claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
+        claims = [item for item in claims if item is not None]
+        allowed_ids = {str(item.id) for item in evidence}
+        settings = get_settings()
+        for node in custom_agent_nodes:
+            key = str(node.get("capabilityKey"))
+            request = GenerationRequest(
+                run_id=run_id,
+                prompt_version=f"agent-{node.get('capabilityVersion', 1)}",
+                schema_version="v1",
+                instruction=str(node.get("promptTemplate", ""))[:20_000],
+                operation=f"CUSTOM_AGENT:{key}",
+                claims=[{"id": str(claim.id), "text": claim.text, "candidateEvidenceIds": sorted(allowed_ids)} for claim in claims],
+                evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in evidence],
+            )
+            try:
+                generated = create_generation_model(settings).generate(request)
+                session.add(ModelCall(run_id=run_id, provider=generated.provider, model=generated.model, operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="SUCCEEDED", latency_ms=generated.latency_ms, attempts=generated.attempts))
+                claim_ids = {str(claim.id) for claim in claims}
+                for proposal in generated.proposals.proposals:
+                    if str(proposal.claim_id) not in claim_ids or str(proposal.evidence_id) not in allowed_ids:
+                        continue
+                    existing = session.query(ClaimEvidenceLink).filter_by(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation).one_or_none()
+                    if existing is None:
+                        session.add(ClaimEvidenceLink(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation, reason=proposal.rationale, confidence=0.5, produced_by="MODEL", requires_human_confirmation=True))
+                session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="ANALYZED"))
+            except DomainError as exc:
+                session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1", operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+                session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="UNAVAILABLE", reason_code=exc.code))
+                state["node_errors"] = [*state.get("node_errors", []), f"{key}:{exc.code}"]
+        session.flush()
+        return {"node_errors": state.get("node_errors", [])}
+
     def reconcile(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
         results: list[str] = []
@@ -418,6 +489,8 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             )
             if deterministic_conflicts:
                 for conflict in deterministic_conflicts:
+                    if "risk-scan" not in enabled_keys:
+                        continue
                     existing_finding = session.query(RiskFinding).filter_by(
                         analysis_run_id=run_id,
                         claim_id=claim.id,
@@ -480,13 +553,15 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     graph.add_node("create_claims", observed("create_claims", create_claims))
     graph.add_node("link_deterministic", observed("link_deterministic", link_deterministic))
     graph.add_node("propose_model_links", observed("propose_model_links", propose_model_links))
+    graph.add_node("run_custom_agents", observed("run_custom_agents", run_custom_agents))
     graph.add_node("reconcile", observed("reconcile", reconcile))
     graph.add_edge(START, "load_snapshot")
     graph.add_edge("load_snapshot", "collect_git_evidence")
     graph.add_edge("collect_git_evidence", "create_claims")
     graph.add_edge("create_claims", "link_deterministic")
     graph.add_edge("link_deterministic", "propose_model_links")
-    graph.add_edge("propose_model_links", "reconcile")
+    graph.add_edge("propose_model_links", "run_custom_agents")
+    graph.add_edge("run_custom_agents", "reconcile")
     graph.add_edge("reconcile", END)
     return graph.compile().invoke({
         "analysis_run_id": str(run_id),

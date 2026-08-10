@@ -27,6 +27,7 @@ def create(
             requirement_key=payload.requirement_key,
             actor_id=user.id,
             correlation_id=correlation_id(request),
+            orchestration_template_id=payload.orchestration_template_id,
         )
         session.commit()
         return TaskResponse(
