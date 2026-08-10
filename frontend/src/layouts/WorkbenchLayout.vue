@@ -6,6 +6,7 @@ const route = useRoute()
 const router = useRouter()
 const projectTabs = [
   { label: '项目知识库', to: '/knowledge-base' },
+  { label: 'Agent 功能块', to: '/agent-blocks' },
   { label: '任务中心', to: '/tasks' },
   { label: '交付历史', to: '/deliveries' },
 ]

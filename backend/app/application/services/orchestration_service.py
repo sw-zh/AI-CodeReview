@@ -331,8 +331,12 @@ def list_orchestration(session: Session, *, project_id: UUID, actor_id: UUID) ->
     capabilities = session.query(AgentCapability).filter_by(project_id=project_id).order_by(AgentCapability.created_at).all()
     tools = session.query(AgentTool).filter_by(project_id=project_id).order_by(AgentTool.created_at).all()
     templates = session.query(OrchestrationTemplate).filter_by(project_id=project_id).order_by(OrchestrationTemplate.is_default.desc(), OrchestrationTemplate.created_at).all()
+    latest_versions = {
+        capability.id: session.query(AgentCapabilityVersion).filter_by(capability_id=capability.id).order_by(AgentCapabilityVersion.version_no.desc()).first()
+        for capability in capabilities
+    }
     return {
-        "capabilities": [{"id": str(item.id), "key": item.key, "name": item.name, "description": item.description, "coreScope": item.core_scope, "kind": item.kind, "isLocked": item.is_locked, "isDefaultEnabled": item.is_default_enabled, "isActive": item.is_active} for item in capabilities],
+        "capabilities": [{"id": str(item.id), "key": item.key, "name": item.name, "description": item.description, "coreScope": item.core_scope, "kind": item.kind, "isLocked": item.is_locked, "isDefaultEnabled": item.is_default_enabled, "isActive": item.is_active, "latestVersionId": str(latest_versions[item.id].id) if latest_versions[item.id] else None, "latestVersion": latest_versions[item.id].version_no if latest_versions[item.id] else None} for item in capabilities],
         "tools": [{"id": str(item.id), "key": item.key, "name": item.name, "toolType": item.tool_type, "endpointUrl": item.endpoint_url, "secretRef": item.secret_ref, "isSystem": item.is_system, "isActive": item.is_active} for item in tools],
         "templates": [{"id": str(item.id), "name": item.name, "description": item.description, "isDefault": item.is_default, "isSystem": item.is_system, "version": item.version, "nodes": [{"capabilityVersionId": str(version.id), "capabilityKey": capability.key, "capabilityName": capability.name, "coreScope": node.core_scope, "displayOrder": node.display_order, "enabled": node.enabled, "locked": capability.is_locked, "parameters": node.parameters} for node, version, capability in _template_nodes(session, item.id)]} for item in templates],
     }

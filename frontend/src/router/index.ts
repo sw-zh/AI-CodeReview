@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import WorkbenchLayout from '../layouts/WorkbenchLayout.vue'
 import ApprovalDetailPage from '../pages/ApprovalDetailPage.vue'
+import AgentBlocksPage from '../pages/AgentBlocksPage.vue'
 import ApprovalQueuePage from '../pages/ApprovalQueuePage.vue'
 import DeliveryDetailPage from '../pages/DeliveryDetailPage.vue'
 import DeliveryHistoryPage from '../pages/DeliveryHistoryPage.vue'
@@ -30,6 +31,7 @@ export const router = createRouter({
         { path: '', redirect: '/workbench' },
         { path: 'workbench', component: WorkbenchHomePage, meta: { title: '工作台', area: 'project' } },
         { path: 'knowledge-base', component: KnowledgeBasePage, meta: { title: '项目知识库', area: 'project' } },
+        { path: 'agent-blocks', component: AgentBlocksPage, meta: { title: 'Agent 功能块', area: 'project' } },
         { path: 'tasks', component: TaskCenterPage, meta: { title: '任务中心', area: 'project' } },
         { path: 'tasks/:taskId/notebook', component: NotebookWorkspacePage, meta: { title: 'Notebook 审查', area: 'project', section: 'notebook' } },
         { path: 'approvals', component: ApprovalQueuePage, meta: { title: '待审批队列', area: 'approval' } },
