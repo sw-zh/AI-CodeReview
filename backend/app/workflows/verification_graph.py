@@ -408,7 +408,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             session.add(ModelCall(
                 run_id=run_id,
                 provider=settings.generation_provider,
-                model=settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1",
+                model=settings.generation_model_name,
                 operation="LINK_PROPOSAL",
                 prompt_version=request.prompt_version,
                 schema_version=request.schema_version,
@@ -463,7 +463,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         session.add(ClaimEvidenceLink(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation, reason=proposal.rationale, confidence=0.5, produced_by="MODEL", requires_human_confirmation=True))
                 session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="ANALYZED"))
             except DomainError as exc:
-                session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.gemini_generation_model if settings.generation_provider == "gemini" else "fake-model-v1", operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+                session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
                 session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="UNAVAILABLE", reason_code=exc.code))
                 state["node_errors"] = [*state.get("node_errors", []), f"{key}:{exc.code}"]
         session.flush()
