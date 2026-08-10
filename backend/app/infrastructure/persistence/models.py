@@ -49,6 +49,118 @@ class ProjectMember(TimestampedEntity, Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class ExternalConnection(TimestampedEntity, Base):
+    """A project-scoped read-only source connection; credentials stay in the environment."""
+
+    __tablename__ = "external_connections"
+    __table_args__ = (
+        UniqueConstraint("project_id", "provider", "repository_slug", name="uq_external_connection_project_provider_repo"),
+        CheckConstraint("provider IN ('GITHUB')", name="ck_external_connection_provider"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    repository_slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    api_base_url: Mapped[str] = mapped_column(Text, nullable=False, default="https://api.github.com")
+    secret_ref: Mapped[str | None] = mapped_column(String(160))
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class SourceSyncRun(Base):
+    __tablename__ = "source_sync_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('RUNNING', 'SUCCEEDED', 'PARTIALLY_SUCCEEDED', 'FAILED')",
+            name="ck_source_sync_run_status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    connection_id: Mapped[UUID] = mapped_column(ForeignKey("external_connections.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    changed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class ExternalResource(TimestampedEntity, Base):
+    __tablename__ = "external_resources"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "resource_type", "external_key", name="uq_external_resource_connection_type_key"),
+        CheckConstraint("resource_type IN ('ISSUE', 'PULL_REQUEST', 'MILESTONE')", name="ck_external_resource_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    connection_id: Mapped[UUID] = mapped_column(ForeignKey("external_connections.id", ondelete="CASCADE"), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    logical_key: Mapped[str] = mapped_column(String(320), nullable=False)
+
+
+class ExternalResourceRevision(Base):
+    __tablename__ = "external_resource_revisions"
+    __table_args__ = (UniqueConstraint("resource_id", "revision_no", name="uq_external_resource_revision"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    resource_id: Mapped[UUID] = mapped_column(ForeignKey("external_resources.id", ondelete="CASCADE"), nullable=False)
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(64), nullable=False)
+    web_url: Mapped[str] = mapped_column(Text, nullable=False)
+    milestone_key: Mapped[str | None] = mapped_column(String(160))
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DeliveryItem(TimestampedEntity, Base):
+    """A source-derived development/delivery item; planning and verification status never overwrite each other."""
+
+    __tablename__ = "delivery_items"
+    __table_args__ = (
+        UniqueConstraint("project_id", "external_key", name="uq_delivery_item_project_external_key"),
+        CheckConstraint("planning_status IN ('OPEN', 'IN_PROGRESS', 'DECLARED_DONE', 'CANCELLED')", name="ck_delivery_item_planning_status"),
+        CheckConstraint("verification_status IN ('NOT_ASSESSED', 'PARTIALLY_SUPPORTED', 'CONFIRMED', 'CONFLICT', 'INSUFFICIENT_EVIDENCE')", name="ck_delivery_item_verification_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    external_resource_id: Mapped[UUID] = mapped_column(ForeignKey("external_resources.id", ondelete="RESTRICT"), nullable=False)
+    external_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    planning_status: Mapped[str] = mapped_column(String(32), nullable=False, default="OPEN")
+    verification_status: Mapped[str] = mapped_column(String(32), nullable=False, default="NOT_ASSESSED")
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeliveryItemSourceLink(Base):
+    __tablename__ = "delivery_item_source_links"
+    __table_args__ = (
+        CheckConstraint("link_role IN ('PRIMARY', 'ACCEPTANCE', 'DESIGN', 'PLAN')", name="ck_delivery_item_source_link_role"),
+        CheckConstraint(
+            "(external_resource_revision_id IS NOT NULL AND source_revision_id IS NULL) OR "
+            "(external_resource_revision_id IS NULL AND source_revision_id IS NOT NULL)",
+            name="ck_delivery_item_source_link_exactly_one_source",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    delivery_item_id: Mapped[UUID] = mapped_column(ForeignKey("delivery_items.id", ondelete="CASCADE"), nullable=False)
+    external_resource_revision_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_resource_revisions.id", ondelete="RESTRICT"))
+    source_revision_id: Mapped[UUID | None] = mapped_column(ForeignKey("source_revisions.id", ondelete="RESTRICT"))
+    link_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class VerificationTask(TimestampedEntity, Base):
     __tablename__ = "verification_tasks"
     __table_args__ = (UniqueConstraint("project_id", "requirement_key", name="uq_task_project_requirement"),)

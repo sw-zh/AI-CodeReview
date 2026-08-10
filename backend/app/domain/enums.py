@@ -16,6 +16,38 @@ class AssessmentProfile(StrEnum):
     QUALITY_TREND = "QUALITY_TREND"
 
 
+class ExternalConnectionProvider(StrEnum):
+    GITHUB = "GITHUB"
+
+
+class ExternalResourceType(StrEnum):
+    ISSUE = "ISSUE"
+    PULL_REQUEST = "PULL_REQUEST"
+    MILESTONE = "MILESTONE"
+
+
+class SourceSyncStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    PARTIALLY_SUCCEEDED = "PARTIALLY_SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class DeliveryPlanningStatus(StrEnum):
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    DECLARED_DONE = "DECLARED_DONE"
+    CANCELLED = "CANCELLED"
+
+
+class DeliveryVerificationStatus(StrEnum):
+    NOT_ASSESSED = "NOT_ASSESSED"
+    PARTIALLY_SUPPORTED = "PARTIALLY_SUPPORTED"
+    CONFIRMED = "CONFIRMED"
+    CONFLICT = "CONFLICT"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
 class SourceProcessingStatus(StrEnum):
     UPLOADED = "UPLOADED"
     PARSING = "PARSING"

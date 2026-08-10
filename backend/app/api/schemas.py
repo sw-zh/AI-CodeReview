@@ -296,3 +296,48 @@ class OrchestrationTemplateCreateRequest(BaseModel):
 
 class TaskOrchestrationBindingRequest(BaseModel):
     template_id: UUID
+
+
+class ExternalConnectionCreateRequest(BaseModel):
+    provider: str = Field(default="GITHUB", pattern="^GITHUB$")
+    name: str = Field(min_length=1, max_length=160)
+    repository_slug: str = Field(min_length=3, max_length=255)
+    secret_ref: str | None = Field(default=None, max_length=160)
+
+
+class ExternalConnectionResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    provider: str
+    name: str
+    repository_slug: str
+    secret_ref_configured: bool
+    is_active: bool
+    created_at: datetime
+
+
+class SourceSyncRunResponse(BaseModel):
+    id: UUID
+    connection_id: UUID
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    fetched_count: int
+    changed_count: int
+    error_code: str | None
+    error_message: str | None
+
+
+class DeliveryItemResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    external_key: str
+    title: str
+    planning_status: str
+    verification_status: str
+    source_updated_at: datetime | None
+    provider: str
+    repository_slug: str
+    web_url: str
+    milestone_key: str | None
+    resource_revision: int

@@ -15,6 +15,11 @@
 - 已新增 `AssessmentProfile`、016 迁移及相关持久化字段；快照哈希、分析启动、模板校验、编排快照、Worker 分发和报告/正式记录均已开始按交付核验 Profile 收敛。
 - `python -m compileall -q backend\\app backend\\migrations\\versions` 与 `git diff --check` 已通过；未执行测试套件，符合当前用户偏好。已更新功能记录，准备进行变更审查与提交。
 - 已提交 `61a6539 功能：区分交付核验运行范围`；未执行推送。第一切片完成，后续进入外部来源与研发事项镜像切片。
+- 已确认仓库实际使用 GitHub，第二切片以 GitHub 只读连接作为首个实际适配器；开始新增来源、同步与交付项领域对象。
+- 已实现 GitHub 只读来源连接、同步记录、资源版本、Issue/PR/Milestone 镜像与 Issue 到研发事项投影；完成 API、环境变量示例和功能记录，准备验证。
+- 系统 Python 的离线 Alembic 校验失败，原因是未安装 `alembic`；将改用仓库既有 `.venv`，不新增依赖。
+- `.venv` 已具备 Alembic，但离线脚本因 shell 没有 `JWT_SECRET` 无法创建 Settings；下一次校验仅传入临时占位值，不写入配置文件或数据库。
+- `.venv` 的 `alembic upgrade head --sql` 已通过，包含 016 与 017；临时 JWT 只存在于该命令进程。`git diff --check` 也已通过，未调用 GitHub 或运行测试套件。
 
 ## 2026-07-31
 

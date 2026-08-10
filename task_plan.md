@@ -17,6 +17,20 @@
 3. 收敛快照、分析、编排和 Worker 行为。`complete`
 4. 更新功能文档，进行静态检查并提交。`complete`
 
+## 2026-08-10 当前实现：外部来源与研发事项镜像
+
+### Goal
+
+为 GitHub 项目建立只读来源连接、版本镜像、同步记录和研发事项投影；复用既有资料版本作为文档来源，不创建本系统手工任务作为事实替代。
+
+### Phases
+
+1. 审计仓库平台、现有 Git/资料模型与安全请求边界。`complete`
+2. 增加来源连接、资源版本、同步记录和交付项迁移/模型。`complete`
+3. 实现 GitHub 只读同步、事项投影和 API。`complete`
+4. 更新功能文档，进行静态检查并提交。`complete`
+4. 更新功能文档，进行静态检查并提交。`pending`
+
 ## 2026-08-10 当前任务：总体方向的开发方案
 
 ### Goal
@@ -46,6 +60,8 @@ Phase 4 - complete
 | 情况 | 处理 |
 | --- | --- |
 | 首次搜索 DTO 时假定存在 `backend/app/api/schemas/` 目录，实际为单文件 `backend/app/api/schemas.py` | 已改用文件发现并读取正确路径；未修改任何代码 |
+| 系统 Python 缺少 `alembic`，无法执行离线迁移 SQL 校验 | 改用仓库 `.venv` 的 Python 解释器；不安装或修改依赖 |
+| 仓库 `.venv` 的 Alembic 离线模式仍需加载 `Settings`，当前 shell 未提供 `JWT_SECRET` | 仅为该离线命令注入临时占位 JWT 值；不写入 `.env`，不连接数据库 |
 
 ## Goal
 

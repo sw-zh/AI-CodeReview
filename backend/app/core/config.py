@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     agent_tool_allowed_hosts: list[str] = Field(default_factory=list)
     agent_tool_timeout_seconds: int = Field(default=10, ge=1, le=30)
     agent_tool_response_limit_bytes: int = Field(default=262_144, ge=4_096, le=1_048_576)
+    github_sync_timeout_seconds: int = Field(default=15, ge=1, le=30)
+    github_sync_response_limit_bytes: int = Field(default=2_097_152, ge=65_536, le=8_388_608)
     embedding_model: str = "text-embedding-004"
 
     @property
