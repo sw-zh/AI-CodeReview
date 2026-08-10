@@ -9,6 +9,8 @@ import IntegrationsSettingsPage from '../pages/IntegrationsSettingsPage.vue'
 import KnowledgeBasePage from '../pages/KnowledgeBasePage.vue'
 import LoginPage from '../pages/LoginPage.vue'
 import NotebookWorkspacePage from '../pages/NotebookWorkspacePage.vue'
+import ProjectStatusPage from '../pages/ProjectStatusPage.vue'
+import SecurityBaselinePage from '../pages/SecurityBaselinePage.vue'
 import TaskCenterPage from '../pages/TaskCenterPage.vue'
 import WorkbenchHomePage from '../pages/WorkbenchHomePage.vue'
 
@@ -32,11 +34,13 @@ export const router = createRouter({
         { path: 'workbench', component: WorkbenchHomePage, meta: { title: '工作台', area: 'project' } },
         { path: 'knowledge-base', component: KnowledgeBasePage, meta: { title: '项目知识库', area: 'project' } },
         { path: 'agent-blocks', component: AgentBlocksPage, meta: { title: 'Agent 功能块', area: 'project' } },
-        { path: 'tasks', component: TaskCenterPage, meta: { title: '任务中心', area: 'project' } },
+        { path: 'tasks', component: TaskCenterPage, meta: { title: '研发事项 / 交付项', area: 'project' } },
         { path: 'tasks/:taskId/notebook', component: NotebookWorkspacePage, meta: { title: 'Notebook 审查', area: 'project', section: 'notebook' } },
         { path: 'approvals', component: ApprovalQueuePage, meta: { title: '待审批队列', area: 'approval' } },
         { path: 'approvals/:approvalId', component: ApprovalDetailPage, meta: { title: '审批详情', area: 'approval' } },
-        { path: 'deliveries', component: DeliveryHistoryPage, meta: { title: '交付历史', area: 'project' } },
+        { path: 'project-status', component: ProjectStatusPage, meta: { title: '项目态势', area: 'project' } },
+        { path: 'security-baselines', component: SecurityBaselinePage, meta: { title: '安全与质量', area: 'project' } },
+        { path: 'deliveries', component: DeliveryHistoryPage, meta: { title: '正式记录', area: 'project' } },
         { path: 'deliveries/:deliveryId', component: DeliveryDetailPage, meta: { title: '交付详情', area: 'project' } },
         { path: 'settings', component: IntegrationsSettingsPage, meta: { title: '集成与设置', area: 'settings' } },
       ],

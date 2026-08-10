@@ -30,6 +30,18 @@ def create_project(
     return project
 
 
+def list_projects(session: Session, *, actor_id: UUID) -> list[Project]:
+    """Return only projects the current user can actually enter."""
+
+    return (
+        session.query(Project)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .filter(ProjectMember.user_id == actor_id)
+        .order_by(Project.updated_at.desc(), Project.created_at.desc())
+        .all()
+    )
+
+
 def add_member(session: Session, *, project_id: UUID, user_id: UUID, role: str, actor_id: UUID, correlation_id: str) -> ProjectMember:
     require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
     if session.get(User, user_id) is None:

@@ -1,7 +1,35 @@
 <script setup lang="ts">
-import { verificationTasks } from '../features/workbench/workbench-fixtures'
+import { computed, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
+import { apiRequest, projectHeaders, selectedProject, selectedProjectId } from '../features/projects/project-context'
+
+interface ProjectReport { id: string; task_title: string; sequence_no: number; submitted_by_name: string | null; editorial_note: string; submitted_at: string | null; snapshot_hash: string; latest_approval_reason: string | null }
+
+const reports = ref<ProjectReport[]>([])
+const query = ref('')
+const busy = ref(false)
+const message = ref('只展示当前项目已提交、尚待人工审批的交付核验报告。')
+const visibleReports = computed(() => { const q = query.value.trim().toLowerCase(); return q ? reports.value.filter((report) => `${report.task_title} ${report.submitted_by_name ?? ''}`.toLowerCase().includes(q)) : reports.value })
+
+function formatDate(value: string | null) { return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—' }
+
+async function load() {
+  const projectId = selectedProjectId.value
+  if (!projectId) { reports.value = []; return }
+  busy.value = true
+  try {
+    const list = await apiRequest<ProjectReport[]>(`/projects/${projectId}/report-versions?status_filter=SUBMITTED`, { headers: projectHeaders() })
+    if (projectId !== selectedProjectId.value) return
+    reports.value = list
+    message.value = list.length ? '审批针对特定报告版本与冻结输入快照；审批人不能把项目计划状态直接当作交付事实。' : '当前项目没有待审批的报告。'
+  } catch (error) { if (projectId === selectedProjectId.value) message.value = error instanceof Error ? error.message : '待审批队列加载失败' } finally { if (projectId === selectedProjectId.value) busy.value = false }
+}
+
+watch(selectedProjectId, () => { void load() }, { immediate: true })
 </script>
 
 <template>
-  <section class="page page-approvals"><header class="page-heading"><div><h1>待审批队列</h1><p>审批绑定报告版本与输入快照，只展示需要你作出决定的事项。</p></div></header><div class="filter-row"><select aria-label="项目"><option>全部项目</option></select><select aria-label="截止时间"><option>全部截止时间</option></select><select aria-label="证据状态"><option>全部证据状态</option></select><select aria-label="提交人"><option>全部提交人</option></select><input placeholder="搜索任务、报告或提交人" /></div><section class="surface"><div class="data-table approval-table"><div class="table-row table-header"><span>任务</span><span>报告版本</span><span>提交人</span><span>证据状态</span><span>待确认原因</span><span>提交时间</span><span>截止时间</span></div><RouterLink v-for="task in verificationTasks" :key="task.id" class="table-row table-button" :to="`/approvals/${task.id}`"><strong>{{ task.title }}</strong><span>v1.3.2</span><span>{{ task.owner }}</span><span>部分缺失</span><span>需要核对结论与证据引用</span><time>2025-06-12 10:24</time><time>{{ task.updatedAt }}</time></RouterLink></div><p class="table-note">报告或输入发生变化后，必须重新提交并发起审批。</p></section></section>
+  <section class="page page-approvals"><header class="page-heading"><div><h1>待审批队列</h1><p v-if="selectedProject">{{ selectedProject.name }}：审批绑定报告版本与输入快照，只展示需要人工决定的事项。</p><p v-else>请先选择项目。</p></div></header><p class="page-context-note">{{ message }}</p>
+    <template v-if="selectedProject"><div class="filter-row"><input v-model="query" placeholder="搜索核验任务或提交人" /></div><section class="surface"><div v-if="visibleReports.length" class="data-table approval-table"><div class="table-row table-header"><span>核验任务</span><span>报告版本</span><span>提交人</span><span>输入快照</span><span>待确认原因</span><span>提交时间</span></div><RouterLink v-for="report in visibleReports" :key="report.id" class="table-row table-button" :to="`/approvals/${report.id}`"><strong>{{ report.task_title }}</strong><span>v{{ report.sequence_no }}</span><span>{{ report.submitted_by_name || '—' }}</span><span>{{ report.snapshot_hash.slice(0, 12) }}…</span><span>{{ report.latest_approval_reason || report.editorial_note || '等待审批人基于引用证据作出决定' }}</span><time>{{ formatDate(report.submitted_at) }}</time></RouterLink></div><p v-else class="empty-row">没有符合当前筛选条件的待审批报告。</p><p class="table-note">报告或输入发生变化后，必须重新形成报告并提交审批。</p></section></template>
+  </section>
 </template>

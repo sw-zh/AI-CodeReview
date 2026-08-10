@@ -1,3 +1,31 @@
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
+import { apiRequest, projectHeaders, selectedProject, selectedProjectId } from '../features/projects/project-context'
+
+interface PublishedRecord { id: string; task_title: string; requirement_key: string; report_sequence_no: number; report_status: string; snapshot_hash: string; record_type: string; record_no: string; record_hash: string; published_by_name: string | null; published_at: string; approval_action: string | null; approval_reason: string | null; approval_by_name: string | null; approval_at: string | null }
+const route = useRoute()
+const record = ref<PublishedRecord | null>(null)
+const message = ref('正式记录一经固化不可编辑；后续变更需要新的输入快照和新的记录。')
+const busy = ref(false)
+
+function formatDate(value: string | null) { return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—' }
+
+async function load() {
+  const projectId = selectedProjectId.value
+  const recordId = String(route.params.deliveryId ?? '')
+  if (!projectId || !recordId) { record.value = null; return }
+  busy.value = true
+  try {
+    record.value = await apiRequest<PublishedRecord>(`/projects/${projectId}/published-records/${recordId}`, { headers: projectHeaders() })
+  } catch (error) { record.value = null; message.value = error instanceof Error ? error.message : '正式记录加载失败' } finally { busy.value = false }
+}
+
+watch([selectedProjectId, () => route.params.deliveryId], () => { void load() }, { immediate: true })
+</script>
+
 <template>
-  <section class="page page-detail"><RouterLink class="back-link" to="/deliveries">返回交付历史</RouterLink><header class="page-heading detail-heading"><div><h1>交付详情</h1><p>支付链路交付记录 · 只读正式版本</p></div><span class="status-mark success">已发布</span></header><section class="surface formal-document"><div class="record-meta"><span>报告版本：v1.5.1</span><span>关联任务：TASK-5240</span><span>输入快照：snap_a1b2c3d4</span><span>审批人：王磊</span><span>发布时间：2025-05-21 14:32</span></div><div class="document-section"><h2>交付结论摘要</h2><p>该记录保留交付发布时的证据协调结果。已确认、部分支持、证据不足与待人工确认均保留原始状态。</p></div><div class="document-section two-column"><div><h2>报告版本</h2><p>v1.5.1 · 首次发布</p></div><div><h2>审批记录</h2><p>批准动作已绑定报告版本与输入快照。</p></div></div><div class="document-section"><h2>证据引用</h2><div class="evidence-list"><div><strong>代码文件</strong><span>commit · path · hunk · 行级定位</span></div><div><strong>测试结果</strong><span>报告 · 套件 · 用例 · 退出状态</span></div><div><strong>人工补证</strong><span>提交者 · 说明 · 附件版本</span></div></div></div><p class="immutable-note">该记录不可编辑。输入资料、Git 范围或测试证据发生变化时，必须创建新的输入快照和新的交付记录。</p></section></section>
+  <section class="page page-detail"><RouterLink class="back-link" to="/deliveries">返回正式记录</RouterLink><header class="page-heading detail-heading"><div><h1>正式记录详情</h1><p v-if="record">{{ record.task_title }} · 只读正式版本</p><p v-else>读取当前项目中已固化的交付记录。</p></div><span v-if="record" class="status-mark success">已固化</span></header><p class="page-context-note">{{ message }}</p>
+    <section v-if="record && selectedProject" class="surface formal-document"><div class="record-meta"><span>记录号：{{ record.record_no }}</span><span>报告版本：v{{ record.report_sequence_no }}</span><span>需求标识：{{ record.requirement_key }}</span><span>固化时间：{{ formatDate(record.published_at) }}</span></div><div class="document-section"><h2>不可变记录依据</h2><dl class="run-details"><div><dt>记录哈希</dt><dd>{{ record.record_hash }}</dd></div><div><dt>输入快照哈希</dt><dd>{{ record.snapshot_hash }}</dd></div><div><dt>记录类型</dt><dd>{{ record.record_type }}</dd></div><div><dt>固化人</dt><dd>{{ record.published_by_name || '—' }}</dd></div></dl></div><div class="document-section two-column"><div><h2>报告审批</h2><p>{{ record.approval_action || '—' }} · {{ record.approval_by_name || '—' }}</p><p>{{ formatDate(record.approval_at) }}</p></div><div><h2>审批说明</h2><p>{{ record.approval_reason || '无审批说明' }}</p></div></div><p class="immutable-note">此记录不因项目计划状态、PR 描述或后续提交而自动改写；需要重新核验时，必须形成新的正式输入与新记录。</p></section>
+  </section>
 </template>

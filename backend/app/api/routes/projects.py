@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import ProjectCreateRequest, ProjectMemberCreateRequest, ProjectResponse
-from app.application.services.project_service import add_member, add_member_by_email, create_project
+from app.application.services.project_service import add_member, add_member_by_email, create_project, list_projects
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import Project, ProjectMember
 
@@ -33,6 +33,11 @@ def create(
     except DomainError as exc:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message})
+
+
+@router.get("", response_model=list[ProjectResponse])
+def get_projects(session: SessionDep, user: CurrentUserDep) -> list[Project]:
+    return list_projects(session, actor_id=user.id)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)

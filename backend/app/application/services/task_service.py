@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.application.services.common import append_audit_event, require_project_role
 from app.domain.enums import CycleStatus, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import DeliveryItem, VerificationCycle, VerificationTask
+from app.infrastructure.persistence.models import DeliveryItem, InputSnapshot, PublishedRecord, ReportVersion, VerificationCycle, VerificationTask
 from app.application.services.orchestration_service import bind_task_default_orchestration, bind_task_template
 
 
@@ -67,3 +67,60 @@ def create_next_cycle(session: Session, *, task_id: UUID, actor_id: UUID, correl
     session.add(cycle); session.flush()
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="VerificationCycle", aggregate_id=cycle.id, action="VERIFICATION_CYCLE_CREATED", correlation_id=correlation_id, payload={"previousCycleId": str(previous.id)})
     return cycle
+
+
+def list_tasks(session: Session, *, project_id: UUID, actor_id: UUID, limit: int = 100) -> list[dict]:
+    """Expose task state without treating a task or a linked PR as delivery proof."""
+
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    tasks = (
+        session.query(VerificationTask)
+        .filter_by(project_id=project_id)
+        .order_by(VerificationTask.updated_at.desc(), VerificationTask.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    result: list[dict] = []
+    for task in tasks:
+        cycle = (
+            session.query(VerificationCycle)
+            .filter_by(task_id=task.id)
+            .order_by(VerificationCycle.sequence_no.desc())
+            .first()
+        )
+        snapshot = (
+            session.query(InputSnapshot)
+            .filter_by(cycle_id=cycle.id, purpose="FORMAL")
+            .order_by(InputSnapshot.created_at.desc())
+            .first()
+            if cycle
+            else None
+        )
+        report = (
+            session.query(ReportVersion)
+            .filter_by(cycle_id=cycle.id)
+            .order_by(ReportVersion.sequence_no.desc())
+            .first()
+            if cycle
+            else None
+        )
+        record = session.query(PublishedRecord).filter_by(report_version_id=report.id).one_or_none() if report else None
+        result.append(
+            {
+                "id": task.id,
+                "project_id": task.project_id,
+                "delivery_item_id": task.delivery_item_id,
+                "title": task.title,
+                "requirement_key": task.requirement_key,
+                "cycle_id": cycle.id if cycle else None,
+                "cycle_status": cycle.business_status if cycle else "UNKNOWN",
+                "formal_snapshot_id": snapshot.id if snapshot else None,
+                "formal_snapshot_hash": snapshot.snapshot_hash if snapshot else None,
+                "report_id": report.id if report else None,
+                "report_status": report.status if report else None,
+                "published_record_id": record.id if record else None,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+            }
+        )
+    return result

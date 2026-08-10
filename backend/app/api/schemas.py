@@ -45,6 +45,25 @@ class TaskResponse(BaseModel):
     version: int
 
 
+class VerificationTaskListResponse(BaseModel):
+    """A project-scoped task projection for the workbench list, never a new fact source."""
+
+    id: UUID
+    project_id: UUID
+    delivery_item_id: UUID | None
+    title: str
+    requirement_key: str
+    cycle_id: UUID | None
+    cycle_status: str
+    formal_snapshot_id: UUID | None
+    formal_snapshot_hash: str | None
+    report_id: UUID | None
+    report_status: str | None
+    published_record_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class SourceResponse(BaseModel):
     id: UUID
     project_id: UUID
@@ -176,6 +195,53 @@ class ReportResponse(BaseModel):
     version: int
 
 
+class ProjectReportResponse(BaseModel):
+    """Read model for a report in a project workbench or review queue."""
+
+    id: UUID
+    cycle_id: UUID
+    sequence_no: int
+    status: str
+    record_type: str
+    content_hash: str
+    snapshot_hash: str
+    editorial_note: str
+    submitted_at: datetime | None
+    task_id: UUID
+    task_title: str
+    requirement_key: str
+    delivery_item_id: UUID | None
+    submitted_by_name: str | None
+    latest_approval_action: str | None
+    latest_approval_reason: str | None
+    latest_approval_at: datetime | None
+
+
+class PublishedRecordResponse(BaseModel):
+    """Immutable delivery record projection, including its originating report context."""
+
+    id: UUID
+    project_id: UUID
+    task_id: UUID
+    task_title: str
+    requirement_key: str
+    delivery_item_id: UUID | None
+    cycle_id: UUID
+    report_version_id: UUID
+    report_sequence_no: int
+    report_status: str
+    snapshot_hash: str
+    record_type: str
+    record_no: str
+    record_hash: str
+    published_by_name: str | None
+    published_at: datetime
+    approval_action: str | None
+    approval_reason: str | None
+    approval_by_name: str | None
+    approval_at: datetime | None
+
+
 class ReportDraftUpdateRequest(BaseModel):
     editorial_note: str = Field(default="", max_length=8000)
     item_dispositions: dict[UUID, str | None] = Field(default_factory=dict, max_length=500)
@@ -264,7 +330,7 @@ class AgentCapabilityCreateRequest(BaseModel):
     key: str = Field(min_length=3, max_length=96)
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=4000)
-    core_scope: str = Field(pattern="^(REQUIREMENT|DELIVERY|SHARED)$")
+    core_scope: str = Field(pattern="^SHARED$")
     prompt_template: str = Field(default="", max_length=20_000)
     input_schema: dict = Field(default_factory=dict)
     output_schema: dict = Field(default_factory=dict)

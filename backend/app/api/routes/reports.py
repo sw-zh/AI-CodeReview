@@ -3,16 +3,59 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import ApprovalRequest, ReportDraftUpdateRequest, ReportResponse
-from app.application.services.report_service import approve, create_draft, publish, reject, request_changes, submit_for_review, update_draft
+from app.api.schemas import ApprovalRequest, ProjectReportResponse, PublishedRecordResponse, ReportDraftUpdateRequest, ReportResponse
+from app.application.services.report_service import approve, create_draft, get_project_report, get_published_record, list_project_reports, list_published_records, publish, reject, request_changes, submit_for_review, update_draft
 from app.domain.errors import DomainError
 
 cycle_router = APIRouter(prefix="/cycles/{cycle_id}/reports")
 report_router = APIRouter(prefix="/report-versions")
+project_router = APIRouter(prefix="/projects/{project_id}")
 
 
 def to_response(report) -> ReportResponse:
     return ReportResponse(id=report.id, cycle_id=report.cycle_id, sequence_no=report.sequence_no, status=report.status, record_type=report.record_type, content_hash=report.content_hash, editorial_note=report.editorial_note, version=report.version)
+
+
+def _failure(exc: DomainError) -> HTTPException:
+    if exc.code == "AUTH_FORBIDDEN":
+        status_code = status.HTTP_403_FORBIDDEN
+    elif exc.code == "RESOURCE_NOT_FOUND":
+        status_code = status.HTTP_404_NOT_FOUND
+    else:
+        status_code = status.HTTP_409_CONFLICT
+    return HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.message})
+
+
+@project_router.get("/report-versions", response_model=list[ProjectReportResponse])
+def get_project_reports(project_id: UUID, session: SessionDep, user: CurrentUserDep, status_filter: str | None = None) -> list[ProjectReportResponse]:
+    try:
+        return [ProjectReportResponse(**item) for item in list_project_reports(session, project_id=project_id, actor_id=user.id, report_status=status_filter)]
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@project_router.get("/report-versions/{report_id}", response_model=ProjectReportResponse)
+def get_report(project_id: UUID, report_id: UUID, session: SessionDep, user: CurrentUserDep) -> ProjectReportResponse:
+    try:
+        return ProjectReportResponse(**get_project_report(session, project_id=project_id, report_id=report_id, actor_id=user.id))
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@project_router.get("/published-records", response_model=list[PublishedRecordResponse])
+def get_published_records(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[PublishedRecordResponse]:
+    try:
+        return [PublishedRecordResponse(**item) for item in list_published_records(session, project_id=project_id, actor_id=user.id)]
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@project_router.get("/published-records/{record_id}", response_model=PublishedRecordResponse)
+def get_record(project_id: UUID, record_id: UUID, session: SessionDep, user: CurrentUserDep) -> PublishedRecordResponse:
+    try:
+        return PublishedRecordResponse(**get_published_record(session, project_id=project_id, record_id=record_id, actor_id=user.id))
+    except DomainError as exc:
+        raise _failure(exc)
 
 
 @cycle_router.post("/from-run/{run_id}", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)

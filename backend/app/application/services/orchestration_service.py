@@ -238,8 +238,8 @@ def create_custom_capability(
     tool_ids: list[UUID],
 ) -> AgentCapability:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
-    if core_scope not in {"REQUIREMENT", "DELIVERY", "SHARED"}:
-        raise DomainError("INPUT_INVALID", "能力块归属必须为 REQUIREMENT、DELIVERY 或 SHARED")
+    if core_scope != "SHARED":
+        raise DomainError("INPUT_INVALID", "自定义 Agent 只能作为外围共享能力；需求/验收核心与交付证据核心由系统固定")
     key = _validate_key(key)
     if session.query(AgentCapability).filter_by(project_id=project_id, key=key).one_or_none() is not None:
         raise DomainError("STATE_CONFLICT", "项目内能力块标识已存在")

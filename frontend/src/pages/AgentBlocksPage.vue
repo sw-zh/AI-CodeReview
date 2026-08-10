@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { apiRequest as request, projectHeaders as authHeaders, selectedProject, selectedProjectId } from '../features/projects/project-context'
 
 type CoreScope = 'REQUIREMENT' | 'DELIVERY' | 'SHARED'
 
@@ -54,11 +55,11 @@ interface OrchestrationData {
   templates: Template[]
 }
 
-const projectId = ref(sessionStorage.getItem('agentProjectId') ?? '')
+const projectId = selectedProjectId
 const activeTab = ref<'capabilities' | 'tools' | 'templates'>('capabilities')
 const data = ref<OrchestrationData>({ capabilities: [], tools: [], templates: [] })
 const busy = ref(false)
-const message = ref('输入项目 ID 后加载双核、能力块与编排模板。')
+const message = ref('选择项目后加载固定双核、能力块与编排模板。')
 const selectedToolIds = ref<string[]>([])
 const selectedCapabilityVersionIds = ref<string[]>([])
 const agentForm = ref({ key: '', name: '', description: '', coreScope: 'SHARED' as CoreScope, prompt: '' })
@@ -72,27 +73,10 @@ const capabilitiesByScope = computed(() => ({
 }))
 const selectedTemplateCapabilities = computed(() => selectedCapabilityVersionIds.value.map((versionId) => data.value.capabilities.find((item) => item.latestVersionId === versionId)).filter((item): item is Capability => Boolean(item)))
 
-function authHeaders(write = false): HeadersInit {
-  const headers: Record<string, string> = { Authorization: `Bearer ${sessionStorage.getItem('accessToken') ?? ''}` }
-  if (write) {
-    headers['Content-Type'] = 'application/json'
-    headers['Idempotency-Key'] = crypto.randomUUID()
-  }
-  return headers
-}
-
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, init)
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.message ?? body.detail?.message ?? `请求失败 (${response.status})`)
-  return body as T
-}
-
 async function load() {
   if (!projectId.value) return
   busy.value = true
   try {
-    sessionStorage.setItem('agentProjectId', projectId.value)
     data.value = await request<OrchestrationData>(`/projects/${projectId.value}/agent-orchestration`, { headers: authHeaders() })
     selectedCapabilityVersionIds.value = data.value.capabilities.filter((item) => item.latestVersionId).map((item) => item.latestVersionId as string)
     message.value = `已加载固定双核、${data.value.capabilities.length} 个能力块与 ${data.value.templates.length} 个编排模板。`
@@ -180,6 +164,8 @@ function moveSelectedCapability(index: number, direction: -1 | 1) {
   ;[reordered[index], reordered[target]] = [reordered[target], reordered[index]]
   selectedCapabilityVersionIds.value = reordered
 }
+
+watch(projectId, () => { void load() }, { immediate: true })
 </script>
 
 <template>
@@ -187,12 +173,10 @@ function moveSelectedCapability(index: number, direction: -1 | 1) {
     <header class="page-heading">
       <div>
         <h1>Agent 功能块</h1>
-        <p>双核是正式核验的固定主干；外围 Agent 可使用自定义 Prompt 与已授权的只读工具进行组合。</p>
+        <p v-if="selectedProject">{{ selectedProject.name }}：双核是正式核验的固定主干；外围 Agent 可使用自定义 Prompt 与已授权的只读工具进行组合。</p>
+        <p v-else>请先在项目概览创建或选择项目。</p>
       </div>
-      <div class="agent-project-row">
-        <input v-model="projectId" aria-label="项目 UUID" placeholder="粘贴项目 UUID" />
-        <button class="primary-button" type="button" :disabled="busy || !projectId" @click="load">加载配置</button>
-      </div>
+      <button class="primary-button" type="button" :disabled="busy || !projectId" @click="load">刷新配置</button>
     </header>
 
     <div class="agent-layout">
@@ -210,7 +194,7 @@ function moveSelectedCapability(index: number, direction: -1 | 1) {
           <section><h3>交付证据核心</h3><article v-for="item in capabilitiesByScope.delivery" :key="item.id" class="agent-row"><div><strong>{{ item.name }}</strong><p>{{ item.description }}</p></div><span :class="item.isLocked ? 'agent-lock' : 'agent-state'">{{ item.isLocked ? '锁定默认' : '默认启用' }}</span></article></section>
         </div>
         <section class="agent-list-section"><h3>共享与自定义能力</h3><article v-for="item in capabilitiesByScope.shared" :key="item.id" class="agent-row"><div><strong>{{ item.name }}</strong><p>{{ item.description || '自定义 Prompt 能力块' }}</p><small>{{ item.kind === 'CUSTOM' ? `自定义 · v${item.latestVersion}` : '系统能力' }}</small></div><span :class="item.isLocked ? 'agent-lock' : 'agent-state'">{{ item.isLocked ? '系统必经' : '可编排' }}</span></article></section>
-        <form class="agent-form" @submit.prevent="createAgent"><h3>创建自定义 Agent</h3><div class="agent-form-grid"><label>标识<input v-model="agentForm.key" required placeholder="例如 payment-risk-check" /></label><label>名称<input v-model="agentForm.name" required placeholder="例如 支付风险复核" /></label><label>归属<select v-model="agentForm.coreScope"><option value="REQUIREMENT">需求 / 验收核心</option><option value="DELIVERY">交付证据核心</option><option value="SHARED">共享能力</option></select></label></div><label>说明<input v-model="agentForm.description" placeholder="说明它要补充什么证据判断" /></label><label>自定义 Prompt<textarea v-model="agentForm.prompt" required placeholder="只基于授权证据提出关联或风险建议；不要输出最终审批结论。"></textarea></label><fieldset><legend>授权工具</legend><label v-for="tool in data.tools" :key="tool.id" class="check-line"><input v-model="selectedToolIds" type="checkbox" :value="tool.id" />{{ tool.name }}<small>{{ tool.toolType }}</small></label></fieldset><button class="primary-button" :disabled="busy || !projectId">创建 Agent</button></form>
+        <form class="agent-form" @submit.prevent="createAgent"><h3>创建外围 Agent</h3><p class="agent-form-note">自定义 Agent 只能作为围绕固定双核的共享能力；它可以提出建议、风险或草稿，不能替代两个核心或输出正式审批结论。</p><div class="agent-form-grid"><label>标识<input v-model="agentForm.key" required placeholder="例如 payment-risk-check" /></label><label>名称<input v-model="agentForm.name" required placeholder="例如 支付风险复核" /></label></div><label>说明<input v-model="agentForm.description" placeholder="说明它要补充什么证据判断" /></label><label>自定义 Prompt<textarea v-model="agentForm.prompt" required placeholder="只基于授权证据提出关联或风险建议；不要输出最终审批结论。"></textarea></label><fieldset><legend>授权工具</legend><label v-for="tool in data.tools" :key="tool.id" class="check-line"><input v-model="selectedToolIds" type="checkbox" :value="tool.id" />{{ tool.name }}<small>{{ tool.toolType }}</small></label></fieldset><button class="primary-button" :disabled="busy || !projectId">创建外围 Agent</button></form>
       </section>
 
       <section v-else-if="activeTab === 'tools'" class="surface agent-content">

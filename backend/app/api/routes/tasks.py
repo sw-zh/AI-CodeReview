@@ -3,9 +3,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import TaskCreateRequest, TaskDeliveryItemBindingRequest, TaskResponse
+from app.api.schemas import TaskCreateRequest, TaskDeliveryItemBindingRequest, TaskResponse, VerificationTaskListResponse
 from app.application.services.delivery_association_service import bind_task_delivery_item
-from app.application.services.task_service import create_next_cycle, create_task
+from app.application.services.task_service import create_next_cycle, create_task, list_tasks
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import VerificationCycle
 
@@ -22,6 +22,14 @@ def _failure(exc: DomainError) -> HTTPException:
     else:
         status_code = status.HTTP_409_CONFLICT
     return HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.message})
+
+
+@router.get("", response_model=list[VerificationTaskListResponse])
+def get_tasks(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[VerificationTaskListResponse]:
+    try:
+        return [VerificationTaskListResponse(**item) for item in list_tasks(session, project_id=project_id, actor_id=user.id)]
+    except DomainError as exc:
+        raise _failure(exc)
 
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)

@@ -8,7 +8,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.application.services.citation_resolver import resolve_citation
 from app.domain.enums import AssessmentProfile, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, DeliveryItem, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, VerificationCycle, VerificationResult, VerificationTask
+from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, DeliveryItem, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, User, VerificationCycle, VerificationResult, VerificationTask
 from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
 
 
@@ -56,6 +56,141 @@ def _delivery_item_verification_status(session: Session, *, report: ReportVersio
     if not statuses or all(status == "INSUFFICIENT_EVIDENCE" for status in statuses):
         return "INSUFFICIENT_EVIDENCE"
     return "PARTIALLY_SUPPORTED"
+
+
+def _report_projection(session: Session, *, report: ReportVersion, cycle: VerificationCycle, task: VerificationTask) -> dict:
+    latest_approval = (
+        session.query(ApprovalAction)
+        .filter_by(report_version_id=report.id)
+        .order_by(ApprovalAction.created_at.desc())
+        .first()
+    )
+    submitter = session.get(User, report.submitted_by) if report.submitted_by else None
+    return {
+        "id": report.id,
+        "cycle_id": cycle.id,
+        "sequence_no": report.sequence_no,
+        "status": report.status,
+        "record_type": report.record_type,
+        "content_hash": report.content_hash,
+        "snapshot_hash": report.snapshot_hash,
+        "editorial_note": report.editorial_note,
+        "submitted_at": report.submitted_at,
+        "task_id": task.id,
+        "task_title": task.title,
+        "requirement_key": task.requirement_key,
+        "delivery_item_id": task.delivery_item_id,
+        "submitted_by_name": submitter.display_name if submitter else None,
+        "latest_approval_action": latest_approval.action if latest_approval else None,
+        "latest_approval_reason": latest_approval.reason if latest_approval else None,
+        "latest_approval_at": latest_approval.created_at if latest_approval else None,
+    }
+
+
+def list_project_reports(
+    session: Session, *, project_id: UUID, actor_id: UUID, report_status: str | None = None, limit: int = 100
+) -> list[dict]:
+    """List project-scoped report versions for the review workbench."""
+
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    query = (
+        session.query(ReportVersion, VerificationCycle, VerificationTask)
+        .join(VerificationCycle, VerificationCycle.id == ReportVersion.cycle_id)
+        .join(VerificationTask, VerificationTask.id == VerificationCycle.task_id)
+        .filter(VerificationTask.project_id == project_id)
+    )
+    if report_status:
+        query = query.filter(ReportVersion.status == report_status)
+    rows = (
+        query.order_by(ReportVersion.submitted_at.desc().nullslast(), ReportVersion.sequence_no.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_report_projection(session, report=report, cycle=cycle, task=task) for report, cycle, task in rows]
+
+
+def get_project_report(session: Session, *, project_id: UUID, report_id: UUID, actor_id: UUID) -> dict:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    row = (
+        session.query(ReportVersion, VerificationCycle, VerificationTask)
+        .join(VerificationCycle, VerificationCycle.id == ReportVersion.cycle_id)
+        .join(VerificationTask, VerificationTask.id == VerificationCycle.task_id)
+        .filter(ReportVersion.id == report_id, VerificationTask.project_id == project_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "核验报告不存在或不属于当前项目")
+    report, cycle, task = row
+    return _report_projection(session, report=report, cycle=cycle, task=task)
+
+
+def _published_record_projection(
+    session: Session, *, record: PublishedRecord, report: ReportVersion, cycle: VerificationCycle, task: VerificationTask
+) -> dict:
+    latest_approval = (
+        session.query(ApprovalAction)
+        .filter_by(report_version_id=report.id)
+        .order_by(ApprovalAction.created_at.desc())
+        .first()
+    )
+    publisher = session.get(User, record.published_by)
+    approver = session.get(User, latest_approval.actor_id) if latest_approval else None
+    return {
+        "id": record.id,
+        "project_id": task.project_id,
+        "task_id": task.id,
+        "task_title": task.title,
+        "requirement_key": task.requirement_key,
+        "delivery_item_id": task.delivery_item_id,
+        "cycle_id": cycle.id,
+        "report_version_id": report.id,
+        "report_sequence_no": report.sequence_no,
+        "report_status": report.status,
+        "snapshot_hash": report.snapshot_hash,
+        "record_type": record.record_type,
+        "record_no": record.record_no,
+        "record_hash": record.record_hash,
+        "published_by_name": publisher.display_name if publisher else None,
+        "published_at": record.published_at,
+        "approval_action": latest_approval.action if latest_approval else None,
+        "approval_reason": latest_approval.reason if latest_approval else None,
+        "approval_by_name": approver.display_name if approver else None,
+        "approval_at": latest_approval.created_at if latest_approval else None,
+    }
+
+
+def list_published_records(session: Session, *, project_id: UUID, actor_id: UUID, limit: int = 100) -> list[dict]:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    rows = (
+        session.query(PublishedRecord, ReportVersion, VerificationCycle, VerificationTask)
+        .join(ReportVersion, ReportVersion.id == PublishedRecord.report_version_id)
+        .join(VerificationCycle, VerificationCycle.id == PublishedRecord.cycle_id)
+        .join(VerificationTask, VerificationTask.id == PublishedRecord.task_id)
+        .filter(VerificationTask.project_id == project_id)
+        .order_by(PublishedRecord.published_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        _published_record_projection(session, record=record, report=report, cycle=cycle, task=task)
+        for record, report, cycle, task in rows
+    ]
+
+
+def get_published_record(session: Session, *, project_id: UUID, record_id: UUID, actor_id: UUID) -> dict:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    row = (
+        session.query(PublishedRecord, ReportVersion, VerificationCycle, VerificationTask)
+        .join(ReportVersion, ReportVersion.id == PublishedRecord.report_version_id)
+        .join(VerificationCycle, VerificationCycle.id == PublishedRecord.cycle_id)
+        .join(VerificationTask, VerificationTask.id == PublishedRecord.task_id)
+        .filter(PublishedRecord.id == record_id, VerificationTask.project_id == project_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "正式交付记录不存在或不属于当前项目")
+    record, report, cycle, task = row
+    return _published_record_projection(session, record=record, report=report, cycle=cycle, task=task)
 
 
 def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UUID, correlation_id: str) -> ReportVersion:

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { apiRequest as request, projectHeaders as headers, selectedProject, selectedProjectId } from '../features/projects/project-context'
 
 interface SourceItem {
   id: string
@@ -16,11 +17,11 @@ interface SourceItem {
   updated_at: string
 }
 
-const projectId = ref(sessionStorage.getItem('kbProjectId') ?? '')
+const projectId = selectedProjectId
 const sources = ref<SourceItem[]>([])
 const selectedType = ref('全部')
 const busy = ref(false)
-const message = ref('输入项目 ID 后点击加载资料列表。')
+const message = ref('选择项目后加载可被核验的资料版本。')
 
 const viewingSource = ref<SourceItem | null>(null)
 const viewingContent = ref('')
@@ -36,16 +37,10 @@ const visibleSources = computed(() =>
     : sources.value.filter((s) => s.source_role === selectedType.value),
 )
 
-function headers(): HeadersInit {
-  const token = sessionStorage.getItem('accessToken') ?? ''
-  return { Authorization: `Bearer ${token}` }
-}
-
 async function fetchSources() {
   if (!projectId.value) return
   busy.value = true
   try {
-    sessionStorage.setItem('kbProjectId', projectId.value)
     sources.value = await request<SourceItem[]>(`/projects/${projectId.value}/sources`, { headers: headers() })
     message.value = sources.value.length ? `共 ${sources.value.length} 份资料` : '该项目下暂无已上传的资料。'
   } catch (error) {
@@ -73,12 +68,7 @@ function closeViewer() {
   viewingContent.value = ''
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, init)
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.message ?? body.detail?.message ?? `请求失败 (${response.status})`)
-  return body as T
-}
+watch(projectId, () => { void fetchSources() }, { immediate: true })
 </script>
 
 <template>
@@ -86,12 +76,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     <header class="page-heading">
       <div>
         <h1>项目知识库</h1>
-        <p>按资料类型、版本与快照引用关系管理可被核验的输入。</p>
+        <p v-if="selectedProject">{{ selectedProject.name }}：按资料类型、版本与快照引用关系管理可被核验的输入。</p>
+        <p v-else>请先在项目概览创建或选择项目。</p>
       </div>
-      <div class="kb-project-row">
-        <input v-model="projectId" placeholder="粘贴项目 UUID" class="kb-project-input" />
-        <button class="primary-button" type="button" :disabled="busy || !projectId" @click="fetchSources">加载资料</button>
-      </div>
+      <button class="primary-button" type="button" :disabled="busy || !projectId" @click="fetchSources">刷新资料</button>
     </header>
 
     <div class="knowledge-layout">
