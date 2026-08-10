@@ -4,12 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import AnalysisResultResponse, AnalysisRunResponse
-from app.application.services.analysis_service import get_analysis_results, get_analysis_run, request_cancel, start_analysis_run
+from app.application.services.analysis_service import get_analysis_results, get_analysis_run, get_latest_task_analysis_run, request_cancel, start_analysis_run
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import RunEvent
 
 snapshot_router = APIRouter(prefix="/input-snapshots/{snapshot_id}/analysis-runs")
 run_router = APIRouter(prefix="/analysis-runs")
+task_router = APIRouter(prefix="/verification-tasks")
 
 
 @snapshot_router.post("", response_model=AnalysisRunResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -30,6 +31,23 @@ def get_run(run_id: UUID, session: SessionDep, user: CurrentUserDep) -> Analysis
         return AnalysisRunResponse(id=run.id, snapshot_id=run.snapshot_id, run_status=run.run_status, poll_url=f"/api/v1/analysis-runs/{run.id}")
     except DomainError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND if exc.code == "RESOURCE_NOT_FOUND" else status.HTTP_403_FORBIDDEN, detail={"code": exc.code, "message": exc.message})
+
+
+@task_router.get("/{task_id}/latest-analysis-run", response_model=AnalysisRunResponse)
+def get_latest_task_run(task_id: UUID, session: SessionDep, user: CurrentUserDep) -> AnalysisRunResponse:
+    try:
+        run = get_latest_task_analysis_run(session, task_id=task_id, actor_id=user.id)
+        return AnalysisRunResponse(
+            id=run.id,
+            snapshot_id=run.snapshot_id,
+            run_status=run.run_status,
+            poll_url=f"/api/v1/analysis-runs/{run.id}",
+        )
+    except DomainError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if exc.code == "RESOURCE_NOT_FOUND" else status.HTTP_403_FORBIDDEN,
+            detail={"code": exc.code, "message": exc.message},
+        )
 
 
 @run_router.post("/{run_id}/cancel", response_model=AnalysisRunResponse)

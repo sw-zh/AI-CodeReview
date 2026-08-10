@@ -97,6 +97,24 @@ def get_analysis_run(session: Session, *, run_id: UUID, actor_id: UUID) -> Analy
     return run
 
 
+def get_latest_task_analysis_run(session: Session, *, task_id: UUID, actor_id: UUID) -> AnalysisRun:
+    task = session.get(VerificationTask, task_id)
+    if task is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "核验任务不存在")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    run = (
+        session.query(AnalysisRun)
+        .join(InputSnapshot, InputSnapshot.id == AnalysisRun.snapshot_id)
+        .join(VerificationCycle, VerificationCycle.id == InputSnapshot.cycle_id)
+        .filter(VerificationCycle.task_id == task.id)
+        .order_by(AnalysisRun.created_at.desc())
+        .first()
+    )
+    if run is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "该核验任务尚未创建分析运行")
+    return run
+
+
 def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> list[dict]:
     """Read model for the workbench; every returned citation stays in the run snapshot."""
     run = get_analysis_run(session, run_id=run_id, actor_id=actor_id)
