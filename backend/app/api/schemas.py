@@ -438,7 +438,48 @@ class DeliveryChangeLinkResponse(BaseModel):
     link_source: str
     confidence: float | None
     reason: str
+    agent_proposal_run_id: UUID | None
     confirmed_at: datetime | None
+
+
+class AgentChangeCandidateTargetResponse(BaseModel):
+    target_kind: str
+    target_id: UUID
+    target_label: str
+    input_ref: dict
+
+
+class AgentChangeCandidateTargetInput(BaseModel):
+    target_kind: str = Field(pattern="^(PULL_REQUEST|GIT_SNAPSHOT)$")
+    target_id: UUID
+
+
+class AgentChangeProposalRequest(BaseModel):
+    targets: list[AgentChangeCandidateTargetInput] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def require_unique_targets(self):
+        keys = {(target.target_kind, target.target_id) for target in self.targets}
+        if len(keys) != len(self.targets):
+            raise ValueError("candidate targets must be unique")
+        return self
+
+
+class AgentChangeProposalRunResponse(BaseModel):
+    id: UUID
+    input_hash: str
+    rules_version: str
+    candidate_target_count: int
+    created_candidate_count: int
+    created_at: datetime
+
+
+class AgentChangeProposalResponse(BaseModel):
+    proposal_run: AgentChangeProposalRunResponse
+    links: list[DeliveryChangeLinkResponse]
+    created_candidate_count: int
+    skipped_existing_count: int
+    skipped_no_overlap_count: int
 
 
 class PlatformLinkDiscoveryResponse(BaseModel):

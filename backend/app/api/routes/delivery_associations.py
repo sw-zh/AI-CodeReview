@@ -4,6 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import (
+    AgentChangeCandidateTargetResponse,
+    AgentChangeProposalRequest,
+    AgentChangeProposalResponse,
+    AgentChangeProposalRunResponse,
     DeliveryChangeLinkCreateRequest,
     DeliveryChangeLinkResponse,
     DeliveryItemDocumentSourceLinkCreateRequest,
@@ -14,8 +18,10 @@ from app.application.services.delivery_association_service import (
     confirm_change_link,
     discover_platform_links,
     link_document_source,
+    list_agent_candidate_targets,
     list_change_links,
     list_item_source_links,
+    propose_agent_change_candidates,
 )
 from app.domain.errors import DomainError
 
@@ -71,6 +77,63 @@ def create_confirmed_change_link(
         items = list_change_links(session, project_id=project_id, delivery_item_id=delivery_item_id, actor_id=user.id)
         item = next(entry for entry in items if entry["id"] == link.id)
         return DeliveryChangeLinkResponse(**item)
+    except DomainError as exc:
+        session.rollback()
+        raise _failure(exc)
+
+
+@router.get("/{delivery_item_id}/agent-change-candidate-targets", response_model=list[AgentChangeCandidateTargetResponse])
+def get_agent_candidate_targets(project_id: UUID, delivery_item_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[AgentChangeCandidateTargetResponse]:
+    try:
+        return [
+            AgentChangeCandidateTargetResponse(**item)
+            for item in list_agent_candidate_targets(
+                session,
+                project_id=project_id,
+                delivery_item_id=delivery_item_id,
+                actor_id=user.id,
+            )
+        ]
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@router.post("/{delivery_item_id}/agent-change-candidates", response_model=AgentChangeProposalResponse, status_code=status.HTTP_201_CREATED)
+def propose_change_candidates(
+    project_id: UUID,
+    delivery_item_id: UUID,
+    payload: AgentChangeProposalRequest,
+    request: Request,
+    session: SessionDep,
+    user: CurrentUserDep,
+    _: str = Depends(idempotency_key),
+) -> AgentChangeProposalResponse:
+    try:
+        proposal_run, links, result = propose_agent_change_candidates(
+            session,
+            project_id=project_id,
+            delivery_item_id=delivery_item_id,
+            targets=[target.model_dump() for target in payload.targets],
+            actor_id=user.id,
+            correlation_id=correlation_id(request),
+        )
+        session.commit()
+        all_links = list_change_links(session, project_id=project_id, delivery_item_id=delivery_item_id, actor_id=user.id)
+        created_link_ids = {link.id for link in links}
+        return AgentChangeProposalResponse(
+            proposal_run=AgentChangeProposalRunResponse(
+                id=proposal_run.id,
+                input_hash=proposal_run.input_hash,
+                rules_version=proposal_run.rules_version,
+                candidate_target_count=proposal_run.candidate_target_count,
+                created_candidate_count=proposal_run.created_candidate_count,
+                created_at=proposal_run.created_at,
+            ),
+            links=[DeliveryChangeLinkResponse(**item) for item in all_links if item["id"] in created_link_ids],
+            created_candidate_count=result["createdCandidateCount"],
+            skipped_existing_count=result["skippedExistingCount"],
+            skipped_no_overlap_count=result["skippedNoOverlapCount"],
+        )
     except DomainError as exc:
         session.rollback()
         raise _failure(exc)

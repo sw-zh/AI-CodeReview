@@ -1,6 +1,9 @@
 """Auditable links between source-derived delivery items, PRs, Git ranges and verification tasks."""
 
 from datetime import UTC, datetime
+import hashlib
+import json
+import re
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -11,6 +14,7 @@ from app.domain.enums import ExternalResourceType, ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.github_source_client import GitHubSourceClient
 from app.infrastructure.persistence.models import (
+    AgentChangeProposalRun,
     DeliveryChangeLink,
     DeliveryItem,
     DeliveryItemSourceLink,
@@ -23,6 +27,31 @@ from app.infrastructure.persistence.models import (
     VerificationCycle,
     VerificationTask,
 )
+
+
+_AGENT_CHANGE_RULES_VERSION = "token-overlap-v1"
+
+
+def _hash(value: object) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _candidate_tokens(value: str) -> set[str]:
+    text = value.lower()[:30_000]
+    tokens = set(re.findall(r"[a-z0-9][a-z0-9_-]{1,}", text))
+    for segment in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        tokens.update(segment[index : index + 2] for index in range(len(segment) - 1))
+    return tokens
+
+
+def _latest_resource_revision(session: Session, resource_id: UUID) -> ExternalResourceRevision | None:
+    return (
+        session.query(ExternalResourceRevision)
+        .filter_by(resource_id=resource_id)
+        .order_by(ExternalResourceRevision.revision_no.desc())
+        .first()
+    )
 
 
 def _item_for_project(session: Session, *, project_id: UUID, delivery_item_id: UUID) -> DeliveryItem:
@@ -107,6 +136,7 @@ def _upsert_link(
     confidence: float | None,
     reason: str,
     actor_id: UUID,
+    agent_proposal_run_id: UUID | None = None,
 ) -> tuple[DeliveryChangeLink, bool]:
     existing = _existing_link(
         session,
@@ -124,6 +154,7 @@ def _upsert_link(
             link_source=link_source,
             confidence=confidence,
             reason=reason,
+            agent_proposal_run_id=agent_proposal_run_id,
             created_by=actor_id,
             confirmed_by=actor_id if is_confirmed else None,
             confirmed_at=datetime.now(UTC) if is_confirmed else None,
@@ -184,6 +215,199 @@ def confirm_change_link(
             payload={"deliveryItemId": str(item.id), "pullRequestResourceId": str(pull_request_resource_id) if pull_request_resource_id else None, "gitSnapshotId": str(git_snapshot_id) if git_snapshot_id else None},
         )
     return link
+
+
+def _agent_target_for_item(session: Session, *, project_id: UUID, item: DeliveryItem, target_kind: str, target_id: UUID) -> dict:
+    if target_kind == "PULL_REQUEST":
+        resource = _pr_for_project(session, project_id=project_id, pull_request_resource_id=target_id)
+        revision = _latest_resource_revision(session, resource.id)
+        if revision is None:
+            raise DomainError("STATE_CONFLICT", "候选 PR 尚未同步可用版本")
+        return {
+            "targetKind": "PULL_REQUEST",
+            "targetId": resource.id,
+            "targetLabel": f"PR #{resource.external_key} · {revision.title}",
+            "inputRef": {"resourceRevisionId": str(revision.id), "contentHash": revision.content_hash},
+            "text": f"{resource.external_key} {revision.title} {revision.body}",
+            "pullRequestResourceId": resource.id,
+            "gitSnapshotId": None,
+        }
+    if target_kind == "GIT_SNAPSHOT":
+        snapshot = _git_snapshot_for_item(session, item=item, git_snapshot_id=target_id)
+        cycle = session.get(VerificationCycle, snapshot.cycle_id)
+        task = session.get(VerificationTask, cycle.task_id) if cycle else None
+        if task is None:
+            raise DomainError("INPUT_INVALID", "Git 范围所属核验任务不存在")
+        return {
+            "targetKind": "GIT_SNAPSHOT",
+            "targetId": snapshot.id,
+            "targetLabel": f"{snapshot.base_sha[:12]}..{snapshot.target_sha[:12]}",
+            "inputRef": {"gitSnapshotId": str(snapshot.id), "diffHash": snapshot.diff_hash, "taskId": str(task.id)},
+            "text": f"{task.title} {task.requirement_key} {snapshot.selected_base_ref} {snapshot.selected_target_ref}",
+            "pullRequestResourceId": None,
+            "gitSnapshotId": snapshot.id,
+        }
+    raise DomainError("INPUT_INVALID", "候选目标类型只支持已同步 PR 或已冻结 Git 范围")
+
+
+def list_agent_candidate_targets(session: Session, *, project_id: UUID, delivery_item_id: UUID, actor_id: UUID) -> list[dict]:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    item = _item_for_project(session, project_id=project_id, delivery_item_id=delivery_item_id)
+    targets: list[dict] = []
+    resources = (
+        session.query(ExternalResource)
+        .join(ExternalConnection, ExternalConnection.id == ExternalResource.connection_id)
+        .filter(
+            ExternalConnection.project_id == project_id,
+            ExternalResource.resource_type == ExternalResourceType.PULL_REQUEST.value,
+        )
+        .order_by(ExternalResource.external_key.desc())
+        .limit(100)
+        .all()
+    )
+    for resource in resources:
+        revision = _latest_resource_revision(session, resource.id)
+        if revision is None:
+            continue
+        targets.append(
+            {
+                "target_kind": "PULL_REQUEST",
+                "target_id": resource.id,
+                "target_label": f"PR #{resource.external_key} · {revision.title}",
+                "input_ref": {"resourceRevisionId": str(revision.id), "contentHash": revision.content_hash},
+            }
+        )
+    snapshots = (
+        session.query(GitSnapshot)
+        .join(VerificationCycle, VerificationCycle.id == GitSnapshot.cycle_id)
+        .join(VerificationTask, VerificationTask.id == VerificationCycle.task_id)
+        .filter(VerificationTask.project_id == project_id, VerificationTask.delivery_item_id == item.id)
+        .order_by(GitSnapshot.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    for snapshot in snapshots:
+        targets.append(
+            {
+                "target_kind": "GIT_SNAPSHOT",
+                "target_id": snapshot.id,
+                "target_label": f"冻结 Git 范围 · {snapshot.base_sha[:12]}..{snapshot.target_sha[:12]}",
+                "input_ref": {"gitSnapshotId": str(snapshot.id), "diffHash": snapshot.diff_hash},
+            }
+        )
+    return targets
+
+
+def propose_agent_change_candidates(
+    session: Session,
+    *,
+    project_id: UUID,
+    delivery_item_id: UUID,
+    targets: list[dict],
+    actor_id: UUID,
+    correlation_id: str,
+) -> tuple[AgentChangeProposalRun, list[DeliveryChangeLink], dict]:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    item = _item_for_project(session, project_id=project_id, delivery_item_id=delivery_item_id)
+    if not targets or len(targets) > 20:
+        raise DomainError("INPUT_INVALID", "候选 Agent 每次必须在 1-20 个已选目标中工作")
+    target_keys = {(str(target["target_kind"]), UUID(str(target["target_id"]))) for target in targets}
+    if len(target_keys) != len(targets):
+        raise DomainError("INPUT_INVALID", "候选目标不能重复")
+    source_revision = _latest_resource_revision(session, item.external_resource_id)
+    item_text = f"{item.external_key} {item.title} {source_revision.title if source_revision else ''} {source_revision.body if source_revision else ''}"
+    item_tokens = _candidate_tokens(item_text)
+    resolved_targets = [
+        _agent_target_for_item(
+            session,
+            project_id=project_id,
+            item=item,
+            target_kind=str(target["target_kind"]),
+            target_id=UUID(str(target["target_id"])),
+        )
+        for target in targets
+    ]
+    manifest = {
+        "schemaVersion": "agent-change-link-candidate-v1",
+        "deliveryItem": {
+            "id": str(item.id),
+            "externalKey": item.external_key,
+            "primaryResourceRevisionId": str(source_revision.id) if source_revision else None,
+            "primaryContentHash": source_revision.content_hash if source_revision else None,
+        },
+        "candidateTargets": [
+            {
+                "targetKind": target["targetKind"],
+                "targetId": str(target["targetId"]),
+                "targetLabel": target["targetLabel"],
+                "inputRef": target["inputRef"],
+            }
+            for target in resolved_targets
+        ],
+    }
+    proposal_run = AgentChangeProposalRun(
+        project_id=project_id,
+        delivery_item_id=item.id,
+        input_manifest=manifest,
+        input_hash=_hash(manifest),
+        rules_version=_AGENT_CHANGE_RULES_VERSION,
+        candidate_target_count=len(resolved_targets),
+        created_by=actor_id,
+    )
+    session.add(proposal_run)
+    session.flush()
+    created_links: list[DeliveryChangeLink] = []
+    skipped_existing = 0
+    skipped_no_overlap = 0
+    for target in resolved_targets:
+        if _existing_link(
+            session,
+            delivery_item_id=item.id,
+            pull_request_resource_id=target["pullRequestResourceId"],
+            git_snapshot_id=target["gitSnapshotId"],
+        ) is not None:
+            skipped_existing += 1
+            continue
+        overlap = sorted(item_tokens & _candidate_tokens(target["text"]))
+        if not overlap:
+            skipped_no_overlap += 1
+            continue
+        confidence = round(min(0.8, 0.35 + 0.07 * min(len(overlap), 6)), 2)
+        reason = (
+            f"受控候选 Agent（{_AGENT_CHANGE_RULES_VERSION}）仅比较事项来源版本与用户选定目标的标题/元数据；"
+            f"共享标识符：{'、'.join(overlap[:8])}。此为待人工确认的关联，不证明交付完成。"
+        )
+        link, changed = _upsert_link(
+            session,
+            item=item,
+            pull_request_resource_id=target["pullRequestResourceId"],
+            git_snapshot_id=target["gitSnapshotId"],
+            link_status="CANDIDATE",
+            link_source="AGENT",
+            confidence=confidence,
+            reason=reason,
+            actor_id=actor_id,
+            agent_proposal_run_id=proposal_run.id,
+        )
+        if changed:
+            created_links.append(link)
+    proposal_run.created_candidate_count = len(created_links)
+    result = {
+        "createdCandidateCount": len(created_links),
+        "skippedExistingCount": skipped_existing,
+        "skippedNoOverlapCount": skipped_no_overlap,
+    }
+    append_audit_event(
+        session,
+        project_id=project_id,
+        actor_id=actor_id,
+        aggregate_type="AgentChangeProposalRun",
+        aggregate_id=proposal_run.id,
+        action="AGENT_DELIVERY_CHANGE_CANDIDATES_PROPOSED",
+        correlation_id=correlation_id,
+        payload={"deliveryItemId": str(item.id), "rulesVersion": _AGENT_CHANGE_RULES_VERSION, **result},
+    )
+    return proposal_run, created_links, result
 
 
 def _primary_issue_resource(session: Session, *, item: DeliveryItem) -> tuple[ExternalResource, ExternalConnection] | None:
@@ -312,6 +536,7 @@ def list_change_links(session: Session, *, project_id: UUID, delivery_item_id: U
                 "link_source": link.link_source,
                 "confidence": link.confidence,
                 "reason": link.reason,
+                "agent_proposal_run_id": link.agent_proposal_run_id,
                 "confirmed_at": link.confirmed_at,
             }
         )

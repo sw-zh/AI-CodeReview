@@ -161,6 +161,23 @@ class DeliveryItemSourceLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentChangeProposalRun(Base):
+    """Frozen, controlled inputs and result counts for an Agent change-link proposal."""
+
+    __tablename__ = "agent_change_proposal_runs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    delivery_item_id: Mapped[UUID] = mapped_column(ForeignKey("delivery_items.id", ondelete="CASCADE"), nullable=False)
+    input_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    input_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    rules_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_target_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class DeliveryChangeLink(Base):
     __tablename__ = "delivery_change_links"
     __table_args__ = (
@@ -183,6 +200,7 @@ class DeliveryChangeLink(Base):
     link_source: Mapped[str] = mapped_column(String(24), nullable=False)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    agent_proposal_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_change_proposal_runs.id", ondelete="RESTRICT"))
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
