@@ -16,9 +16,12 @@ from app.application.services.orchestration_service import (
     create_custom_capability,
     create_custom_tool,
     create_template,
+    deactivate_custom_capability,
     ensure_default_orchestration,
+    get_capability_latest_version,
     get_run_orchestration,
     list_orchestration,
+    list_task_orchestration_bindings,
 )
 from app.application.services.common import require_project_role
 from app.domain.enums import ProjectRole
@@ -31,7 +34,15 @@ run_router = APIRouter(prefix="/analysis-runs")
 
 
 def _failure(exc: DomainError) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message})
+    if exc.code == "AUTH_FORBIDDEN":
+        status_code = status.HTTP_403_FORBIDDEN
+    elif exc.code == "RESOURCE_NOT_FOUND":
+        status_code = status.HTTP_404_NOT_FOUND
+    elif exc.code == "INPUT_INVALID":
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    else:
+        status_code = status.HTTP_409_CONFLICT
+    return HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.message})
 
 
 @project_router.get("")
@@ -71,11 +82,44 @@ def create_capability(project_id: UUID, payload: AgentCapabilityCreateRequest, r
 @project_router.post("/capabilities/{capability_id}/versions", status_code=status.HTTP_201_CREATED)
 def version_capability(project_id: UUID, capability_id: UUID, payload: AgentCapabilityVersionCreateRequest, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> dict:
     try:
-        version = create_capability_version(session, capability_id=capability_id, actor_id=user.id, correlation_id=correlation_id(request), **payload.model_dump())
+        version = create_capability_version(session, project_id=project_id, capability_id=capability_id, actor_id=user.id, correlation_id=correlation_id(request), **payload.model_dump())
         session.commit()
         return {"id": str(version.id), "version": version.version_no, "contentHash": version.content_hash}
     except DomainError as exc:
         session.rollback()
+        raise _failure(exc)
+
+
+@project_router.get("/capabilities/{capability_id}/latest-version")
+def get_latest_capability_version(project_id: UUID, capability_id: UUID, session: SessionDep, user: CurrentUserDep) -> dict:
+    try:
+        return get_capability_latest_version(session, project_id=project_id, capability_id=capability_id, actor_id=user.id)
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@project_router.post("/capabilities/{capability_id}/deactivate")
+def deactivate_capability(project_id: UUID, capability_id: UUID, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> dict:
+    try:
+        capability = deactivate_custom_capability(
+            session,
+            project_id=project_id,
+            capability_id=capability_id,
+            actor_id=user.id,
+            correlation_id=correlation_id(request),
+        )
+        session.commit()
+        return {"id": str(capability.id), "isActive": capability.is_active}
+    except DomainError as exc:
+        session.rollback()
+        raise _failure(exc)
+
+
+@project_router.get("/task-bindings")
+def list_project_task_bindings(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[dict]:
+    try:
+        return list_task_orchestration_bindings(session, project_id=project_id, actor_id=user.id)
+    except DomainError as exc:
         raise _failure(exc)
 
 

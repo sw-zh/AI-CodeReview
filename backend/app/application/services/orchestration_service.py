@@ -257,6 +257,7 @@ def create_custom_capability(
 def create_capability_version(
     session: Session,
     *,
+    project_id: UUID,
     capability_id: UUID,
     actor_id: UUID,
     correlation_id: str,
@@ -266,12 +267,14 @@ def create_capability_version(
     parameter_schema: dict,
     tool_ids: list[UUID],
 ) -> AgentCapabilityVersion:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     capability = session.get(AgentCapability, capability_id)
-    if capability is None:
+    if capability is None or capability.project_id != project_id:
         raise DomainError("RESOURCE_NOT_FOUND", "能力块不存在")
-    require_project_role(session, capability.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if capability.kind == "SYSTEM":
         raise DomainError("AUTH_FORBIDDEN", "系统主干能力不能编辑 Prompt 或工具授权")
+    if not capability.is_active:
+        raise DomainError("STATE_CONFLICT", "已停用的自定义 Agent 不能再创建版本")
     tools = _assert_tools(session, project_id=capability.project_id, tool_ids=tool_ids)
     previous = session.query(func.coalesce(func.max(AgentCapabilityVersion.version_no), 0)).filter_by(capability_id=capability.id).scalar()
     bindings = [_tool_binding(tool) for tool in tools]
@@ -281,6 +284,60 @@ def create_capability_version(
     session.flush()
     append_audit_event(session, project_id=capability.project_id, actor_id=actor_id, aggregate_type="AgentCapability", aggregate_id=capability.id, action="AGENT_CAPABILITY_VERSION_CREATED", correlation_id=correlation_id, payload={"version": version.version_no})
     return version
+
+
+def get_capability_latest_version(session: Session, *, project_id: UUID, capability_id: UUID, actor_id: UUID) -> dict:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    capability = session.get(AgentCapability, capability_id)
+    if capability is None or capability.project_id != project_id:
+        raise DomainError("RESOURCE_NOT_FOUND", "能力块不存在")
+    version = (
+        session.query(AgentCapabilityVersion)
+        .filter_by(capability_id=capability.id)
+        .order_by(AgentCapabilityVersion.version_no.desc())
+        .first()
+    )
+    if version is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "能力块没有可读取的版本")
+    return {
+        "capabilityId": str(capability.id),
+        "kind": capability.kind,
+        "isLocked": capability.is_locked,
+        "isActive": capability.is_active,
+        "versionId": str(version.id),
+        "version": version.version_no,
+        "promptTemplate": version.prompt_template,
+        "inputSchema": version.input_schema,
+        "outputSchema": version.output_schema,
+        "parameterSchema": version.parameter_schema,
+        "toolIds": [binding.get("toolId") for binding in version.tool_bindings if binding.get("toolId")],
+        "toolBindings": version.tool_bindings,
+        "contentHash": version.content_hash,
+    }
+
+
+def deactivate_custom_capability(
+    session: Session, *, project_id: UUID, capability_id: UUID, actor_id: UUID, correlation_id: str
+) -> AgentCapability:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    capability = session.get(AgentCapability, capability_id)
+    if capability is None or capability.project_id != project_id:
+        raise DomainError("RESOURCE_NOT_FOUND", "能力块不存在")
+    if capability.kind != "CUSTOM" or capability.is_locked:
+        raise DomainError("AUTH_FORBIDDEN", "固定双核和系统能力不能停用")
+    if not capability.is_active:
+        return capability
+    capability.is_active = False
+    append_audit_event(
+        session,
+        project_id=project_id,
+        actor_id=actor_id,
+        aggregate_type="AgentCapability",
+        aggregate_id=capability.id,
+        action="AGENT_CAPABILITY_DEACTIVATED",
+        correlation_id=correlation_id,
+    )
+    return capability
 
 
 def create_custom_tool(session: Session, *, project_id: UUID, actor_id: UUID, correlation_id: str, key: str, name: str, tool_type: str, endpoint_url: str | None, secret_ref: str | None, input_schema: dict, output_schema: dict) -> AgentTool:
@@ -406,6 +463,46 @@ def list_orchestration(session: Session, *, project_id: UUID, actor_id: UUID) ->
         "tools": [{"id": str(item.id), "key": item.key, "name": item.name, "toolType": item.tool_type, "endpointUrl": item.endpoint_url, "secretRef": item.secret_ref, "isSystem": item.is_system, "isActive": item.is_active} for item in tools],
         "templates": [{"id": str(item.id), "name": item.name, "description": item.description, "assessmentProfile": item.assessment_profile, "isDefault": item.is_default, "isSystem": item.is_system, "version": item.version, "nodes": [{"capabilityVersionId": str(version.id), "capabilityKey": capability.key, "capabilityName": capability.name, "coreScope": node.core_scope, "displayOrder": node.display_order, "enabled": node.enabled, "locked": capability.is_locked, "parameters": node.parameters} for node, version, capability in _template_nodes(session, item.id)]} for item in templates],
     }
+
+
+def list_task_orchestration_bindings(session: Session, *, project_id: UUID, actor_id: UUID) -> list[dict]:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    tasks = (
+        session.query(VerificationTask)
+        .filter_by(project_id=project_id)
+        .order_by(VerificationTask.updated_at.desc(), VerificationTask.created_at.desc())
+        .all()
+    )
+    bindings = {
+        binding.task_id: binding
+        for binding in session.query(TaskOrchestrationBinding)
+        .join(VerificationTask, VerificationTask.id == TaskOrchestrationBinding.task_id)
+        .filter(VerificationTask.project_id == project_id)
+        .all()
+    }
+    templates = {
+        template.id: template
+        for template in session.query(OrchestrationTemplate).filter_by(project_id=project_id).all()
+    }
+    result: list[dict] = []
+    for task in tasks:
+        binding = bindings.get(task.id)
+        template = templates.get(binding.template_id) if binding else None
+        nodes = _template_nodes(session, template.id) if template else []
+        is_template_usable = bool(template) and all(capability.is_active for _, _, capability in nodes)
+        result.append(
+            {
+                "taskId": str(task.id),
+                "taskTitle": task.title,
+                "requirementKey": task.requirement_key,
+                "templateId": str(binding.template_id) if binding else None,
+                "templateName": template.name if template else None,
+                "templateVersion": binding.template_version if binding else None,
+                "boundAt": binding.bound_at.isoformat() if binding and binding.bound_at else None,
+                "isTemplateUsable": is_template_usable,
+            }
+        )
+    return result
 
 
 def get_run_orchestration(session: Session, *, run_id: UUID, actor_id: UUID) -> dict:

@@ -55,9 +55,32 @@ interface OrchestrationData {
   templates: Template[]
 }
 
+interface CapabilityVersionDetail {
+  capabilityId: string
+  kind: 'SYSTEM' | 'CUSTOM'
+  isLocked: boolean
+  isActive: boolean
+  versionId: string
+  version: number
+  promptTemplate: string
+  toolIds: string[]
+}
+
+interface TaskBinding {
+  taskId: string
+  taskTitle: string
+  requirementKey: string
+  templateId: string | null
+  templateName: string | null
+  templateVersion: number | null
+  boundAt: string | null
+  isTemplateUsable: boolean
+}
+
 const projectId = selectedProjectId
 const activeTab = ref<'capabilities' | 'tools' | 'templates'>('capabilities')
 const data = ref<OrchestrationData>({ capabilities: [], tools: [], templates: [] })
+const taskBindings = ref<TaskBinding[]>([])
 const busy = ref(false)
 const message = ref('选择项目后加载固定双核、能力块与编排模板。')
 const selectedToolIds = ref<string[]>([])
@@ -65,23 +88,91 @@ const selectedCapabilityVersionIds = ref<string[]>([])
 const agentForm = ref({ key: '', name: '', description: '', coreScope: 'SHARED' as CoreScope, prompt: '' })
 const toolForm = ref({ key: '', name: '', toolType: 'HTTP_QUERY', endpointUrl: '', secretRef: '' })
 const templateForm = ref({ name: '', description: '' })
+const editingCapabilityId = ref<string | null>(null)
+const versionForm = ref({ prompt: '', toolIds: [] as string[] })
 
 const capabilitiesByScope = computed(() => ({
   requirement: data.value.capabilities.filter((item) => item.coreScope === 'REQUIREMENT'),
   delivery: data.value.capabilities.filter((item) => item.coreScope === 'DELIVERY'),
   shared: data.value.capabilities.filter((item) => item.coreScope === 'SHARED'),
 }))
-const selectedTemplateCapabilities = computed(() => selectedCapabilityVersionIds.value.map((versionId) => data.value.capabilities.find((item) => item.latestVersionId === versionId)).filter((item): item is Capability => Boolean(item)))
+const selectedTemplateCapabilities = computed(() => selectedCapabilityVersionIds.value.map((versionId) => data.value.capabilities.find((item) => item.latestVersionId === versionId && item.isActive)).filter((item): item is Capability => Boolean(item)))
+const bindableTemplates = computed(() => data.value.templates.filter((template) => template.nodes.every((node) => data.value.capabilities.some((capability) => capability.key === node.capabilityKey && capability.isActive))))
 
 async function load() {
   if (!projectId.value) return
   busy.value = true
   try {
-    data.value = await request<OrchestrationData>(`/projects/${projectId.value}/agent-orchestration`, { headers: authHeaders() })
-    selectedCapabilityVersionIds.value = data.value.capabilities.filter((item) => item.latestVersionId).map((item) => item.latestVersionId as string)
-    message.value = `已加载固定双核、${data.value.capabilities.length} 个能力块与 ${data.value.templates.length} 个编排模板。`
+    const [orchestration, bindings] = await Promise.all([
+      request<OrchestrationData>(`/projects/${projectId.value}/agent-orchestration`, { headers: authHeaders() }),
+      request<TaskBinding[]>(`/projects/${projectId.value}/agent-orchestration/task-bindings`, { headers: authHeaders() }),
+    ])
+    data.value = orchestration
+    taskBindings.value = bindings
+    selectedCapabilityVersionIds.value = data.value.capabilities.filter((item) => item.isActive && item.latestVersionId).map((item) => item.latestVersionId as string)
+    message.value = `已加载固定双核、${data.value.capabilities.length} 个能力块、${data.value.templates.length} 个编排模板与 ${taskBindings.value.length} 个任务绑定。`
   } catch (error) {
     message.value = error instanceof Error ? error.message : '加载失败'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function startCapabilityVersion(item: Capability) {
+  if (!projectId.value || item.kind !== 'CUSTOM' || !item.isActive) return
+  busy.value = true
+  try {
+    const detail = await request<CapabilityVersionDetail>(`/projects/${projectId.value}/agent-orchestration/capabilities/${item.id}/latest-version`, { headers: authHeaders() })
+    editingCapabilityId.value = detail.capabilityId
+    versionForm.value = { prompt: detail.promptTemplate, toolIds: detail.toolIds }
+    message.value = `正在基于 ${item.name} 的 v${detail.version} 创建新版本；历史版本与已冻结运行不会被改写。`
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '读取能力版本失败'
+  } finally {
+    busy.value = false
+  }
+}
+
+function cancelCapabilityVersion() {
+  editingCapabilityId.value = null
+  versionForm.value = { prompt: '', toolIds: [] }
+}
+
+async function createCapabilityVersion() {
+  if (!projectId.value || !editingCapabilityId.value) return
+  busy.value = true
+  try {
+    await request(`/projects/${projectId.value}/agent-orchestration/capabilities/${editingCapabilityId.value}/versions`, {
+      method: 'POST',
+      headers: authHeaders(true),
+      body: JSON.stringify({
+        prompt_template: versionForm.value.prompt,
+        input_schema: {}, output_schema: {}, parameter_schema: {}, tool_ids: versionForm.value.toolIds,
+      }),
+    })
+    message.value = '新的 Agent 版本已保存；后续模板需显式选择该版本，既有运行保持原样。'
+    cancelCapabilityVersion()
+    await load()
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '创建 Agent 版本失败'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function deactivateCapability(item: Capability) {
+  if (!projectId.value || item.kind !== 'CUSTOM' || !item.isActive) return
+  if (!window.confirm(`停用“${item.name}”后，不能继续创建版本或用于新的模板绑定；历史运行不会改变。是否继续？`)) return
+  busy.value = true
+  try {
+    await request(`/projects/${projectId.value}/agent-orchestration/capabilities/${item.id}/deactivate`, {
+      method: 'POST', headers: authHeaders(true),
+    })
+    if (editingCapabilityId.value === item.id) cancelCapabilityVersion()
+    message.value = `已停用 ${item.name}；既有正式记录和冻结运行未被改写。`
+    await load()
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '停用 Agent 失败'
   } finally {
     busy.value = false
   }
@@ -157,6 +248,22 @@ async function createTemplate() {
   }
 }
 
+async function bindTaskTemplate(taskId: string, templateId: string) {
+  if (!templateId) return
+  busy.value = true
+  try {
+    await request(`/verification-tasks/${taskId}/agent-orchestration`, {
+      method: 'PUT', headers: authHeaders(true), body: JSON.stringify({ template_id: templateId }),
+    })
+    message.value = '任务已绑定编排模板。该绑定只决定后续核验使用的能力组合，不代表交付已完成。'
+    await load()
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '绑定任务模板失败'
+  } finally {
+    busy.value = false
+  }
+}
+
 function moveSelectedCapability(index: number, direction: -1 | 1) {
   const target = index + direction
   if (target < 0 || target >= selectedCapabilityVersionIds.value.length) return
@@ -193,7 +300,8 @@ watch(projectId, () => { void load() }, { immediate: true })
           <section><h3>需求 / 验收核心</h3><article v-for="item in capabilitiesByScope.requirement" :key="item.id" class="agent-row"><div><strong>{{ item.name }}</strong><p>{{ item.description }}</p></div><span class="agent-lock">系统必经</span></article></section>
           <section><h3>交付证据核心</h3><article v-for="item in capabilitiesByScope.delivery" :key="item.id" class="agent-row"><div><strong>{{ item.name }}</strong><p>{{ item.description }}</p></div><span :class="item.isLocked ? 'agent-lock' : 'agent-state'">{{ item.isLocked ? '锁定默认' : '默认启用' }}</span></article></section>
         </div>
-        <section class="agent-list-section"><h3>共享与自定义能力</h3><article v-for="item in capabilitiesByScope.shared" :key="item.id" class="agent-row"><div><strong>{{ item.name }}</strong><p>{{ item.description || '自定义 Prompt 能力块' }}</p><small>{{ item.kind === 'CUSTOM' ? `自定义 · v${item.latestVersion}` : '系统能力' }}</small></div><span :class="item.isLocked ? 'agent-lock' : 'agent-state'">{{ item.isLocked ? '系统必经' : '可编排' }}</span></article></section>
+        <section class="agent-list-section"><h3>共享与自定义能力</h3><article v-for="item in capabilitiesByScope.shared" :key="item.id" class="agent-row"><div><strong>{{ item.name }}</strong><p>{{ item.description || '自定义 Prompt 能力块' }}</p><small>{{ item.kind === 'CUSTOM' ? `自定义 · v${item.latestVersion}` : '系统能力' }}</small></div><div v-if="item.kind === 'CUSTOM'" class="agent-actions"><span :class="item.isActive ? 'agent-state' : 'agent-inactive'">{{ item.isActive ? '可编排' : '已停用' }}</span><button v-if="item.isActive" type="button" :disabled="busy" @click="startCapabilityVersion(item)">新版本</button><button v-if="item.isActive" type="button" class="agent-danger-action" :disabled="busy" @click="deactivateCapability(item)">停用</button></div><span v-else :class="item.isLocked ? 'agent-lock' : 'agent-state'">{{ item.isLocked ? '系统必经' : '系统能力' }}</span></article></section>
+        <form v-if="editingCapabilityId" class="agent-form agent-version-form" @submit.prevent="createCapabilityVersion"><h3>创建 Agent 新版本</h3><p class="agent-form-note">仅复制上一版本作为编辑起点。保存后需要在新模板中显式选择，已冻结运行、报告和正式记录不会改变。</p><label>自定义 Prompt<textarea v-model="versionForm.prompt" required placeholder="只基于授权证据提出建议；不要输出最终审批结论。"></textarea></label><fieldset><legend>授权工具</legend><label v-for="tool in data.tools.filter((item) => item.isActive)" :key="tool.id" class="check-line"><input v-model="versionForm.toolIds" type="checkbox" :value="tool.id" />{{ tool.name }}<small>{{ tool.toolType }}</small></label></fieldset><div class="agent-form-actions"><button class="primary-button" :disabled="busy || !projectId">保存新版本</button><button type="button" :disabled="busy" @click="cancelCapabilityVersion">取消</button></div></form>
         <form class="agent-form" @submit.prevent="createAgent"><h3>创建外围 Agent</h3><p class="agent-form-note">自定义 Agent 只能作为围绕固定双核的共享能力；它可以提出建议、风险或草稿，不能替代两个核心或输出正式审批结论。</p><div class="agent-form-grid"><label>标识<input v-model="agentForm.key" required placeholder="例如 payment-risk-check" /></label><label>名称<input v-model="agentForm.name" required placeholder="例如 支付风险复核" /></label></div><label>说明<input v-model="agentForm.description" placeholder="说明它要补充什么证据判断" /></label><label>自定义 Prompt<textarea v-model="agentForm.prompt" required placeholder="只基于授权证据提出关联或风险建议；不要输出最终审批结论。"></textarea></label><fieldset><legend>授权工具</legend><label v-for="tool in data.tools" :key="tool.id" class="check-line"><input v-model="selectedToolIds" type="checkbox" :value="tool.id" />{{ tool.name }}<small>{{ tool.toolType }}</small></label></fieldset><button class="primary-button" :disabled="busy || !projectId">创建外围 Agent</button></form>
       </section>
 
@@ -206,7 +314,8 @@ watch(projectId, () => { void load() }, { immediate: true })
       <section v-else class="surface agent-content">
         <div class="agent-section-heading"><div><h2>编排模板</h2><p>模板控制外围能力块的组合；双核、Git Diff 和证据裁决由服务端强制保留。</p></div></div>
         <article v-for="template in data.templates" :key="template.id" class="template-row"><div><strong>{{ template.name }}</strong><p>{{ template.description }}</p><ol><li v-for="node in template.nodes" :key="node.capabilityVersionId"><span>{{ node.displayOrder }}</span>{{ node.capabilityName }}<small v-if="node.locked">锁定</small></li></ol></div><span :class="template.isDefault ? 'agent-lock' : 'agent-state'">{{ template.isDefault ? '默认模板' : `v${template.version}` }}</span></article>
-        <form class="agent-form" @submit.prevent="createTemplate"><h3>创建编排模板</h3><div class="agent-form-grid"><label>名称<input v-model="templateForm.name" required placeholder="例如 支付交付核验" /></label><label>说明<input v-model="templateForm.description" placeholder="说明本模板适用的交付场景" /></label></div><fieldset><legend>纳入能力块</legend><label v-for="item in data.capabilities.filter((capability) => capability.latestVersionId)" :key="item.id" class="check-line"><input v-model="selectedCapabilityVersionIds" type="checkbox" :value="item.latestVersionId" :disabled="item.isLocked" />{{ item.name }}<small>{{ item.isLocked ? '系统必经' : item.coreScope }}</small></label></fieldset><section class="template-order"><h4>本次编排顺序</h4><p>双核主干保留在模板中；可调整外围能力块在运行中的先后顺序。</p><div v-for="(item, index) in selectedTemplateCapabilities" :key="item.id" class="template-order-row"><span>{{ index + 1 }}</span><strong>{{ item.name }}</strong><small>{{ item.coreScope }}</small><div><button type="button" :disabled="index === 0" @click="moveSelectedCapability(index, -1)">上移</button><button type="button" :disabled="index === selectedTemplateCapabilities.length - 1" @click="moveSelectedCapability(index, 1)">下移</button></div></div></section><button class="primary-button" :disabled="busy || !projectId">创建模板</button></form>
+        <section class="agent-binding-section"><h3>核验任务绑定</h3><p>为后续核验选择能力组合；它不表示事项已经完成，也不替代冻结 Diff 与双核结论。</p><p v-if="!taskBindings.length" class="empty-row">当前项目还没有核验任务。先在任务中心创建任务后，再为它绑定编排模板。</p><article v-for="binding in taskBindings" :key="binding.taskId" class="task-binding-row"><div><strong>{{ binding.taskTitle }}</strong><p>{{ binding.requirementKey }} · 当前：{{ binding.templateName || '未绑定模板' }}<template v-if="binding.templateVersion"> · v{{ binding.templateVersion }}</template></p><small v-if="binding.templateId && !binding.isTemplateUsable" class="risk-text">当前模板包含已停用能力，请重新绑定可用模板。</small></div><select :value="binding.templateId && binding.isTemplateUsable ? binding.templateId : ''" :disabled="busy || !bindableTemplates.length" @change="bindTaskTemplate(binding.taskId, String(($event.target as HTMLSelectElement).value))"><option value="" disabled>选择后续核验模板</option><option v-for="template in bindableTemplates" :key="template.id" :value="template.id">{{ template.name }} · v{{ template.version }}</option></select></article></section>
+        <form class="agent-form" @submit.prevent="createTemplate"><h3>创建编排模板</h3><div class="agent-form-grid"><label>名称<input v-model="templateForm.name" required placeholder="例如 支付交付核验" /></label><label>说明<input v-model="templateForm.description" placeholder="说明本模板适用的交付场景" /></label></div><fieldset><legend>纳入能力块</legend><label v-for="item in data.capabilities.filter((capability) => capability.isActive && capability.latestVersionId)" :key="item.id" class="check-line"><input v-model="selectedCapabilityVersionIds" type="checkbox" :value="item.latestVersionId" :disabled="item.isLocked" />{{ item.name }}<small>{{ item.isLocked ? '系统必经' : item.coreScope }}</small></label></fieldset><section class="template-order"><h4>本次编排顺序</h4><p>双核主干保留在模板中；可调整外围能力块在运行中的先后顺序。</p><div v-for="(item, index) in selectedTemplateCapabilities" :key="item.id" class="template-order-row"><span>{{ index + 1 }}</span><strong>{{ item.name }}</strong><small>{{ item.coreScope }}</small><div><button type="button" :disabled="index === 0" @click="moveSelectedCapability(index, -1)">上移</button><button type="button" :disabled="index === selectedTemplateCapabilities.length - 1" @click="moveSelectedCapability(index, 1)">下移</button></div></div></section><button class="primary-button" :disabled="busy || !projectId">创建模板</button></form>
       </section>
     </div>
   </section>
