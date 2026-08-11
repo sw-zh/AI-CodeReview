@@ -626,6 +626,39 @@ class SecurityFindingResponse(BaseModel):
     status_updated_at: datetime | None
 
 
+class SecurityArtifactExplanationResponse(BaseModel):
+    scope: dict
+    summary: dict
+    observations: list[str]
+    limitations: list[str]
+
+
+class QualityTrendPointResponse(BaseModel):
+    artifact_id: UUID
+    target_sha: str
+    created_at: datetime
+    content_hash: str
+    finding_count: int
+    severity_counts: dict
+    status_counts: dict
+    coverage: dict
+
+
+class QualityTrendSeriesResponse(BaseModel):
+    series_key: str
+    repository_id: UUID
+    scan_type: str
+    scanner_name: str
+    scanner_version: str
+    rule_set_version: str
+    points: list[QualityTrendPointResponse]
+
+
+class QualityTrendResponse(BaseModel):
+    series: list[QualityTrendSeriesResponse]
+    limitations: list[str]
+
+
 class SecurityBaselineCreateRequest(BaseModel):
     repository_id: UUID
     target_sha: str = Field(pattern="^[0-9a-fA-F]{40}$")

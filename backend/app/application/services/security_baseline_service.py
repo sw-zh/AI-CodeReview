@@ -149,6 +149,107 @@ def list_security_findings(session: Session, *, project_id: UUID, artifact_id: U
     return session.query(SecurityFinding).filter_by(scan_artifact_id=artifact_id).order_by(SecurityFinding.severity.desc(), SecurityFinding.category).all()
 
 
+def explain_security_scan_artifact(session: Session, *, project_id: UUID, artifact_id: UUID, actor_id: UUID) -> dict:
+    """Explain only facts already imported for one SHA-bound scanner artifact."""
+
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    artifact = _artifact_for_project(session, project_id=project_id, artifact_id=artifact_id)
+    findings = session.query(SecurityFinding).filter_by(scan_artifact_id=artifact.id).all()
+    severity_counts = dict(sorted(Counter(finding.severity for finding in findings).items()))
+    status_counts = dict(sorted(Counter(finding.finding_status for finding in findings).items()))
+    category_counts = dict(sorted(Counter(finding.category for finding in findings).items()))
+    high_risk_count = sum(1 for finding in findings if finding.severity in {"CRITICAL", "HIGH"})
+    observations = [
+        f"该说明只针对 {artifact.scan_type} 工件、目标 SHA {artifact.target_sha[:12]}…、扫描器 {artifact.scanner_name} {artifact.scanner_version} 与规则 {artifact.rule_set_version}。",
+        f"导入结果包含 {len(findings)} 条风险，其中高/严重风险 {high_risk_count} 条。",
+    ]
+    if status_counts.get("REMEDIATION_CLAIMED", 0):
+        observations.append("存在“已声明整改”的风险；该状态仍需要同范围的新扫描结果验证，不能描述为已修复。")
+    if not findings:
+        observations.append("该工件没有导入风险；这不等同于项目安全、代码已全部扫描或发布通过。")
+    limitations = [
+        "解释只读取这一份已导入扫描工件及其结构化风险，不读取仓库、分支或未导入的扫描输出。",
+        "覆盖范围以扫描器声明为准；未纳入的路径、依赖、配置、规则或扫描类型不产生安全结论。",
+        "风险处置状态是人工处置事实，不替代后续扫描验证。",
+    ]
+    return {
+        "scope": {
+            "artifactId": str(artifact.id),
+            "repositoryId": str(artifact.repository_id),
+            "targetSha": artifact.target_sha,
+            "scanType": artifact.scan_type,
+            "scannerName": artifact.scanner_name,
+            "scannerVersion": artifact.scanner_version,
+            "ruleSetVersion": artifact.rule_set_version,
+            "coverage": artifact.coverage,
+            "contentHash": artifact.content_hash,
+        },
+        "summary": {
+            "findingCount": len(findings),
+            "severityCounts": severity_counts,
+            "statusCounts": status_counts,
+            "categoryCounts": category_counts,
+        },
+        "observations": observations,
+        "limitations": limitations,
+    }
+
+
+def list_quality_trend(session: Session, *, project_id: UUID, actor_id: UUID, limit: int = 300) -> dict:
+    """Return comparable sequences of imported scanner results; never infer quality from commits."""
+
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    artifacts = (
+        session.query(SecurityScanArtifact)
+        .filter_by(project_id=project_id)
+        .order_by(SecurityScanArtifact.created_at.asc())
+        .limit(limit)
+        .all()
+    )
+    grouped: dict[tuple[UUID, str, str, str, str], list[dict]] = {}
+    for artifact in artifacts:
+        findings = session.query(SecurityFinding).filter_by(scan_artifact_id=artifact.id).all()
+        key = (
+            artifact.repository_id,
+            artifact.scan_type,
+            artifact.scanner_name,
+            artifact.scanner_version,
+            artifact.rule_set_version,
+        )
+        grouped.setdefault(key, []).append(
+            {
+                "artifact_id": str(artifact.id),
+                "target_sha": artifact.target_sha,
+                "created_at": artifact.created_at,
+                "content_hash": artifact.content_hash,
+                "finding_count": len(findings),
+                "severity_counts": dict(sorted(Counter(finding.severity for finding in findings).items())),
+                "status_counts": dict(sorted(Counter(finding.finding_status for finding in findings).items())),
+                "coverage": artifact.coverage,
+            }
+        )
+    series = [
+        {
+            "series_key": ":".join(str(part) for part in key),
+            "repository_id": str(key[0]),
+            "scan_type": key[1],
+            "scanner_name": key[2],
+            "scanner_version": key[3],
+            "rule_set_version": key[4],
+            "points": points,
+        }
+        for key, points in grouped.items()
+    ]
+    return {
+        "series": series,
+        "limitations": [
+            "只比较同一仓库、扫描类型、扫描器、扫描器版本和规则版本的导入结果。",
+            "扫描器或规则版本变更会形成新序列，不与旧序列解释为风险上升或下降。",
+            "趋势来自导入扫描/CI 工件，不以提交数量、PR 关联、Agent 推断或未导入代码替代质量事实。",
+        ],
+    }
+
+
 def update_security_finding_status(
     session: Session,
     *,

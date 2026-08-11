@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import (
+    QualityTrendResponse,
+    SecurityArtifactExplanationResponse,
     SecurityBaselineConfirmRequest,
     SecurityBaselineCreateRequest,
     SecurityBaselineRecordResponse,
@@ -16,11 +18,13 @@ from app.api.schemas import (
 from app.application.services.security_baseline_service import (
     confirm_security_baseline,
     create_security_baseline,
+    explain_security_scan_artifact,
     import_security_scan_artifact,
     list_security_baseline_records,
     list_security_baselines,
     list_security_findings,
     list_security_scan_artifacts,
+    list_quality_trend,
     update_security_finding_status,
 )
 from app.domain.errors import DomainError
@@ -137,6 +141,24 @@ def get_scan_artifacts(project_id: UUID, session: SessionDep, user: CurrentUserD
 def get_findings(project_id: UUID, artifact_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[SecurityFindingResponse]:
     try:
         return [_finding_response(item) for item in list_security_findings(session, project_id=project_id, artifact_id=artifact_id, actor_id=user.id)]
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@router.get("/security-scan-artifacts/{artifact_id}/explanation", response_model=SecurityArtifactExplanationResponse)
+def get_scan_artifact_explanation(project_id: UUID, artifact_id: UUID, session: SessionDep, user: CurrentUserDep) -> SecurityArtifactExplanationResponse:
+    try:
+        return SecurityArtifactExplanationResponse(
+            **explain_security_scan_artifact(session, project_id=project_id, artifact_id=artifact_id, actor_id=user.id)
+        )
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@router.get("/quality-trend", response_model=QualityTrendResponse)
+def get_quality_trend(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> QualityTrendResponse:
+    try:
+        return QualityTrendResponse(**list_quality_trend(session, project_id=project_id, actor_id=user.id))
     except DomainError as exc:
         raise _failure(exc)
 
