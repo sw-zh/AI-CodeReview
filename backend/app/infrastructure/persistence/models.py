@@ -334,6 +334,31 @@ class SecurityBaselineRecord(Base):
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PeripheralProfileRun(Base):
+    """A frozen, deterministic run for one non-delivery profile; never a dual-core review run."""
+
+    __tablename__ = "peripheral_profile_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "assessment_profile IN ('PROJECT_STATUS_SUMMARY', 'SECURITY_BASELINE', 'QUALITY_TREND')",
+            name="ck_peripheral_profile_run_profile",
+        ),
+        CheckConstraint("run_status IN ('SUCCEEDED')", name="ck_peripheral_profile_run_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    assessment_profile: Mapped[str] = mapped_column(String(48), nullable=False)
+    run_status: Mapped[str] = mapped_column(String(32), nullable=False, default="SUCCEEDED")
+    input_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    input_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    output: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    limitations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class VerificationTask(TimestampedEntity, Base):
     __tablename__ = "verification_tasks"
     __table_args__ = (UniqueConstraint("project_id", "requirement_key", name="uq_task_project_requirement"),)

@@ -573,6 +573,40 @@ class ProjectSummaryRecordResponse(BaseModel):
     published_at: datetime
 
 
+class PeripheralProfileRunCreateRequest(BaseModel):
+    assessment_profile: str = Field(pattern="^(PROJECT_STATUS_SUMMARY|SECURITY_BASELINE|QUALITY_TREND)$")
+    health_snapshot_id: UUID | None = None
+    security_baseline_id: UUID | None = None
+    scan_artifact_ids: list[UUID] | None = Field(default=None, min_length=2, max_length=300)
+
+    @model_validator(mode="after")
+    def require_profile_specific_input(self):
+        if self.assessment_profile == "PROJECT_STATUS_SUMMARY":
+            valid = self.health_snapshot_id is not None and self.security_baseline_id is None and self.scan_artifact_ids is None
+        elif self.assessment_profile == "SECURITY_BASELINE":
+            valid = self.security_baseline_id is not None and self.health_snapshot_id is None and self.scan_artifact_ids is None
+        else:
+            valid = self.scan_artifact_ids is not None and self.health_snapshot_id is None and self.security_baseline_id is None
+            if valid and len(self.scan_artifact_ids) != len(set(self.scan_artifact_ids)):
+                raise ValueError("quality trend scan artifacts must be unique")
+        if not valid:
+            raise ValueError("profile must receive exactly its dedicated frozen input")
+        return self
+
+
+class PeripheralProfileRunResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    assessment_profile: str
+    run_status: str
+    input_manifest: dict
+    input_hash: str
+    output: dict
+    coverage: dict
+    limitations: list[str]
+    created_at: datetime
+
+
 class SecurityFindingInput(BaseModel):
     fingerprint: str = Field(min_length=1, max_length=255)
     severity: str = Field(pattern="^(INFO|LOW|MEDIUM|HIGH|CRITICAL)$")
