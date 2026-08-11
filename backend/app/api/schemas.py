@@ -491,6 +491,31 @@ class ProjectSummaryDraftResponse(BaseModel):
     title: str
     content: dict
     content_hash: str
+
+
+class AgentToolExecutionResponse(BaseModel):
+    id: UUID
+    analysis_run_id: UUID
+    capability_key: str
+    tool_key: str
+    tool_type: str
+    content_hash: str
+    excerpt_safe: str
+    locator: dict
+    status: str
+    created_at: datetime
+    imported_manual_evidence_id: UUID | None
+
+
+class AgentToolExecutionImportRequest(BaseModel):
+    logical_name: str = Field(min_length=1, max_length=255)
+
+
+class AgentToolExecutionImportResponse(BaseModel):
+    manual_evidence_id: UUID
+    cycle_id: UUID
+    content_hash: str
+    origin_type: str
     draft_status: str
     created_at: datetime
     updated_at: datetime

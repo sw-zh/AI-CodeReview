@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
@@ -25,6 +25,7 @@ class GenerationRequest:
     evidence: list[dict]
     instruction: str = ""
     operation: str = "LINK_PROPOSAL"
+    temporary_context: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

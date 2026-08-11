@@ -656,6 +656,11 @@ class ManualEvidence(TimestampedEntity, Base):
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
     submitted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    origin_type: Mapped[str] = mapped_column(String(32), nullable=False, default="MANUAL")
+    origin_locator: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    source_tool_execution_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_tool_executions.id", ondelete="RESTRICT"), unique=True
+    )
 
 
 class InputSnapshotManualEvidence(Base):
@@ -690,6 +695,31 @@ class AnalysisRun(TimestampedEntity, Base):
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentToolExecution(Base):
+    """A bounded tool response used only inside one Agent run until a person imports it."""
+
+    __tablename__ = "agent_tool_executions"
+    __table_args__ = (
+        UniqueConstraint("analysis_run_id", "capability_key", "tool_key", name="uq_agent_tool_execution_run_tool"),
+        CheckConstraint("tool_type = 'HTTP_QUERY'", name="ck_agent_tool_execution_type"),
+        CheckConstraint("status IN ('SUCCEEDED')", name="ck_agent_tool_execution_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    analysis_run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    input_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
+    capability_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    tool_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    tool_type: Mapped[str] = mapped_column(String(32), nullable=False, default="HTTP_QUERY")
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    excerpt_safe: Mapped[str] = mapped_column(Text, nullable=False)
+    locator: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="SUCCEEDED")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AnalysisRunManifest(Base):

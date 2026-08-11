@@ -20,6 +20,7 @@ class _NoRedirect(HTTPRedirectHandler):
 @dataclass(frozen=True)
 class HttpToolResult:
     content_hash: str
+    content: str
     excerpt: str
     locator: dict
 
@@ -106,9 +107,13 @@ def execute_http_query(
         raise DomainError("TOOL_UNAVAILABLE", f"工具返回 HTTP {exc.code}") from exc
     except (URLError, TimeoutError) as exc:
         raise DomainError("TOOL_UNAVAILABLE", "工具当前不可用") from exc
-    content_hash = f"sha256:{hashlib.sha256(f'{endpoint_url}|{content}'.encode('utf-8')).hexdigest()}"
+    # A temporary execution is still an immutable artifact.  Its hash is the
+    # exact saved response, not a hash of a URL that must never be exposed as
+    # formal evidence metadata.
+    content_hash = f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
     return HttpToolResult(
         content_hash=content_hash,
+        content=content,
         excerpt=content[:12_000],
         locator={"toolKey": tool.get("key"), "host": host, "responseType": content_type, "statusCode": status},
     )

@@ -24,6 +24,8 @@ def resolve_citation(
     evidence = session.get(EvidenceItem, evidence_id)
     if evidence is None or evidence.project_id != task.project_id or evidence.snapshot_id != snapshot.id:
         raise DomainError("CITATION_INVALID", "证据不存在、无权访问或不属于当前快照")
+    if evidence.source_type == "TOOL" or evidence.evidence_kind == "HTTP_QUERY":
+        raise DomainError("CITATION_INVALID", "运行期工具结果不是正式证据；请先显式导入并冻结到新的输入快照")
     if evidence.locator_precision not in {"EXACT", "APPROXIMATE", "UNAVAILABLE"}:
         raise DomainError("CITATION_INVALID", "证据定位器无效")
     return evidence

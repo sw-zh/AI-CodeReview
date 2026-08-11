@@ -18,6 +18,7 @@ from app.infrastructure.persistence.models import (
     AnalysisRun,
     AnalysisRunManifest,
     AnalysisRunOrchestrationSnapshot,
+    AgentToolExecution,
     Claim,
     ClaimEvidenceLink,
     EvidenceItem,
@@ -34,6 +35,7 @@ from app.infrastructure.persistence.models import (
     VerificationResult,
     VerificationTask,
 )
+from app.infrastructure.artifact_storage import LocalArtifactStorage
 
 
 class VerificationGraphState(TypedDict, total=False):
@@ -423,7 +425,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             return {"node_errors": [*state.get("node_errors", []), exc.code]}
 
     def run_custom_agents(state: VerificationGraphState) -> VerificationGraphState:
-        """Custom Prompt Agents may suggest links, but never bypass the deterministic verdict."""
+        """Outer Agents may use temporary hints, but only frozen evidence can be cited."""
         ensure_not_cancelled()
         if not custom_agent_nodes:
             return {}
@@ -449,45 +451,60 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         for node in custom_agent_nodes:
             key = str(node.get("capabilityKey"))
             agent_evidence = [*evidence]
+            temporary_tool_context: list[dict] = []
             for tool in node.get("tools", []):
                 if tool.get("type") != "HTTP_QUERY":
                     continue
                 tool_id = str(tool.get("toolId", "unknown"))
                 event_node_id = f"tool:{tool_id}"[:64]
                 try:
-                    outcome = execute_http_query(
-                        tool,
-                        analysis_run_id=str(run_id),
-                        input_snapshot_id=str(snapshot.id),
+                    tool_key = str(tool.get("key", tool_id))
+                    execution = session.query(AgentToolExecution).filter_by(
+                        analysis_run_id=run_id,
                         capability_key=key,
-                        settings=settings,
-                    )
-                    tool_evidence = session.query(EvidenceItem).filter_by(
-                        snapshot_id=snapshot.id,
-                        source_type="TOOL",
-                        content_hash=outcome.content_hash,
+                        tool_key=tool_key,
                     ).one_or_none()
-                    if tool_evidence is None:
-                        tool_evidence = EvidenceItem(
+                    reused = execution is not None
+                    if execution is None:
+                        outcome = execute_http_query(
+                            tool,
+                            analysis_run_id=str(run_id),
+                            input_snapshot_id=str(snapshot.id),
+                            capability_key=key,
+                            settings=settings,
+                        )
+                        execution = AgentToolExecution(
                             project_id=task.project_id,
-                            snapshot_id=snapshot.id,
-                            source_type="TOOL",
-                            evidence_kind="HTTP_QUERY",
+                            analysis_run_id=run_id,
+                            input_snapshot_id=snapshot.id,
+                            capability_key=key,
+                            tool_key=tool_key,
+                            tool_type="HTTP_QUERY",
                             content_hash=outcome.content_hash,
+                            artifact_uri="pending://artifact",
                             excerpt_safe=_safe_excerpt(outcome.excerpt),
                             locator={**outcome.locator, "capabilityKey": key, "analysisRunId": str(run_id)},
-                            locator_precision="EXACT",
-                            extractor_version="agent-http-tool-v1",
-                            requires_human_confirmation=True,
                         )
-                        session.add(tool_evidence)
+                        session.add(execution)
                         session.flush()
-                    agent_evidence.append(tool_evidence)
+                        execution.artifact_uri = LocalArtifactStorage(get_settings().artifact_root).write_bytes(
+                            [str(task.project_id), "agent-tool-executions", str(execution.id)],
+                            "response.txt",
+                            outcome.content.encode("utf-8"),
+                        )
+                    temporary_tool_context.append({
+                        "kind": "TEMPORARY_AGENT_TOOL_RESULT",
+                        "toolExecutionId": str(execution.id),
+                        "toolKey": execution.tool_key,
+                        "locator": execution.locator,
+                        "excerpt": execution.excerpt_safe,
+                        "rule": "Only a review hint. It cannot be cited or become a formal delivery conclusion until a person explicitly imports it into a later formal input snapshot.",
+                    })
                     session.add(AnalysisCoverage(
                         analysis_run_id=run_id,
                         scope_kind="AGENT_TOOL",
-                        scope_ref=f"{key}:{tool.get('key', tool_id)}",
-                        state="ANALYZED",
+                        scope_ref=f"{key}:{tool_key}",
+                        state="TEMPORARY",
                     ))
                     session.add(RunEvent(
                         run_id=run_id,
@@ -495,7 +512,14 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         event_type="TOOL_EXECUTION",
                         status="SUCCEEDED",
                         correlation_id=str(run_id),
-                        payload_redacted={"toolKey": tool.get("key"), "capabilityKey": key, "automatic": True},
+                        payload_redacted={
+                            "toolKey": tool_key,
+                            "capabilityKey": key,
+                            "toolExecutionId": str(execution.id),
+                            "contentHash": execution.content_hash,
+                            "evidenceState": "TEMPORARY_ONLY",
+                            "reused": reused,
+                        },
                     ))
                 except DomainError as exc:
                     node_errors.append(f"{key}:{tool.get('key', tool_id)}:{exc.code}")
@@ -523,6 +547,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 operation=f"CUSTOM_AGENT:{key}",
                 claims=[{"id": str(claim.id), "text": claim.text, "candidateEvidenceIds": sorted(allowed_ids)} for claim in claims],
                 evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in agent_evidence],
+                temporary_context=temporary_tool_context,
             )
             try:
                 generated = create_generation_model(settings).generate(request)
@@ -549,7 +574,13 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             claim = session.get(Claim, UUID(claim_id))
             if claim is None:
                 continue
-            links = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id).all()
+            links = [
+                item
+                for item in session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id).all()
+                if (linked_evidence := session.get(EvidenceItem, item.evidence_id)) is not None
+                and linked_evidence.source_type != "TOOL"
+                and linked_evidence.evidence_kind != "HTTP_QUERY"
+            ]
             deterministic_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "DETERMINISTIC"]
             human_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "HUMAN"]
             model_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "MODEL"]

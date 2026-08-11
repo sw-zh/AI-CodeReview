@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.analysis import run_router, snapshot_router as analysis_snapshot_router, task_router as analysis_task_router
+from app.api.routes.agent_tool_executions import router as agent_tool_execution_router
 from app.api.routes.evidence import router as evidence_router
 from app.api.routes.external_evidence import router as external_evidence_router
 from app.api.routes.external_sources import router as external_sources_router
@@ -26,6 +27,7 @@ api_router.include_router(auth_router, tags=["auth"])
 api_router.include_router(analysis_snapshot_router, tags=["analysis"])
 api_router.include_router(run_router, tags=["analysis"])
 api_router.include_router(analysis_task_router, tags=["analysis"])
+api_router.include_router(agent_tool_execution_router, tags=["agent-orchestration"])
 api_router.include_router(evidence_router, tags=["evidence"])
 api_router.include_router(external_evidence_router, tags=["evidence"])
 api_router.include_router(external_sources_router, tags=["external-sources"])

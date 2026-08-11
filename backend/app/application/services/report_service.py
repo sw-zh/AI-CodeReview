@@ -8,7 +8,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.application.services.citation_resolver import resolve_citation
 from app.domain.enums import AssessmentProfile, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, DeliveryItem, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, User, VerificationCycle, VerificationResult, VerificationTask
+from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, DeliveryItem, EvidenceItem, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, User, VerificationCycle, VerificationResult, VerificationTask
 from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
 
 
@@ -45,6 +45,26 @@ def _assert_publishable_citations(session: Session, *, report: ReportVersion, ac
     for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
         for evidence_id in item.citation_snapshot.get("evidenceIds", []):
             resolve_citation(session, evidence_id=UUID(str(evidence_id)), snapshot_id=snapshot.id, actor_id=actor_id)
+
+
+def _formal_citation_ids(session: Session, *, snapshot_id: UUID, evidence_ids: list) -> list[str]:
+    """A runtime tool response may never be copied into a report citation snapshot."""
+
+    requested = [UUID(str(item)) for item in evidence_ids]
+    if not requested:
+        return []
+    allowed = {
+        str(item.id)
+        for item in session.query(EvidenceItem)
+        .filter(
+            EvidenceItem.id.in_(requested),
+            EvidenceItem.snapshot_id == snapshot_id,
+            EvidenceItem.source_type != "TOOL",
+            EvidenceItem.evidence_kind != "HTTP_QUERY",
+        )
+        .all()
+    }
+    return [str(item) for item in evidence_ids if str(item) in allowed]
 
 
 def _delivery_item_verification_status(session: Session, *, report: ReportVersion) -> str:
@@ -208,7 +228,7 @@ def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UU
     report = ReportVersion(cycle_id=cycle.id, sequence_no=next_no, status="DRAFT", record_type=run.assessment_profile, content_hash=content_hash, snapshot_hash=snapshot.snapshot_hash, run_id=run.id)
     session.add(report); session.flush()
     for order, result in enumerate(results, start=1):
-        session.add(ReportItem(report_version_id=report.id, result_id=result.id, display_order=order, result_snapshot={"status": result.status, "reason": result.reason}, citation_snapshot={"evidenceIds": result.evidence_ids}))
+        session.add(ReportItem(report_version_id=report.id, result_id=result.id, display_order=order, result_snapshot={"status": result.status, "reason": result.reason}, citation_snapshot={"evidenceIds": _formal_citation_ids(session, snapshot_id=snapshot.id, evidence_ids=result.evidence_ids)}))
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_DRAFT_CREATED", correlation_id=correlation_id)
     return report
 
@@ -247,7 +267,7 @@ def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: st
             result_id=result.id,
             display_order=order,
             result_snapshot={"status": result.status, "reason": result.reason},
-            citation_snapshot={"evidenceIds": result.evidence_ids},
+            citation_snapshot={"evidenceIds": _formal_citation_ids(session, snapshot_id=snapshot.id, evidence_ids=result.evidence_ids)},
         ))
     append_audit_event(
         session,

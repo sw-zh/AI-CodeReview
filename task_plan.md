@@ -83,6 +83,19 @@
 4. 收紧自定义 Agent 只能作为外围共享能力，删除所有工作台演示数据。`complete`
 5. 更新功能文档，进行静态检查并提交。`complete`
 
+## 2026-08-11 当前实现：临时工具结果与正式证据边界
+
+### Goal
+
+将外围 Agent 的运行期 `HTTP_QUERY` 结果从正式 `EvidenceItem` 与报告引用链中移出。工具输出可被 Agent 作为受限审查线索使用，但只有提交人或管理员显式导入为人工补证、选择进入新的正式输入快照后，才可被 Citation Resolver 作为正式证据解析。
+
+### Phases
+
+1. 审计工具运行、模型候选证据、Citation Resolver 和报告草稿链路。`complete`
+2. 新增不可直接引用的 `AgentToolExecution`，并禁止其参与核验结果与报告引用。`complete`
+3. 提供临时结果读取、显式导入补证 API 和 Notebook 最小入口。`complete`
+4. 更新功能文档，进行静态检查并提交。`complete`
+
 ## 2026-08-10 当前任务：总体方向的开发方案
 
 ### Goal

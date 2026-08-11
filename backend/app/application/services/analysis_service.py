@@ -139,7 +139,12 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
         evidence_ids = [UUID(item) for item in result.evidence_ids]
         evidence = (
             session.query(EvidenceItem)
-            .filter(EvidenceItem.id.in_(evidence_ids), EvidenceItem.snapshot_id == snapshot.id)
+            .filter(
+                EvidenceItem.id.in_(evidence_ids),
+                EvidenceItem.snapshot_id == snapshot.id,
+                EvidenceItem.source_type != "TOOL",
+                EvidenceItem.evidence_kind != "HTTP_QUERY",
+            )
             .all()
             if evidence_ids
             else []
