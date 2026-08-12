@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
+from app.application.services.git_service import assert_delivery_item_repository_match
+from app.application.services.repository_identity import github_repository_matches
 from app.core.config import get_settings
 from app.domain.enums import ExternalResourceType, ProjectRole
 from app.domain.errors import DomainError
@@ -21,6 +23,7 @@ from app.infrastructure.persistence.models import (
     ExternalConnection,
     ExternalResource,
     ExternalResourceRevision,
+    GitRepository,
     GitSnapshot,
     PublishedRecord,
     SourceRevision,
@@ -61,6 +64,20 @@ def _item_for_project(session: Session, *, project_id: UUID, delivery_item_id: U
     return item
 
 
+def _item_source_connection(session: Session, *, item: DeliveryItem) -> ExternalConnection:
+    resource = session.get(ExternalResource, item.external_resource_id)
+    connection = session.get(ExternalConnection, resource.connection_id) if resource else None
+    if resource is None or connection is None or connection.project_id != item.project_id:
+        raise DomainError("INPUT_INVALID", "研发事项缺少可核对的外部来源仓库")
+    return connection
+
+
+def _assert_pr_matches_item(session: Session, *, item: DeliveryItem, resource: ExternalResource) -> None:
+    connection = _item_source_connection(session, item=item)
+    if resource.connection_id != connection.id:
+        raise DomainError("INPUT_INVALID", "研发事项只能关联同一来源仓库的 PR")
+
+
 def bind_task_delivery_item(
     session: Session,
     *,
@@ -77,6 +94,22 @@ def bind_task_delivery_item(
     item = _item_for_project(session, project_id=project_id, delivery_item_id=delivery_item_id)
     if task.delivery_item_id != item.id and session.query(PublishedRecord).filter_by(task_id=task.id).first() is not None:
         raise DomainError("STATE_CONFLICT", "已固化正式记录的历史任务不可重新归属研发事项")
+    snapshots = (
+        session.query(GitSnapshot)
+        .join(VerificationCycle, VerificationCycle.id == GitSnapshot.cycle_id)
+        .filter(VerificationCycle.task_id == task.id)
+        .all()
+    )
+    for snapshot in snapshots:
+        repository = session.get(GitRepository, snapshot.repository_id)
+        if repository is None:
+            raise DomainError("INPUT_INVALID", "核验任务存在无法核对来源的 Git 范围")
+        assert_delivery_item_repository_match(
+            session,
+            project_id=task.project_id,
+            delivery_item_id=item.id,
+            repository=repository,
+        )
     task.delivery_item_id = item.id
     task.version += 1
     append_audit_event(
@@ -109,6 +142,12 @@ def _git_snapshot_for_item(session: Session, *, item: DeliveryItem, git_snapshot
         raise DomainError("INPUT_INVALID", "Git 范围不存在或不属于当前项目")
     if task.delivery_item_id != item.id:
         raise DomainError("STATE_CONFLICT", "Git 范围所属核验任务尚未绑定当前研发事项")
+    repository = session.get(GitRepository, snapshot.repository_id)
+    connection = _item_source_connection(session, item=item)
+    if repository is None or not github_repository_matches(
+        repository_url=repository.display_url, repository_slug=connection.repository_slug
+    ):
+        raise DomainError("INPUT_INVALID", "研发事项只能关联同一来源仓库的 Git 范围")
     return snapshot
 
 
@@ -189,7 +228,8 @@ def confirm_change_link(
     if (pull_request_resource_id is None) == (git_snapshot_id is None):
         raise DomainError("INPUT_INVALID", "一次只能确认一个 PR 或 Git 范围关联")
     if pull_request_resource_id is not None:
-        _pr_for_project(session, project_id=project_id, pull_request_resource_id=pull_request_resource_id)
+        resource = _pr_for_project(session, project_id=project_id, pull_request_resource_id=pull_request_resource_id)
+        _assert_pr_matches_item(session, item=item, resource=resource)
     if git_snapshot_id is not None:
         _git_snapshot_for_item(session, item=item, git_snapshot_id=git_snapshot_id)
     link, changed = _upsert_link(
@@ -220,6 +260,7 @@ def confirm_change_link(
 def _agent_target_for_item(session: Session, *, project_id: UUID, item: DeliveryItem, target_kind: str, target_id: UUID) -> dict:
     if target_kind == "PULL_REQUEST":
         resource = _pr_for_project(session, project_id=project_id, pull_request_resource_id=target_id)
+        _assert_pr_matches_item(session, item=item, resource=resource)
         revision = _latest_resource_revision(session, resource.id)
         if revision is None:
             raise DomainError("STATE_CONFLICT", "候选 PR 尚未同步可用版本")
@@ -253,12 +294,13 @@ def _agent_target_for_item(session: Session, *, project_id: UUID, item: Delivery
 def list_agent_candidate_targets(session: Session, *, project_id: UUID, delivery_item_id: UUID, actor_id: UUID) -> list[dict]:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
     item = _item_for_project(session, project_id=project_id, delivery_item_id=delivery_item_id)
+    connection = _item_source_connection(session, item=item)
     targets: list[dict] = []
     resources = (
         session.query(ExternalResource)
         .join(ExternalConnection, ExternalConnection.id == ExternalResource.connection_id)
         .filter(
-            ExternalConnection.project_id == project_id,
+            ExternalConnection.id == connection.id,
             ExternalResource.resource_type == ExternalResourceType.PULL_REQUEST.value,
         )
         .order_by(ExternalResource.external_key.desc())

@@ -13,6 +13,7 @@
 - 首次用 Bash heredoc 在 PowerShell 执行最小 Python 不变量检查时被 PowerShell 解析器拒绝，尚未运行 Python；后续改用 PowerShell here-string 管道，不重复该命令格式。
 - 编译检查已通过；最小 Python 检查首次因 shell 未加载本地 `.env`、缺少 `JWT_SECRET` 而在导入设置时失败，未连接或改动数据库。后续只为该进程注入临时占位值后重跑。
 - 已完成报告不可回退修复：所有报告写状态转换均以核验周期为锁定与终态检查边界；新增 `backend/tests/test_report_cycle_immutability.py`，编译与最小回归均通过。该切片尚未重建容器做真实运行态回归，将与后续切片一并进行。
+- 已完成来源与 Git 归属收紧：正式快照拒绝重复资料 ID；绑定事项后的冻结 Git、事项—PR/Git 关联和候选 Agent 目标只接受同一 GitHub 来源仓库。新增 URL 规范化回归测试，四项现有/新增最小测试均通过；未执行任何真实仓库写操作。
 
 ## 2026-08-12 第一性原则全链路复核
 

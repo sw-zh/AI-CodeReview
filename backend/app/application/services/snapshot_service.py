@@ -163,8 +163,10 @@ def freeze_formal_snapshot(
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if cycle.business_status not in {"DRAFT", "NEEDS_EVIDENCE", "NEEDS_CONFIRMATION"}:
         raise DomainError("STATE_CONFLICT", "当前轮次不能再冻结新的正式输入快照")
+    if len(source_revision_ids) != len(set(source_revision_ids)):
+        raise DomainError("INPUT_INVALID", "正式快照的资料版本不能重复选择")
     sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == task.project_id).all()
-    if len(sources) != len(set(source_revision_ids)) or any(x.processing_status != SourceProcessingStatus.READY for x in sources):
+    if len(sources) != len(source_revision_ids) or any(x.processing_status != SourceProcessingStatus.READY for x in sources):
         raise DomainError("SOURCE_NOT_READY", "正式快照的全部资料必须存在且处于 READY")
     if len(external_evidence_ids) != len(set(external_evidence_ids)):
         raise DomainError("INPUT_INVALID", "external evidence cannot be selected twice")

@@ -4,10 +4,11 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
+from app.application.services.repository_identity import github_repository_matches
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.domain.ports import GitReaderPort
-from app.infrastructure.persistence.models import GitRepository, GitSnapshot, VerificationCycle, VerificationTask
+from app.infrastructure.persistence.models import DeliveryItem, ExternalConnection, ExternalResource, GitRepository, GitSnapshot, VerificationCycle, VerificationTask
 
 
 def register_repository(
@@ -25,6 +26,21 @@ def register_repository(
     return repository
 
 
+def assert_delivery_item_repository_match(
+    session: Session, *, project_id: UUID, delivery_item_id: UUID | None, repository: GitRepository
+) -> None:
+    """A task bound to an external delivery item may only freeze its source repository."""
+    if delivery_item_id is None:
+        return
+    item = session.get(DeliveryItem, delivery_item_id)
+    resource = session.get(ExternalResource, item.external_resource_id) if item else None
+    connection = session.get(ExternalConnection, resource.connection_id) if resource else None
+    if item is None or resource is None or connection is None or connection.project_id != project_id:
+        raise DomainError("INPUT_INVALID", "研发事项缺少可核对的外部来源仓库")
+    if not github_repository_matches(repository_url=repository.display_url, repository_slug=connection.repository_slug):
+        raise DomainError("GIT_RANGE_INVALID", "绑定研发事项的 Git 范围必须来自该事项的同一来源仓库")
+
+
 def freeze_git_snapshot(
     session: Session, *, cycle_id: UUID, repository_id: UUID, base_ref: str, target_ref: str, diff_mode: str, include_paths: list[str], exclude_paths: list[str], actor_id: UUID, correlation_id: str, reader: GitReaderPort
 ) -> GitSnapshot:
@@ -36,6 +52,12 @@ def freeze_git_snapshot(
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if cycle.business_status not in {"DRAFT", "NEEDS_EVIDENCE", "NEEDS_CONFIRMATION"}:
         raise DomainError("STATE_CONFLICT", "当前轮次不能再冻结新的 Git 范围")
+    assert_delivery_item_repository_match(
+        session,
+        project_id=task.project_id,
+        delivery_item_id=task.delivery_item_id,
+        repository=repository,
+    )
     frozen = reader.freeze_range(repository.display_url, base_ref, target_ref, diff_mode, include_paths, exclude_paths)
     snapshot = GitSnapshot(cycle_id=cycle_id, repository_id=repository_id, selected_base_ref=base_ref, selected_target_ref=target_ref, base_sha=frozen.base_sha, target_sha=frozen.target_sha, merge_base_sha=frozen.merge_base_sha, diff_mode=diff_mode, include_paths=include_paths, exclude_paths=exclude_paths, diff_hash=frozen.diff_hash, coverage=frozen.coverage)
     session.add(snapshot)

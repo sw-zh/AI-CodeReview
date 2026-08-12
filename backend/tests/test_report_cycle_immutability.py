@@ -19,4 +19,3 @@ class ReportCycleImmutabilityTests(unittest.TestCase):
 
     def test_open_cycle_remains_writable(self) -> None:
         _assert_cycle_open_for_report_write(VerificationCycle(business_status="DRAFT"))
-
