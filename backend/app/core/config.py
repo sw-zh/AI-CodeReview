@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     worker_id: str = "worker-1"
     job_lease_seconds: int = Field(default=60, ge=15, le=300)
     job_max_attempts: int = Field(default=3, ge=1, le=10)
-    generation_provider: Literal["fake", "gemini", "deepseek"] = "fake"
+    generation_provider: Literal["deepseek", "gemini"] = "deepseek"
     embedding_provider: Literal["fake", "gemini"] = "fake"
     gemini_api_key: str | None = None
     gemini_generation_model: str = "gemini-2.5-flash"
@@ -39,9 +39,7 @@ class Settings(BaseSettings):
     def generation_model_name(self) -> str:
         if self.generation_provider == "gemini":
             return self.gemini_generation_model
-        if self.generation_provider == "deepseek":
-            return self.deepseek_generation_model
-        return "fake-model-v1"
+        return self.deepseek_generation_model
 
 
 @lru_cache

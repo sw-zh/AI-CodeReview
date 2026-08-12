@@ -22,7 +22,7 @@ services:
       ARTIFACT_ROOT: /artifacts
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       CORS_ALLOWED_ORIGINS: '["http://localhost:5173"]'
-      GENERATION_PROVIDER: ${GENERATION_PROVIDER:-fake}
+      GENERATION_PROVIDER: ${GENERATION_PROVIDER:-deepseek}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_GENERATION_MODEL: ${DEEPSEEK_GENERATION_MODEL:-deepseek-v4-flash}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
@@ -47,7 +47,7 @@ services:
       ARTIFACT_ROOT: /artifacts
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       WORKER_ID: compose-worker
-      GENERATION_PROVIDER: ${GENERATION_PROVIDER:-fake}
+      GENERATION_PROVIDER: ${GENERATION_PROVIDER:-deepseek}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_GENERATION_MODEL: ${DEEPSEEK_GENERATION_MODEL:-deepseek-v4-flash}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}

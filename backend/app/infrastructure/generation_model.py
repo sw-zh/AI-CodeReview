@@ -222,8 +222,6 @@ class DeepSeekGenerationModelAdapter(GenerationModelPort):
 
 
 def create_generation_model(settings: Settings) -> GenerationModelPort:
-    if settings.generation_provider == "fake":
-        return FakeGenerationModelAdapter()
     if settings.generation_provider == "deepseek":
         if not settings.deepseek_api_key:
             raise DomainError("MODEL_NOT_CONFIGURED", "DeepSeek 模型尚未配置 API Key")
