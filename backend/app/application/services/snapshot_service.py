@@ -107,7 +107,7 @@ def freeze_preparation_snapshot(
         )
         chunks = (
             session.query(DocumentChunk)
-            .filter_by(source_revision_id=source.id, index_version=source.parser_version)
+            .filter_by(source_revision_id=source.id)
             .order_by(DocumentChunk.chunk_index)
             .all()
         )
@@ -191,7 +191,7 @@ def freeze_formal_snapshot(
     session.add(snapshot); session.flush()
     for source in sources:
         session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
-        chunks = session.query(DocumentChunk).filter_by(source_revision_id=source.id, index_version=source.parser_version).order_by(DocumentChunk.chunk_index).all()
+        chunks = session.query(DocumentChunk).filter_by(source_revision_id=source.id).order_by(DocumentChunk.chunk_index).all()
         for chunk in chunks:
             session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="DOCUMENT", evidence_kind="RAW_FACT", source_revision_id=source.id, content_hash=chunk.text_hash, excerpt_safe=safe_excerpt(chunk.content), locator={"sourceRevisionId": str(source.id), "chunkId": str(chunk.id), "chunkIndex": chunk.chunk_index, **chunk.locator}, locator_precision="EXACT", extractor_version=source.parser_version or "markdown-text-v1"))
     for item in external_evidence:

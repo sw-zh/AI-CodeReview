@@ -12,6 +12,19 @@
 3. 更新示例配置、功能文档和进度记录，做静态验证并中文提交。`complete`
 4. 由用户本机 Worker 执行最小真实 Embedding 调用，确认供应商、模型和维度。`complete`
 
+## 2026-08-12 Gemini 临时全链路验收
+
+### Goal
+
+仅在本地被 Git 忽略的运行配置中使用 Gemini API Key，修正 Gemini Embedding 的固定 768 维请求，并用隔离验收资料验证资料入库与语义检索。验收完成后恢复本地默认 Embedding 配置为百炼；提交不得包含 Gemini Key。
+
+### Phases
+
+1. 使 Gemini 适配器显式请求 768 维，并确认容器 SDK 支持该配置。`complete`
+2. 以临时 Gemini 配置写入隔离验收资料，检查 READY、分块、向量与索引版本。`complete`
+3. 以语义改写问题走实际检索器，确认命中资料且存在 `vectorRank`。`complete`
+4. 恢复本地百炼默认配置，更新验收记录、静态检查并提交不含 Key 的代码与文档。`complete`
+
 ### Error log
 
 - 规划文件在当前终端显示为乱码，无法用标题作补丁锚点；已改用首个空行定位，未改动既有历史内容。
@@ -20,6 +33,10 @@
 - 百炼最小 Embedding 实调用在 Worker 内收到 `SSL: UNEXPECTED_EOF_WHILE_READING`，适配器已如预期转换为 `MODEL_UNAVAILABLE`；不立即重试相同请求，改为分别检查宿主机与容器到用户专属 Host 的 TLS/DNS 连通性。
 - 后台构建实际已产出新镜像；使用 `docker compose up -d --no-build --force-recreate api worker` 后，两个容器均已换成新配置，API 健康检查通过。百炼 Host 的 TLS 链路是唯一未验收项，等待外部网络条件恢复。
 - 用户切换网络后，宿主机与 Worker 的 TLS 检查均通过；随后项目真实适配器返回 `dashscope / text-embedding-v4 / 768`。此前 TLS 异常已解除，真实资料上传与检索全链路仍不在本次最小调用验收范围内。
+- Gemini 原生 API 已由当前执行通道真实调用成功。首次请求把维度字段放在错误层级，服务端返回默认 3072 维；改为顶层 `outputDimensionality=768` 后返回 768 维。后续项目适配器必须使用 SDK 对应的 `EmbedContentConfig(outputDimensionality=768)`，不重复错误请求格式。
+- 首次完整验收因本地数据库仅停在 014 迁移而在创建任务时回滚；升级时又发现 `alembic_version.version_num` 的 32 字符上限无法写入 017 的修订标识。已在 015 迁移中先扩为 64，并已成功升级本地开发库至 023；未重写既有业务数据。
+- 将上传、冻结和检索放进同一个未提交 SQLAlchemy 会话时，关闭自动刷新的会话使快照看不到刚加入的分块，验收事务已回滚。后续按真实 API 的三个独立提交边界执行，不重复该组合方式。
+- 按真实的三次请求提交边界重新验收后通过：资料为 `READY`，产生 3 个固定 768 维 Gemini 向量和 3 条快照 `DOCUMENT` 证据；语义改写问题返回 3 条结果且包含 `vectorRank`。验收使用隔离的本地任务、资料与快照记录；随后运行配置已恢复为百炼。
 
 ## 2026-08-11 目标执行异常
 

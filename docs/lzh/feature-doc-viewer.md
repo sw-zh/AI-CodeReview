@@ -82,11 +82,12 @@
 - 新增 DeepSeek 生成模型适配：配置 `GENERATION_PROVIDER=deepseek`、`DEEPSEEK_API_KEY` 后，可通过 Chat Completions 的 JSON 输出生成证据关联建议和证据问答结果；Compose 会将生成模型配置仅注入 API 与 Worker 容器。
 - 正式运行只允许真实生成模型提供方（当前为 DeepSeek，保留 Gemini 扩展位）；未配置 API Key 时会返回明确的“模型未配置”错误，不能再用配置切换为 FakeModel。FakeGenerationModelAdapter 仅保留为离线测试夹具。
 - 资料向量化已接入百炼 `text-embedding-v4` 的 OpenAI 兼容接口，固定请求 768 维向量以匹配 pgvector 列；生成模型与 Embedding 模型仍独立配置。Compose 可传入 DeepSeek、百炼及 Gemini 的真实模型配置，但本机当前为 DeepSeek 生成 + 百炼 Embedding。历史 FakeEmbedding 向量不会与百炼查询向量混合参与相似度检索，仍可通过关键词检索命中；需要向量检索时应重新上传资料生成新向量。
+- Gemini Embedding 适配器也已统一为显式请求 768 维，作为真实供应商兼容性和本地验收通道；其 API Key 只允许存在于被 Git 忽略的本地运行配置中，示例、代码和文档均不保存密钥。
 
 ## 当前在做
 
 - 百炼 `text-embedding-v4` 的本地接入已完成并已重建 API、Worker；两者当前均使用 DeepSeek 生成模型与百炼 Embedding 配置。
-- 用户已在本机 Worker 内完成一次最小真实 Embedding 调用，输出为 `provider=dashscope`、`model=text-embedding-v4`、`dimensions=768`；百炼模型适配与 768 维向量契约已验收。真实资料上传、入库后语义检索的完整业务链路尚未单独验收。
+- 用户已在本机 Worker 内完成一次最小真实百炼 Embedding 调用，输出为 `provider=dashscope`、`model=text-embedding-v4`、`dimensions=768`；百炼模型适配与 768 维向量契约已验收。由于当前执行通道到百炼的网络路由受限，资料上传、快照冻结和语义检索全链路改用临时 Gemini 真实模型验收：资料进入 `READY`，生成 3 个 768 维向量，冻结为 3 条 `DOCUMENT` 证据，语义改写问题返回含 `vectorRank` 的结果。验收后 API、Worker 已恢复为 DeepSeek 生成 + 百炼 Embedding，Gemini Key 已清除且不会提交。
 
 - 已完成本机 DeepSeek 配置，等待以公开项目的冻结快照执行真实联调，验证结构化输出、模型调用记录和降级记录。密钥仅位于被 Git 忽略的 `infra/.env`，不会进入提交。
 
@@ -98,6 +99,7 @@
 
 ## 本次提交
 
+- `功能：完成真实向量检索验收`（本次）
 - `8d53ee5 功能：两个审查核心Agent编排`
 - `b471a5d 功能：Agent功能块与编排工作台`
 - `e8a309f 功能：支持DeepSeek模型接入`

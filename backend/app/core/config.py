@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     embedding_provider: Literal["dashscope", "gemini"] = "dashscope"
     gemini_api_key: str | None = None
     gemini_generation_model: str = "gemini-2.5-flash"
-    gemini_embedding_model: str = "text-embedding-004"
+    gemini_embedding_model: str = "gemini-embedding-001"
     deepseek_api_key: str | None = None
     deepseek_generation_model: str = "deepseek-v4-flash"
     deepseek_base_url: str = "https://api.deepseek.com"

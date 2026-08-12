@@ -7,6 +7,10 @@
 - API 与 Worker 的首次重建命令在本地窗口超时，但后台构建已成功完成；随后以新镜像强制重建 API、Worker，API 健康检查通过，容器运行配置确认是 DeepSeek 生成 + 百炼 `text-embedding-v4`。
 - 已使用新 Worker 执行一次最小百炼 Embedding 调用；目标 Host 在 TLS 握手阶段提前断开，未返回 API 业务响应。适配器正确给出 `MODEL_UNAVAILABLE`，下一步等待用户修复该 Host 的网络/代理路由后再重试，不盲目重复调用。
 - 用户切换网络后，在本机 Worker 内用项目真实适配器完成最小调用，返回 `provider=dashscope`、`model=text-embedding-v4`、`dimensions=768`。百炼模型调用和 768 维契约已验收；未运行测试套件，未单独执行真实资料上传到语义检索的全链路验收。
+- 用户授权以 Gemini 仅作本地全链路验收，最终运行默认值恢复百炼且任何提交不得包含 Gemini Key。Gemini 原生 API 已成功返回 `gemini-embedding-001` 的 768 维向量；当前开始修正项目 Gemini 适配器的显式维度请求并执行隔离验收资料的入库与检索。
+- 已使 Gemini 适配器显式请求 768 维并在 API 容器内得到 `gemini / gemini-embedding-001 / 768`。验收同时发现并修复新 Embedding 索引版本与快照资料证据选择不兼容的问题；本地数据库迁移从 014 升级到 023，并修复 Alembic 版本列长度导致的迁移阻断。第一次组合式验收事务已回滚，没有保留任务、资料或快照；接下来按真实上传、冻结、检索三次提交重新执行。
+- 已按真实 API 的三次提交边界完成 Gemini 临时全链路验收：隔离资料进入 `READY`，生成 3 个 768 维向量，冻结快照写入 3 条 `DOCUMENT` 证据；语义改写问题返回 3 条结果并包含 `vectorRank`。Gemini Key 已从被忽略的本地配置清除，API 与 Worker 已重建并恢复为百炼 `text-embedding-v4` 默认运行配置；未运行测试套件、未推送远端。
+- 提交前静态验收已通过：`git diff --check`、后端 `compileall` 与 `docker compose config --quiet` 均无报错；容器内数据库迁移版本为 `023_peripheral_profile_runs`，API 健康检查通过。
 
 ## 2026-08-10
 

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from google import genai
+from google.genai import types
 
 from app.core.config import Settings
 from app.domain.errors import DomainError
@@ -40,7 +41,11 @@ class GeminiEmbeddingModelAdapter(EmbeddingModelPort):
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         try:
-            response = self._client.models.embed_content(model=self._model, contents=request.text)
+            response = self._client.models.embed_content(
+                model=self._model,
+                contents=request.text,
+                config=types.EmbedContentConfig(outputDimensionality=_DIMENSIONS),
+            )
             vector = list(response.embeddings[0].values)
         except Exception as exc:
             raise DomainError("MODEL_UNAVAILABLE", "Gemini Embedding 调用不可用") from exc

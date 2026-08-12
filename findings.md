@@ -7,6 +7,16 @@
 - 历史 FakeEmbedding 向量与百炼向量不能混用。当前本地 Compose 的 API、Worker、PostgreSQL 与前端正在运行，代码和环境变量更新后必须重建 API 与 Worker；后续真实资料入库将直接生成百炼向量。
 - 用户已在本机 Worker 中通过项目真实适配器完成调用，返回 `dashscope`、`text-embedding-v4` 和 768 维向量；这验证了百炼凭据、兼容地址、请求格式及维度契约。尚未以真实上传资料单独验收解析、入库和检索全链路。
 
+## 2026-08-12 Gemini 临时验收发现
+
+- 当前执行通道已真实调用 Gemini `gemini-embedding-001` 并得到 768 维向量。该模型默认返回 3072 维；请求必须显式指定 768。容器安装的 Google GenAI SDK 已提供 `EmbedContentConfig(outputDimensionality=...)`。
+- `create_source_revision` 在 API 请求内同步完成解析、分块、调用 Embedding 和写入 `DocumentChunk`，不是由 Worker 延后执行。`search_snapshot` 会为问题生成向量，并在模型异常时退回关键词检索；全链路验收必须确认结果含 `vectorRank`，不能仅凭命中资料判定成功。
+- Gemini Key 只能暂存于被 Git 忽略的 `infra/.env`，验收后恢复 `EMBEDDING_PROVIDER=dashscope`。代码中只保存供应商通用配置和模型名，不保存 Key。
+- `SessionLocal` 关闭自动刷新。真实产品在“资料上传”“冻结快照”“快照检索”三个独立请求中分别提交，因此可正常看到分块；将三步塞进一个未提交会话会使快照查询不到尚未刷新的分块。回滚诊断已证明修复后的快照逻辑可把一个带供应商索引版本的分块写为一个 `DOCUMENT` 证据；正式验收将按真实请求边界分三段执行。
+- 旧快照服务按 `index_version=parser_version` 读取分块，与新的 `markdown-v1|embedding:<provider>:<model>:d768` 索引版本不兼容。已改为按来源版本读取其当前全部分块；来源版本当前只在上传时产生一组分块，不会改写既有快照。
+- 按产品实际的“上传资料并提交 → 冻结快照并提交 → 查询快照”边界验收通过：Gemini 临时模型写入 3 个 768 维分块，冻结得到 3 条 `DOCUMENT` 证据，语义改写问题返回 3 条结果并携带 `vectorRank`，因此确认走到了向量排序而非仅关键词兜底。
+- 本次修复还覆盖本地升级阻断：迁移 015 先把 `alembic_version.version_num` 从 32 扩至 64，开发库已升级到 023。该迁移只调整迁移元数据字段长度，不重写业务记录。
+
 ## 2026-08-11 Agent 生命周期切片审计
 
 - 当前编排 API 已具备创建自定义 `SHARED` Agent、创建只读 HTTP 工具、创建任务模板、为任务绑定模板，以及为能力创建新版本的基础入口；前端只覆盖了创建，没有把版本编辑、停用和任务模板绑定暴露为可操作工作流。

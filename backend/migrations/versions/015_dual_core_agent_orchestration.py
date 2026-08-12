@@ -17,6 +17,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Later revision IDs exceed the 32-character limit created by the initial schema.
+    # Widen this Alembic-owned bookkeeping column before advancing the migration chain.
+    op.alter_column(
+        "alembic_version",
+        "version_num",
+        existing_type=sa.String(length=32),
+        type_=sa.String(length=64),
+        existing_nullable=False,
+    )
     op.create_table(
         "agent_tools",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -126,3 +135,10 @@ def downgrade() -> None:
     op.drop_table("agent_capability_versions")
     op.drop_table("agent_capabilities")
     op.drop_table("agent_tools")
+    op.alter_column(
+        "alembic_version",
+        "version_num",
+        existing_type=sa.String(length=64),
+        type_=sa.String(length=32),
+        existing_nullable=False,
+    )
