@@ -79,12 +79,12 @@
 
 - Notebook 会在当前项目内读取最新分析运行、冻结编排快照与真实核验结果；无真实运行时展示真实任务轮次与缺失条件，不保留演示数据。
 - 分析运行结束后，若冻结模板启用了“报告草稿”能力块，Worker 会自动生成 DRAFT 报告、写入运行事件和审计记录；提交、审批、发布仍必须经过既有人工流程。
-- 新增 DeepSeek 生成模型适配：配置 `GENERATION_PROVIDER=deepseek`、`DEEPSEEK_API_KEY` 后，可通过 Chat Completions 的 JSON 输出生成证据关联建议和证据问答结果。
+- 新增 DeepSeek 生成模型适配：配置 `GENERATION_PROVIDER=deepseek`、`DEEPSEEK_API_KEY` 后，可通过 Chat Completions 的 JSON 输出生成证据关联建议和证据问答结果；Compose 会将生成模型配置仅注入 API 与 Worker 容器。
 - 模型调用记录会使用实际配置的模型名；未配置 API Key 时会返回明确的“模型未配置”错误，不会回退为不透明调用。
 
 ## 当前在做
 
-- 等待真实 DeepSeek API Key 后进行联调：以冻结项目快照验证结构化输出、模型调用记录和降级记录。功能代码已完成，不需要先提供 Key 才能继续本地开发。
+- 已完成本机 DeepSeek 配置，等待以公开项目的冻结快照执行真实联调，验证结构化输出、模型调用记录和降级记录。密钥仅位于被 Git 忽略的 `infra/.env`，不会进入提交。
 
 ## 尚未实现 / 明确不做
 
