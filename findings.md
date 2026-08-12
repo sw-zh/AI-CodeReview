@@ -17,6 +17,13 @@
 - 按产品实际的“上传资料并提交 → 冻结快照并提交 → 查询快照”边界验收通过：Gemini 临时模型写入 3 个 768 维分块，冻结得到 3 条 `DOCUMENT` 证据，语义改写问题返回 3 条结果并携带 `vectorRank`，因此确认走到了向量排序而非仅关键词兜底。
 - 本次修复还覆盖本地升级阻断：迁移 015 先把 `alembic_version.version_num` 从 32 扩至 64，开发库已升级到 023。该迁移只调整迁移元数据字段长度，不重写业务记录。
 
+## 2026-08-12 双核编排运行验收
+
+- `orchestration_fingerprint` 与 `freeze_run_orchestration` 原先各自构造模板哈希输入：后者多了模板 `name`，导致每次启动分析运行都触发 `ORCHESTRATION_CHANGED`，双核图从未进入 Worker。
+- 已抽取单一 `_template_snapshot` 作为预检哈希和冻结运行快照的共同输入；它不改变模板节点、双核必需项、Git Diff 冻结策略或任何历史运行。
+- 使用公共仓库的只读冻结 Diff 和隔离验收资料完成真实运行：`create_claims`、`collect_git_evidence`、`reconcile` 三个节点均成功；一个 Claim、一个代码证据和确定性 `SUPPORTS` 关联形成 `PARTIALLY_SUPPORTED` 结果，仍要求人工确认；自动报告草稿也已生成。
+- 私有仓库远程地址在 API 容器内会要求 GitHub 用户名/凭据。现有 `GitRepository.credential_ref` 尚未被只读 Git Reader 注入，私有 GitHub 验收仍是明确缺口。
+
 ## 2026-08-11 Agent 生命周期切片审计
 
 - 当前编排 API 已具备创建自定义 `SHARED` Agent、创建只读 HTTP 工具、创建任务模板、为任务绑定模板，以及为能力创建新版本的基础入口；前端只覆盖了创建，没有把版本编辑、停用和任务模板绑定暴露为可操作工作流。

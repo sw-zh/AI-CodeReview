@@ -436,16 +436,27 @@ def _orchestration_payload(session: Session, *, task: VerificationTask, actor_id
     return template, nodes
 
 
+def _template_snapshot(template: OrchestrationTemplate) -> dict:
+    """Canonical template identity shared by the preflight hash and frozen run record."""
+
+    return {
+        "id": str(template.id),
+        "name": template.name,
+        "version": template.version,
+        "assessmentProfile": template.assessment_profile,
+    }
+
+
 def orchestration_fingerprint(session: Session, *, task: VerificationTask, actor_id: UUID) -> str:
     template, nodes = _orchestration_payload(session, task=task, actor_id=actor_id)
-    return _hash({"template": {"id": str(template.id), "version": template.version, "assessmentProfile": template.assessment_profile}, "nodes": nodes})
+    return _hash({"template": _template_snapshot(template), "nodes": nodes})
 
 
 def freeze_run_orchestration(session: Session, *, run: AnalysisRun, task: VerificationTask, actor_id: UUID) -> AnalysisRunOrchestrationSnapshot:
     template, nodes = _orchestration_payload(session, task=task, actor_id=actor_id)
     if run.assessment_profile != template.assessment_profile:
         raise DomainError("STATE_CONFLICT", "分析运行与编排模板的运行配置不一致")
-    template_snapshot = {"id": str(template.id), "name": template.name, "version": template.version, "assessmentProfile": template.assessment_profile}
+    template_snapshot = _template_snapshot(template)
     return AnalysisRunOrchestrationSnapshot(run_id=run.id, template_id=template.id, template_version=template.version, assessment_profile=template.assessment_profile, content_hash=_hash({"template": template_snapshot, "nodes": nodes}), template_snapshot=template_snapshot, nodes_snapshot=nodes)
 
 

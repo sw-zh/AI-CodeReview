@@ -12,6 +12,12 @@
 - 已按真实 API 的三次提交边界完成 Gemini 临时全链路验收：隔离资料进入 `READY`，生成 3 个 768 维向量，冻结快照写入 3 条 `DOCUMENT` 证据；语义改写问题返回 3 条结果并包含 `vectorRank`。Gemini Key 已从被忽略的本地配置清除，API 与 Worker 已重建并恢复为百炼 `text-embedding-v4` 默认运行配置；未运行测试套件、未推送远端。
 - 提交前静态验收已通过：`git diff --check`、后端 `compileall` 与 `docker compose config --quiet` 均无报错；容器内数据库迁移版本为 `023_peripheral_profile_runs`，API 健康检查通过。
 
+## 2026-08-12 双核编排运行修复
+
+- 已发现双核运行启动被 `ORCHESTRATION_CHANGED` 阻断：启动前编排哈希未纳入模板名称，而冻结快照哈希纳入该字段，二者必然不一致。
+- 已以统一模板摘要修复两处哈希计算，并重建 API、Worker。隔离验收运行成功完成：冻结 Git Diff、Claim 提取、代码证据提取、确定性证据关联、`PARTIALLY_SUPPORTED` 裁决、人工确认边界和报告草稿均已验证。
+- 未运行测试套件；私有 GitHub 仓库仍因容器没有可用的非交互凭据而不能读取，未将其误记为已支持能力。
+
 ## 2026-08-10
 
 - 用户要求基于《项目整体核验与后续开发方向》制定开发方案。
