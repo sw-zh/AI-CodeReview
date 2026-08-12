@@ -25,9 +25,23 @@ from app.infrastructure.persistence.models import (
     SourceRevision,
 )
 from app.infrastructure.artifact_storage import LocalArtifactStorage
+from app.application.services.retrieval_index_service import active_index_version
 
 
 _DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
+
+
+def _document_chunks_for_snapshot(session: Session, *, source_id: UUID, active_version: str | None) -> list[DocumentChunk]:
+    query = session.query(DocumentChunk).filter_by(source_revision_id=source_id)
+    if active_version is not None:
+        active_chunks = query.filter_by(index_version=active_version).order_by(DocumentChunk.chunk_index).all()
+        if active_chunks:
+            return active_chunks
+    # Legacy sources may not yet have an active derived index. Freeze one stable raw-evidence copy per chunk.
+    selected: dict[int, DocumentChunk] = {}
+    for chunk in query.order_by(DocumentChunk.chunk_index, DocumentChunk.index_version).all():
+        selected.setdefault(chunk.chunk_index, chunk)
+    return [selected[index] for index in sorted(selected)]
 
 
 def freeze_preparation_snapshot(
@@ -96,6 +110,7 @@ def freeze_preparation_snapshot(
     )
     session.add(snapshot)
     session.flush()
+    active_version = active_index_version(session, project_id=task.project_id)
     for source in sources:
         session.add(
             InputSnapshotSource(
@@ -105,12 +120,7 @@ def freeze_preparation_snapshot(
                 parser_version=source.parser_version or "unknown",
             )
         )
-        chunks = (
-            session.query(DocumentChunk)
-            .filter_by(source_revision_id=source.id)
-            .order_by(DocumentChunk.chunk_index)
-            .all()
-        )
+        chunks = _document_chunks_for_snapshot(session, source_id=source.id, active_version=active_version)
         for chunk in chunks:
             session.add(
                 EvidenceItem(
@@ -191,9 +201,10 @@ def freeze_formal_snapshot(
     if existing is not None: return existing
     snapshot = InputSnapshot(cycle_id=cycle.id, snapshot_hash=snapshot_hash, policy_version="v1", workflow_version="v1", created_by=actor_id, purpose="FORMAL", assessment_profile=_DELIVERY_PROFILE)
     session.add(snapshot); session.flush()
+    active_version = active_index_version(session, project_id=task.project_id)
     for source in sources:
         session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
-        chunks = session.query(DocumentChunk).filter_by(source_revision_id=source.id).order_by(DocumentChunk.chunk_index).all()
+        chunks = _document_chunks_for_snapshot(session, source_id=source.id, active_version=active_version)
         for chunk in chunks:
             session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="DOCUMENT", evidence_kind="RAW_FACT", source_revision_id=source.id, content_hash=chunk.text_hash, excerpt_safe=safe_excerpt(chunk.content), locator={"sourceRevisionId": str(source.id), "chunkId": str(chunk.id), "chunkIndex": chunk.chunk_index, **chunk.locator}, locator_precision="EXACT", extractor_version=source.parser_version or "markdown-text-v1"))
     for item in external_evidence:

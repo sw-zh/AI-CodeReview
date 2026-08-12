@@ -12,8 +12,8 @@
 2. 锁定已发布核验周期并覆盖状态机回归。`complete`
 3. 收紧正式快照与事项—Git 仓库归属。`complete`
 4. 完善 GitHub Cursor 同步与私有只读凭据通道。`complete`
-5. 实现活动索引重建及模型迁移检索语义。`in_progress`
-6. 补齐自动化回归、运行观测、功能与进度文档。`pending`
+5. 实现活动索引重建及模型迁移检索语义。`complete`
+6. 补齐自动化回归、运行观测、功能与进度文档。`in_progress`
 
 ### Fixed Decisions
 

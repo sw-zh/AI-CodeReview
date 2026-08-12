@@ -17,6 +17,7 @@ from app.api.routes.orchestration import project_router as orchestration_project
 from app.api.routes.projects import router as projects_router
 from app.api.routes.questions import router as questions_router
 from app.api.routes.retrieval import router as retrieval_router
+from app.api.routes.retrieval_indexes import router as retrieval_indexes_router
 from app.api.routes.reports import cycle_router as report_cycle_router, project_router as project_report_router, report_router
 from app.api.routes.snapshots import router as snapshots_router
 from app.api.routes.sources import router as sources_router
@@ -45,6 +46,7 @@ api_router.include_router(snapshot_router, tags=["git"])
 api_router.include_router(projects_router, tags=["projects"])
 api_router.include_router(questions_router, tags=["questions"])
 api_router.include_router(retrieval_router, tags=["retrieval"])
+api_router.include_router(retrieval_indexes_router, tags=["retrieval"])
 api_router.include_router(report_cycle_router, tags=["reports"])
 api_router.include_router(report_router, tags=["reports"])
 api_router.include_router(project_report_router, tags=["reports"])

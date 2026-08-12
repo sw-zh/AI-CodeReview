@@ -10,6 +10,7 @@ from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.domain.model_contracts import EmbeddingRequest
 from app.infrastructure.embedding_model import create_embedding_model, embedding_index_version
+from app.application.services.retrieval_index_service import ensure_initial_retrieval_index
 from app.infrastructure.artifact_storage import LocalArtifactStorage
 from app.infrastructure.document_parser import MarkdownTextDocumentParser
 from app.infrastructure.persistence.models import DocumentChunk, SourceRevision
@@ -69,8 +70,10 @@ def create_source_revision(
     source.processing_status = SourceProcessingStatus.CHUNKING
     text = content.decode("utf-8")
     embedding_model = create_embedding_model(get_settings())
+    index_version: str | None = None
     for index, chunk in enumerate(parser.parse(text)):
         embedding = embedding_model.embed(EmbeddingRequest(text=chunk.content, model=get_settings().embedding_model_name))
+        index_version = embedding_index_version(parser.version, embedding)
         session.add(
             DocumentChunk(
                 source_revision_id=source.id,
@@ -78,10 +81,21 @@ def create_source_revision(
                 content=chunk.content,
                 text_hash=f"sha256:{hashlib.sha256(chunk.content.encode('utf-8')).hexdigest()}",
                 locator=chunk.locator,
-                index_version=embedding_index_version(parser.version, embedding),
+                index_version=index_version,
                 embedding=embedding.vector,
             )
         )
+    if index_version is None:
+        raise DomainError("SOURCE_EMPTY", "资料未能解析出可索引内容")
+    ensure_initial_retrieval_index(
+        session,
+        project_id=project_id,
+        index_version=index_version,
+        parser_version=parser.version,
+        embedding=embedding,
+        actor_id=actor_id,
+        correlation_id=correlation_id,
+    )
     source.processing_status = SourceProcessingStatus.INDEXING
     source.processing_status = SourceProcessingStatus.READY
     append_audit_event(

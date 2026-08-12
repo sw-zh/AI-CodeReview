@@ -101,6 +101,12 @@ def embedding_index_version(parser_version: str, result: EmbeddingResult) -> str
     return f"{parser_version}|embedding:{result.provider}:{result.model}:d{len(result.vector)}"
 
 
+def configured_embedding_index_version(settings: Settings, parser_version: str) -> str:
+    """The only vector index version a configured runtime may activate."""
+
+    return f"{parser_version}|embedding:{settings.embedding_provider}:{settings.embedding_model_name}:d{_DIMENSIONS}"
+
+
 def create_embedding_model(settings: Settings) -> EmbeddingModelPort:
     if settings.embedding_provider == "dashscope":
         if not settings.dashscope_api_key:

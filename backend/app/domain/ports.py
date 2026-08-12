@@ -30,6 +30,8 @@ class ParsedDocumentChunk:
 @dataclass(frozen=True)
 class RetrievedChunk:
     chunk_id: UUID
+    source_revision_id: UUID | None = None
+    chunk_index: int | None = None
     fts_rank: int | None = None
     fts_score: float | None = None
     vector_rank: int | None = None

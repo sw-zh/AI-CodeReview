@@ -8,9 +8,10 @@ from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.domain.model_contracts import EmbeddingRequest
 from app.infrastructure.document_parser import MarkdownTextDocumentParser
-from app.infrastructure.embedding_model import create_embedding_model, embedding_index_version
+from app.infrastructure.embedding_model import configured_embedding_index_version, create_embedding_model
 from app.infrastructure.persistence.models import EvidenceItem, InputSnapshot, InputSnapshotSource, VerificationCycle, VerificationTask
 from app.infrastructure.retriever import PostgresHybridRetriever
+from app.application.services.retrieval_index_service import active_index_version
 
 
 def search_snapshot(session: Session, *, snapshot_id: UUID, query: str, limit: int, actor_id: UUID) -> list[dict]:
@@ -23,25 +24,33 @@ def search_snapshot(session: Session, *, snapshot_id: UUID, query: str, limit: i
     source_ids = [item.source_revision_id for item in session.query(InputSnapshotSource).filter_by(snapshot_id=snapshot.id).all()]
     if not source_ids:
         return []
+    active_version = active_index_version(session, project_id=task.project_id)
+    settings = get_settings()
+    configured_version = configured_embedding_index_version(settings, MarkdownTextDocumentParser().version)
     try:
-        settings = get_settings()
+        if active_version is not None and active_version != configured_version:
+            raise DomainError("MODEL_INDEX_UNAVAILABLE", "当前 Embedding 配置与项目活动索引不一致")
         embedding = create_embedding_model(settings).embed(EmbeddingRequest(text=query, model=settings.embedding_model_name))
         candidates = PostgresHybridRetriever(session).search(
             source_revision_ids=source_ids,
             query=query,
             limit=limit,
             query_embedding=embedding.vector,
-            embedding_index_version=embedding_index_version(MarkdownTextDocumentParser().version, embedding),
+            embedding_index_version=active_version or configured_version,
         )
     except DomainError:
         # Retrieval still serves exact lexical evidence when a cloud embedding model is unavailable.
         candidates = PostgresHybridRetriever(session).search(source_revision_ids=source_ids, query=query, limit=limit, query_embedding=None)
 
     evidence = session.query(EvidenceItem).filter_by(snapshot_id=snapshot.id, source_type="DOCUMENT").all()
+    evidence_by_identity = {
+        (str(item.locator.get("sourceRevisionId")), item.locator.get("chunkIndex")): item
+        for item in evidence
+    }
     evidence_by_chunk = {str(item.locator.get("chunkId")): item for item in evidence}
     fused: list[dict] = []
     for candidate in candidates:
-        item = evidence_by_chunk.get(str(candidate.chunk_id))
+        item = evidence_by_identity.get((str(candidate.source_revision_id), candidate.chunk_index)) or evidence_by_chunk.get(str(candidate.chunk_id))
         if item is None:
             continue
         score = sum(1 / (60 + rank) for rank in (candidate.fts_rank, candidate.vector_rank) if rank is not None)

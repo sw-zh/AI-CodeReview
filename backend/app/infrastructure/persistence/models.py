@@ -431,6 +431,33 @@ class DocumentChunk(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(768))
 
 
+class ProjectRetrievalIndex(TimestampedEntity, Base):
+    """A project selects one derived vector index; source and snapshot facts stay immutable."""
+
+    __tablename__ = "project_retrieval_indexes"
+    __table_args__ = (
+        UniqueConstraint("project_id", "index_version", name="uq_project_retrieval_index_version"),
+        CheckConstraint("status IN ('ACTIVE', 'HISTORICAL')", name="ck_project_retrieval_index_status"),
+        Index(
+            "uq_project_retrieval_active_index",
+            "project_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    index_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="HISTORICAL")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class GitRepository(TimestampedEntity, Base):
     __tablename__ = "git_repositories"
     __table_args__ = (UniqueConstraint("project_id", "canonical_url_hash", name="uq_project_git_repository"),)

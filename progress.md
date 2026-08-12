@@ -19,6 +19,8 @@
 - 分步构建 API 与 Worker 镜像已成功；随后运行 Compose `migrate` 容器报“无法定位 `023_peripheral_profile_runs`”。该错误说明 `migrate` 使用的镜像或构建缓存并未包含当前完整迁移链，尚未执行任何 024 数据库改造。下一步检查 `migrate` 实际镜像、容器内迁移文件和 Compose 构建目标，不重复运行同一迁移命令。
 - 已定位并解决 `migrate` 容器的旧镜像问题：单独构建 `migrate` 后，024 迁移已实际应用，API/Worker 已无构建重建并通过就绪检查。首次真实 `octocat/Spoon-Knife` 大型仓库同步仍失败为 `SOURCE_RESPONSE_INVALID`：GitHub 的 `Link` 头把下一页改写为 `/repositories/<numeric-id>/issues`，当前安全校验只接受原始 `/repos/<owner>/<repo>/` 路径。下一步收紧为“仅接受 GitHub 官方两种等价分页路径”，再重跑隔离验收；不会放宽主机或跨仓库限制。
 - 已补齐 GitHub 官方数字仓库路径的受控等价校验并重新部署。对 `octocat/Spoon-Knife` 的真实同步已跨越 6 个 cursor 页面；无 Token 触达公共限流后，运行如实落为 `FAILED / SOURCE_RATE_LIMITED`，保存 `page_count=6`、`after` cursor 和稳定错误码。该结果验证了分页续页、失败定位与持久化，不把限流误写为同步成功；私有 PAT 真实访问仍未覆盖。
+- 已完成活动检索索引：025 迁移新增项目级单活动索引；管理员可从原始受控工件重建当前模型索引，旧索引和冻结事实均保留。向量检索只读活动版本，但按资料版本/分块序号回映旧快照证据，避免重新索引后丢失旧正式引用或在新快照重复固化同一段原文。
+- 025 已在本地数据库应用，重建后的 API 可读取隔离项目的空索引列表；13 项定向回归、后端编译和离线 SQL 通过。实际重建对历史 Windows 宿主机路径资料安全拒绝为 `SOURCE_ARTIFACT_UNAVAILABLE`；隔离资料上传在当前 API 容器又遇到百炼 `MODEL_UNAVAILABLE`，因此没有将真实百炼重建写为已验收。
 
 ## 2026-08-12 第一性原则全链路复核
 

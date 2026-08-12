@@ -103,6 +103,27 @@ class ChunkItemResponse(BaseModel):
     index_version: str
 
 
+class RetrievalIndexResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    index_version: str
+    parser_version: str
+    embedding_provider: str
+    embedding_model: str
+    dimensions: int
+    status: str
+    ready_source_count: int
+    indexed_source_count: int
+    indexed_chunk_count: int
+    activated_at: datetime | None
+    created_at: datetime
+
+
+class RetrievalIndexRebuildResponse(RetrievalIndexResponse):
+    reindexed_source_count: int
+    reindexed_chunk_count: int
+
+
 class SnapshotCreateRequest(BaseModel):
     source_revision_ids: list[UUID] = Field(min_length=1)
 
