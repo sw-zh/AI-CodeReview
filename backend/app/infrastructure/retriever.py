@@ -11,7 +11,7 @@ class PostgresHybridRetriever(RetrieverPort):
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def search(self, *, source_revision_ids, query: str, limit: int, query_embedding: list[float] | None) -> list[RetrievedChunk]:
+    def search(self, *, source_revision_ids, query: str, limit: int, query_embedding: list[float] | None, embedding_index_version: str | None = None) -> list[RetrievedChunk]:
         tsquery = func.websearch_to_tsquery("simple", query)
         tsvector = func.to_tsvector("simple", DocumentChunk.content)
         rank = func.ts_rank_cd(tsvector, tsquery).label("fts_rank")
@@ -25,10 +25,13 @@ class PostgresHybridRetriever(RetrieverPort):
 
         if query_embedding is not None:
             distance = DocumentChunk.embedding.cosine_distance(query_embedding).label("distance")
-            vector_rows = self._session.query(DocumentChunk, distance).filter(
+            vector_query = self._session.query(DocumentChunk, distance).filter(
                 DocumentChunk.source_revision_id.in_(source_revision_ids),
                 DocumentChunk.embedding.is_not(None),
-            ).order_by(distance).limit(limit * 3).all()
+            )
+            if embedding_index_version is not None:
+                vector_query = vector_query.filter(DocumentChunk.index_version == embedding_index_version)
+            vector_rows = vector_query.order_by(distance).limit(limit * 3).all()
             for position, (chunk, score) in enumerate(vector_rows, start=1):
                 prior = candidates.get(chunk.id)
                 candidates[chunk.id] = RetrievedChunk(

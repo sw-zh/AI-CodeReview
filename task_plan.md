@@ -1,4 +1,23 @@
 # Task Plan: AI-CodeReview 架构约束文档
+## 2026-08-12 百炼真实 Embedding 切换
+
+### Goal
+
+将资料向量化从本地 FakeEmbedding 切换为百炼 `text-embedding-v4`（固定 768 维），保持生成模型与 Embedding 模型独立，并保留真实供应商适配扩展位。
+
+### Phases
+
+1. 核对当前向量列、检索链路、模型端口和百炼 OpenAI 兼容地址。`complete`
+2. 新增百炼 Embedding 适配与真实运行配置，禁止运行配置选择 FakeEmbedding。`complete`
+3. 更新示例配置、功能文档和进度记录，做静态验证并中文提交。`complete`
+
+### Error log
+
+- 规划文件在当前终端显示为乱码，无法用标题作补丁锚点；已改用首个空行定位，未改动既有历史内容。
+- `docker compose up -d --build api worker` 在命令执行窗口 64 秒后超时；下一步先检查镜像与容器状态，再采用恢复启动或分步构建，避免重复同一条超时命令。
+- 后台 `docker compose build api worker` 已退出，但 Compose 查询镜像时返回缺失的 SHA；现有容器仍健康运行。下一步改为直接读取 Dockerfile 并以带输出的单镜像构建定位原因，不重跑无输出的后台构建。
+- 百炼最小 Embedding 实调用在 Worker 内收到 `SSL: UNEXPECTED_EOF_WHILE_READING`，适配器已如预期转换为 `MODEL_UNAVAILABLE`；不立即重试相同请求，改为分别检查宿主机与容器到用户专属 Host 的 TLS/DNS 连通性。
+- 后台构建实际已产出新镜像；使用 `docker compose up -d --no-build --force-recreate api worker` 后，两个容器均已换成新配置，API 健康检查通过。百炼 Host 的 TLS 链路是唯一未验收项，等待外部网络条件恢复。
 
 ## 2026-08-11 目标执行异常
 

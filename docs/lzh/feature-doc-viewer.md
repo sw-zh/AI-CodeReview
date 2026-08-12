@@ -81,8 +81,12 @@
 - 分析运行结束后，若冻结模板启用了“报告草稿”能力块，Worker 会自动生成 DRAFT 报告、写入运行事件和审计记录；提交、审批、发布仍必须经过既有人工流程。
 - 新增 DeepSeek 生成模型适配：配置 `GENERATION_PROVIDER=deepseek`、`DEEPSEEK_API_KEY` 后，可通过 Chat Completions 的 JSON 输出生成证据关联建议和证据问答结果；Compose 会将生成模型配置仅注入 API 与 Worker 容器。
 - 正式运行只允许真实生成模型提供方（当前为 DeepSeek，保留 Gemini 扩展位）；未配置 API Key 时会返回明确的“模型未配置”错误，不能再用配置切换为 FakeModel。FakeGenerationModelAdapter 仅保留为离线测试夹具。
+- 资料向量化已接入百炼 `text-embedding-v4` 的 OpenAI 兼容接口，固定请求 768 维向量以匹配 pgvector 列；生成模型与 Embedding 模型仍独立配置。Compose 可传入 DeepSeek、百炼及 Gemini 的真实模型配置，但本机当前为 DeepSeek 生成 + 百炼 Embedding。历史 FakeEmbedding 向量不会与百炼查询向量混合参与相似度检索，仍可通过关键词检索命中；需要向量检索时应重新上传资料生成新向量。
 
 ## 当前在做
+
+- 百炼 `text-embedding-v4` 的本地接入已完成并已重建 API、Worker；两者当前均使用 DeepSeek 生成模型与百炼 Embedding 配置。
+- 已进行一次最小真实 Embedding 调用，但用户专属百炼 Host 在 TLS 握手时断开，尚未获得业务响应。因此真实资料上传到百炼并完成语义检索的联调处于外部网络链路待恢复状态，不把它计为已验收。
 
 - 已完成本机 DeepSeek 配置，等待以公开项目的冻结快照执行真实联调，验证结构化输出、模型调用记录和降级记录。密钥仅位于被 Git 忽略的 `infra/.env`，不会进入提交。
 

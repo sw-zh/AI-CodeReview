@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.domain.enums import ProjectRole, SourceProcessingStatus
 from app.domain.errors import DomainError
 from app.domain.model_contracts import EmbeddingRequest
-from app.infrastructure.embedding_model import create_embedding_model
+from app.infrastructure.embedding_model import create_embedding_model, embedding_index_version
 from app.infrastructure.artifact_storage import LocalArtifactStorage
 from app.infrastructure.document_parser import MarkdownTextDocumentParser
 from app.infrastructure.persistence.models import DocumentChunk, SourceRevision
@@ -70,7 +70,7 @@ def create_source_revision(
     text = content.decode("utf-8")
     embedding_model = create_embedding_model(get_settings())
     for index, chunk in enumerate(parser.parse(text)):
-        embedding = embedding_model.embed(EmbeddingRequest(text=chunk.content, model=get_settings().embedding_model))
+        embedding = embedding_model.embed(EmbeddingRequest(text=chunk.content, model=get_settings().embedding_model_name))
         session.add(
             DocumentChunk(
                 source_revision_id=source.id,
@@ -78,7 +78,7 @@ def create_source_revision(
                 content=chunk.content,
                 text_hash=f"sha256:{hashlib.sha256(chunk.content.encode('utf-8')).hexdigest()}",
                 locator=chunk.locator,
-                index_version=parser.version,
+                index_version=embedding_index_version(parser.version, embedding),
                 embedding=embedding.vector,
             )
         )

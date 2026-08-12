@@ -7,7 +7,8 @@ from app.core.config import get_settings
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.domain.model_contracts import EmbeddingRequest
-from app.infrastructure.embedding_model import create_embedding_model
+from app.infrastructure.document_parser import MarkdownTextDocumentParser
+from app.infrastructure.embedding_model import create_embedding_model, embedding_index_version
 from app.infrastructure.persistence.models import EvidenceItem, InputSnapshot, InputSnapshotSource, VerificationCycle, VerificationTask
 from app.infrastructure.retriever import PostgresHybridRetriever
 
@@ -23,8 +24,15 @@ def search_snapshot(session: Session, *, snapshot_id: UUID, query: str, limit: i
     if not source_ids:
         return []
     try:
-        vector = create_embedding_model(get_settings()).embed(EmbeddingRequest(text=query, model=get_settings().embedding_model)).vector
-        candidates = PostgresHybridRetriever(session).search(source_revision_ids=source_ids, query=query, limit=limit, query_embedding=vector)
+        settings = get_settings()
+        embedding = create_embedding_model(settings).embed(EmbeddingRequest(text=query, model=settings.embedding_model_name))
+        candidates = PostgresHybridRetriever(session).search(
+            source_revision_ids=source_ids,
+            query=query,
+            limit=limit,
+            query_embedding=embedding.vector,
+            embedding_index_version=embedding_index_version(MarkdownTextDocumentParser().version, embedding),
+        )
     except DomainError:
         # Retrieval still serves exact lexical evidence when a cloud embedding model is unavailable.
         candidates = PostgresHybridRetriever(session).search(source_revision_ids=source_ids, query=query, limit=limit, query_embedding=None)

@@ -1,4 +1,11 @@
 # 进度记录
+## 2026-08-12 百炼真实 Embedding 切换
+
+- 已确认用户选择百炼 `text-embedding-v4` 和专属 OpenAI 兼容地址，目标是以真实 768 维向量替代本地 FakeEmbedding，同时保留多供应商真实模型适配边界。
+- 已完成现状审计：向量列固定为 768 维，生成与 Embedding 配置独立；尚未调用百炼 API 或执行测试套件。
+- 已完成百炼 OpenAI 兼容适配、真实运行配置和向量索引隔离：新资料以 `markdown-v1|embedding:dashscope:text-embedding-v4:d768` 形式标记索引版本，旧 FakeEmbedding 向量仅保留关键词检索兜底，不再混入百炼相似度排序。
+- API 与 Worker 的首次重建命令在本地窗口超时，但后台构建已成功完成；随后以新镜像强制重建 API、Worker，API 健康检查通过，容器运行配置确认是 DeepSeek 生成 + 百炼 `text-embedding-v4`。
+- 已使用新 Worker 执行一次最小百炼 Embedding 调用；目标 Host 在 TLS 握手阶段提前断开，未返回 API 业务响应。适配器正确给出 `MODEL_UNAVAILABLE`，下一步等待用户修复该 Host 的网络/代理路由后再重试，不盲目重复调用。
 
 ## 2026-08-10
 

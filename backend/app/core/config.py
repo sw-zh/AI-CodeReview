@@ -22,24 +22,33 @@ class Settings(BaseSettings):
     job_lease_seconds: int = Field(default=60, ge=15, le=300)
     job_max_attempts: int = Field(default=3, ge=1, le=10)
     generation_provider: Literal["deepseek", "gemini"] = "deepseek"
-    embedding_provider: Literal["fake", "gemini"] = "fake"
+    embedding_provider: Literal["dashscope", "gemini"] = "dashscope"
     gemini_api_key: str | None = None
     gemini_generation_model: str = "gemini-2.5-flash"
+    gemini_embedding_model: str = "text-embedding-004"
     deepseek_api_key: str | None = None
     deepseek_generation_model: str = "deepseek-v4-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
+    dashscope_api_key: str | None = None
+    dashscope_embedding_model: str = "text-embedding-v4"
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     agent_tool_allowed_hosts: list[str] = Field(default_factory=list)
     agent_tool_timeout_seconds: int = Field(default=10, ge=1, le=30)
     agent_tool_response_limit_bytes: int = Field(default=262_144, ge=4_096, le=1_048_576)
     github_sync_timeout_seconds: int = Field(default=15, ge=1, le=30)
     github_sync_response_limit_bytes: int = Field(default=2_097_152, ge=65_536, le=8_388_608)
-    embedding_model: str = "text-embedding-004"
 
     @property
     def generation_model_name(self) -> str:
         if self.generation_provider == "gemini":
             return self.gemini_generation_model
         return self.deepseek_generation_model
+
+    @property
+    def embedding_model_name(self) -> str:
+        if self.embedding_provider == "gemini":
+            return self.gemini_embedding_model
+        return self.dashscope_embedding_model
 
 
 @lru_cache

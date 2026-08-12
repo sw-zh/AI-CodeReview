@@ -57,6 +57,8 @@ def start_analysis_run(
         "schema": "v1",
         "generationProvider": settings.generation_provider,
         "generationModel": settings.generation_model_name,
+        "embeddingProvider": settings.embedding_provider,
+        "embeddingModel": settings.embedding_model_name,
         "orchestrationHash": orchestration_fingerprint(session, task=task, actor_id=actor_id),
     }
     config_hash = f"sha256:{hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()}"
@@ -71,7 +73,7 @@ def start_analysis_run(
     if config["orchestrationHash"] != orchestration_snapshot.content_hash:
         raise DomainError("ORCHESTRATION_CHANGED", "启动过程中编排模板发生变化，请重新发起分析")
     session.add(orchestration_snapshot)
-    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="dual-core-v1", rule_set_version="v1", prompt_set_version="v1", generation_model=config["generationModel"], embedding_model=settings.embedding_model, schema_version="v1"))
+    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="dual-core-v1", rule_set_version="v1", prompt_set_version="v1", generation_model=config["generationModel"], embedding_model=config["embeddingModel"], schema_version="v1"))
     session.add(AnalysisJob(run_id=run.id, idempotency_key=idempotency_key, max_attempts=settings.job_max_attempts))
     cycle.business_status = "ANALYZING"
     cycle.active_run_id = run.id

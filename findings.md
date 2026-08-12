@@ -1,4 +1,10 @@
 # 架构设计发现
+## 2026-08-12 百炼 Embedding 接入
+
+- `DocumentChunk.embedding` 使用 `Vector(768)`，因此百炼 `text-embedding-v4` 必须显式请求 `dimensions=768`；不能接受服务端默认维度。
+- 当前生成模型与 Embedding 模型通过独立端口和环境变量配置；本次只替换资料入库与查询阶段的 Embedding，不改变双核核验、冻结 Git Diff 或正式结论规则。
+- 使用用户提供的工作区 OpenAI 兼容地址 `/compatible-mode/v1/embeddings`；Key 仅写入被 Git 忽略的 `infra/.env`，不能写入 Compose、示例或文档。
+- 历史 FakeEmbedding 向量与百炼向量不能混用。当前本地 Compose 的 API、Worker、PostgreSQL 与前端正在运行，代码和环境变量更新后必须重建 API 与 Worker；后续真实资料入库将直接生成百炼向量。
 
 ## 2026-08-11 Agent 生命周期切片审计
 
