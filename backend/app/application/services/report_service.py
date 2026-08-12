@@ -15,6 +15,25 @@ from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
 _DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
 
 
+def _assert_cycle_open_for_report_write(cycle: VerificationCycle) -> None:
+    """A published cycle is immutable, including any historical report drafts it contains."""
+    if cycle.business_status == "PUBLISHED":
+        raise DomainError("STATE_CONFLICT", "核验轮次已发布，历史报告版本不可再修改、提交、审批或发布")
+
+
+def _locked_cycle_for_report(session: Session, *, report: ReportVersion) -> VerificationCycle:
+    """Serialize report transitions at the verification-cycle boundary."""
+    cycle = (
+        session.query(VerificationCycle)
+        .filter(VerificationCycle.id == report.cycle_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if cycle is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "报告所属核验轮次不存在")
+    return cycle
+
+
 def _assert_delivery_report_run(*, run: AnalysisRun, snapshot: InputSnapshot) -> None:
     if run.assessment_profile != _DELIVERY_PROFILE or snapshot.assessment_profile != _DELIVERY_PROFILE:
         raise DomainError("ASSESSMENT_PROFILE_NOT_ENABLED", "当前仅交付核验运行支持报告草稿、审批和正式记录")
@@ -217,6 +236,7 @@ def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UU
     cycle = session.get(VerificationCycle, cycle_id); run = session.get(AnalysisRun, run_id); task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or run is None or run.run_status not in {"SUCCEEDED", "PARTIALLY_COMPLETED"}:
         raise DomainError("STATE_CONFLICT", "仅终态分析运行可生成报告草稿")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     snapshot = session.get(InputSnapshot, run.snapshot_id)
     if snapshot is None or snapshot.cycle_id != cycle.id or snapshot.purpose != "FORMAL":
@@ -241,6 +261,7 @@ def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: st
     task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or run is None or snapshot is None:
         raise DomainError("RESOURCE_NOT_FOUND", "分析运行或其正式输入快照不存在")
+    _assert_cycle_open_for_report_write(cycle)
     if run.run_status not in {"SUCCEEDED", "PARTIALLY_COMPLETED"} or snapshot.purpose != "FORMAL":
         raise DomainError("STATE_CONFLICT", "仅终态正式分析运行可自动生成报告草稿")
     _assert_delivery_report_run(run=run, snapshot=snapshot)
@@ -293,10 +314,11 @@ def update_draft(
     correlation_id: str,
 ) -> ReportVersion:
     report = session.get(ReportVersion, report_id)
-    cycle = session.get(VerificationCycle, report.cycle_id) if report else None
+    cycle = _locked_cycle_for_report(session, report=report) if report else None
     task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "DRAFT":
         raise DomainError("STATE_CONFLICT", "仅草稿报告可编辑")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if report.version != expected_version:
         raise DomainError("VERSION_CONFLICT", "报告草稿已被其他操作更新，请重新读取后再保存")
@@ -319,8 +341,9 @@ def update_draft(
 
 
 def submit_for_review(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id: str) -> ReportVersion:
-    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    report = session.get(ReportVersion, report_id); cycle = _locked_cycle_for_report(session, report=report) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "DRAFT": raise DomainError("STATE_CONFLICT", "仅草稿可提交审核")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     report.status = "SUBMITTED"; report.submitted_by = actor_id; report.submitted_at = datetime.now(UTC)
     cycle.business_status = "PENDING_REVIEW"
@@ -329,8 +352,9 @@ def submit_for_review(session: Session, *, report_id: UUID, actor_id: UUID, corr
 
 
 def approve(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, correlation_id: str) -> ReportVersion:
-    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    report = session.get(ReportVersion, report_id); cycle = _locked_cycle_for_report(session, report=report) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "SUBMITTED": raise DomainError("STATE_CONFLICT", "仅已提交报告可批准")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
     if report.submitted_by == actor_id: raise DomainError("AUTH_FORBIDDEN", "提交者不能审批自己的报告")
     report.status = "APPROVED"; cycle.business_status = "APPROVED"
@@ -340,8 +364,9 @@ def approve(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, c
 
 
 def request_changes(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, correlation_id: str) -> ReportVersion:
-    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    report = session.get(ReportVersion, report_id); cycle = _locked_cycle_for_report(session, report=report) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "SUBMITTED": raise DomainError("STATE_CONFLICT", "仅已提交报告可要求补证")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
     if report.submitted_by == actor_id: raise DomainError("AUTH_FORBIDDEN", "提交者不能审核自己的报告")
     report.status = "CHANGES_REQUESTED"
@@ -357,8 +382,9 @@ def request_changes(session: Session, *, report_id: UUID, actor_id: UUID, reason
 
 
 def reject(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, correlation_id: str) -> ReportVersion:
-    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    report = session.get(ReportVersion, report_id); cycle = _locked_cycle_for_report(session, report=report) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "SUBMITTED": raise DomainError("STATE_CONFLICT", "仅已提交报告可驳回")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
     if report.submitted_by == actor_id: raise DomainError("AUTH_FORBIDDEN", "提交者不能审核自己的报告")
     report.status = "REJECTED"; cycle.business_status = "REJECTED"
@@ -368,8 +394,9 @@ def reject(session: Session, *, report_id: UUID, actor_id: UUID, reason: str, co
 
 
 def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id: str) -> PublishedRecord:
-    report = session.get(ReportVersion, report_id); cycle = session.get(VerificationCycle, report.cycle_id) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    report = session.get(ReportVersion, report_id); cycle = _locked_cycle_for_report(session, report=report) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "APPROVED": raise DomainError("STATE_CONFLICT", "仅已批准报告可发布")
+    _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
     run = session.get(AnalysisRun, report.run_id)
     snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
