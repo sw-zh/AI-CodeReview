@@ -1,14 +1,15 @@
 """Bounded, read-only GitHub source client for project facts, not Agent tool evidence."""
 
 import json
-import os
+import re
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.core.config import Settings
 from app.domain.errors import DomainError
+from app.infrastructure.credential_resolver import resolve_environment_secret
 
 
 _GITHUB_API_BASE_URL = "https://api.github.com"
@@ -20,11 +21,30 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class GitHubPaginationError(DomainError):
+    """A bounded sync error with a safe resume/failure location, never request credentials."""
+
+    def __init__(self, *, cause: DomainError, page_count: int, continuation_cursor: dict[str, str]) -> None:
+        self.page_count = page_count
+        self.continuation_cursor = continuation_cursor
+        super().__init__(cause.code, cause.message)
+
+
 @dataclass(frozen=True)
 class GitHubSyncPayload:
     issues: list[dict]
     milestones: list[dict]
     truncated: bool
+    page_count: int
+    continuation_cursor: dict
+
+
+@dataclass(frozen=True)
+class _PaginatedPayload:
+    items: list[dict]
+    truncated: bool
+    page_count: int
+    continuation_cursor: dict
 
 
 def _safe_api_base_url(value: str) -> str:
@@ -42,40 +62,78 @@ class GitHubSourceClient:
         self._settings = settings
 
     def fetch(self) -> GitHubSyncPayload:
-        issues, issues_truncated = self._list_paginated(f"/repos/{self._repository_slug}/issues", {"state": "all"})
-        milestones, milestones_truncated = self._list_paginated(f"/repos/{self._repository_slug}/milestones", {"state": "all"})
-        return GitHubSyncPayload(issues=issues, milestones=milestones, truncated=issues_truncated or milestones_truncated)
+        try:
+            issues = self._list_paginated(f"/repos/{self._repository_slug}/issues", {"state": "all"})
+        except GitHubPaginationError as exc:
+            exc.continuation_cursor = {"issues": exc.continuation_cursor}
+            raise
+        try:
+            milestones = self._list_paginated(f"/repos/{self._repository_slug}/milestones", {"state": "all"})
+        except GitHubPaginationError as exc:
+            exc.page_count += issues.page_count
+            exc.continuation_cursor = {"milestones": exc.continuation_cursor}
+            raise
+        continuation_cursor = {
+            key: value
+            for key, value in {"issues": issues.continuation_cursor, "milestones": milestones.continuation_cursor}.items()
+            if value
+        }
+        return GitHubSyncPayload(
+            issues=issues.items,
+            milestones=milestones.items,
+            truncated=issues.truncated or milestones.truncated,
+            page_count=issues.page_count + milestones.page_count,
+            continuation_cursor=continuation_cursor,
+        )
 
     def fetch_issue_timeline(self, issue_number: str) -> list[dict]:
         if not issue_number.isdigit():
             raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub Issue 编号无效")
-        events, _ = self._list_paginated(f"/repos/{self._repository_slug}/issues/{issue_number}/timeline", {})
-        return events
+        return self._list_paginated(f"/repos/{self._repository_slug}/issues/{issue_number}/timeline", {}).items
 
-    def _list_paginated(self, path: str, query: dict[str, str]) -> tuple[list[dict], bool]:
+    def _list_paginated(self, path: str, query: dict[str, str]) -> _PaginatedPayload:
         items: list[dict] = []
-        for page in range(1, _MAX_PAGES + 1):
-            response = self._get(path, {**query, "per_page": "100", "page": str(page)})
+        next_path = path
+        next_query = {**query, "per_page": "100"}
+        expected_suffix = path.removeprefix(f"/repos/{self._repository_slug}")
+        for page_count in range(1, _MAX_PAGES + 1):
+            try:
+                response, link_header = self._get(next_path, next_query)
+            except DomainError as exc:
+                raise GitHubPaginationError(
+                    cause=exc,
+                    page_count=page_count - 1,
+                    continuation_cursor=self._cursor_from_query(next_query),
+                ) from exc
             if not isinstance(response, list):
                 raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub 来源返回格式无效")
             if not all(isinstance(item, dict) for item in response):
                 raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub 来源包含无效资源")
             items.extend(response)
-            if len(response) < 100:
-                return items, False
-        return items, True
+            next_url = self._next_url(link_header)
+            if next_url is None:
+                return _PaginatedPayload(items=items, truncated=False, page_count=page_count, continuation_cursor={})
+            next_path, next_query = self._safe_next_page_request(next_url, expected_suffix=expected_suffix)
+        return _PaginatedPayload(
+            items=items,
+            truncated=True,
+            page_count=_MAX_PAGES,
+            continuation_cursor=self._cursor_from_query(next_query),
+        )
 
-    def _get(self, path: str, query: dict[str, str]) -> object:
+    def _get(self, path: str, query: dict[str, str]) -> tuple[object, str | None]:
         target_url = f"{self._api_base_url}{path}?{urlencode(query)}"
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "AI-CodeReview-SourceSync/1.0",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        if self._secret_ref:
-            secret = os.environ.get(self._secret_ref)
-            if not secret:
-                raise DomainError("SOURCE_SECRET_UNAVAILABLE", "服务端未配置 GitHub 来源所需密钥")
+        secret = resolve_environment_secret(
+            secret_ref=self._secret_ref,
+            unavailable_code="SOURCE_SECRET_UNAVAILABLE",
+            unavailable_message="服务端未配置 GitHub 来源所需密钥",
+        )
+        if secret:
             headers["Authorization"] = f"Bearer {secret}"
         request = Request(target_url, headers=headers, method="GET")
         try:
@@ -86,9 +144,10 @@ class GitHubSourceClient:
                 if content_length and int(content_length) > self._settings.github_sync_response_limit_bytes:
                     raise DomainError("SOURCE_RESPONSE_TOO_LARGE", "GitHub 来源响应超过允许大小")
                 raw = response.read(self._settings.github_sync_response_limit_bytes + 1)
+                link_header = response.headers.get("Link")
             if len(raw) > self._settings.github_sync_response_limit_bytes:
                 raise DomainError("SOURCE_RESPONSE_TOO_LARGE", "GitHub 来源响应超过允许大小")
-            return json.loads(raw.decode("utf-8"))
+            return json.loads(raw.decode("utf-8")), link_header
         except DomainError:
             raise
         except UnicodeDecodeError as exc:
@@ -100,3 +159,27 @@ class GitHubSourceClient:
             raise DomainError(code, f"GitHub 来源返回 HTTP {exc.code}") from exc
         except (URLError, TimeoutError) as exc:
             raise DomainError("SOURCE_UNAVAILABLE", "GitHub 来源当前不可用") from exc
+
+    @staticmethod
+    def _next_url(link_header: str | None) -> str | None:
+        if not link_header:
+            return None
+        match = re.search(r'<([^>]+)>;\s*rel="next"', link_header, flags=re.IGNORECASE)
+        return match.group(1) if match else None
+
+    def _safe_next_page_request(self, next_url: str, *, expected_suffix: str | None = None) -> tuple[str, dict[str, str]]:
+        parsed = urlparse(next_url)
+        if parsed.scheme != "https" or parsed.hostname != "api.github.com":
+            raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub 分页链接不属于受控 API 主机")
+        named_path = f"/repos/{self._repository_slug}{expected_suffix or ''}"
+        canonical_pattern = rf"^/repositories/\d+{re.escape(expected_suffix or '')}$"
+        if parsed.path != named_path and not re.fullmatch(canonical_pattern, parsed.path):
+            raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub 分页链接超出当前来源仓库范围")
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        if not query:
+            raise DomainError("SOURCE_RESPONSE_INVALID", "GitHub 分页链接缺少分页参数")
+        return parsed.path, query
+
+    @staticmethod
+    def _cursor_from_query(query: dict[str, str]) -> dict[str, str]:
+        return {key: value for key, value in query.items() if key in {"page", "after", "before", "since"}}

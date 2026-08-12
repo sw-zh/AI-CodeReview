@@ -203,6 +203,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 include_paths=git_snapshot.include_paths,
                 exclude_paths=git_snapshot.exclude_paths,
                 expected_diff_hash=binding.diff_hash,
+                credential_ref=repository.credential_ref,
             )
         except DomainError as exc:
             coverage = AnalysisCoverage(

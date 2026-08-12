@@ -12,14 +12,31 @@ from app.infrastructure.persistence.models import DeliveryItem, ExternalConnecti
 
 
 def register_repository(
-    session: Session, *, project_id: UUID, display_url: str, actor_id: UUID, correlation_id: str
+    session: Session, *, project_id: UUID, display_url: str, credential_ref: str | None, actor_id: UUID, correlation_id: str
 ) -> GitRepository:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     canonical_hash = f"sha256:{hashlib.sha256(display_url.strip().encode('utf-8')).hexdigest()}"
     existing = session.query(GitRepository).filter_by(project_id=project_id, canonical_url_hash=canonical_hash).one_or_none()
     if existing is not None:
+        if existing.credential_ref != credential_ref:
+            existing.credential_ref = credential_ref
+            append_audit_event(
+                session,
+                project_id=project_id,
+                actor_id=actor_id,
+                aggregate_type="GitRepository",
+                aggregate_id=existing.id,
+                action="GIT_REPOSITORY_CREDENTIAL_REF_UPDATED",
+                correlation_id=correlation_id,
+                payload={"credentialRefConfigured": credential_ref is not None},
+            )
         return existing
-    repository = GitRepository(project_id=project_id, canonical_url_hash=canonical_hash, display_url=display_url.strip())
+    repository = GitRepository(
+        project_id=project_id,
+        canonical_url_hash=canonical_hash,
+        display_url=display_url.strip(),
+        credential_ref=credential_ref,
+    )
     session.add(repository)
     session.flush()
     append_audit_event(session, project_id=project_id, actor_id=actor_id, aggregate_type="GitRepository", aggregate_id=repository.id, action="GIT_REPOSITORY_REGISTERED", correlation_id=correlation_id)
@@ -58,7 +75,15 @@ def freeze_git_snapshot(
         delivery_item_id=task.delivery_item_id,
         repository=repository,
     )
-    frozen = reader.freeze_range(repository.display_url, base_ref, target_ref, diff_mode, include_paths, exclude_paths)
+    frozen = reader.freeze_range(
+        repository.display_url,
+        base_ref,
+        target_ref,
+        diff_mode,
+        include_paths,
+        exclude_paths,
+        credential_ref=repository.credential_ref,
+    )
     snapshot = GitSnapshot(cycle_id=cycle_id, repository_id=repository_id, selected_base_ref=base_ref, selected_target_ref=target_ref, base_sha=frozen.base_sha, target_sha=frozen.target_sha, merge_base_sha=frozen.merge_base_sha, diff_mode=diff_mode, include_paths=include_paths, exclude_paths=exclude_paths, diff_hash=frozen.diff_hash, coverage=frozen.coverage)
     session.add(snapshot)
     session.flush()

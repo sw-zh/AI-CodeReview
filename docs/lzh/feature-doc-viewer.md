@@ -55,6 +55,23 @@
 - 已完成编译和四项最小回归检查：发布周期终态、GitHub HTTPS/SSH 同仓库识别、不同仓库拒绝、非 GitHub URL 拒绝。
 - 下一步实现 GitHub Cursor 分页与私有仓库只读凭据注入。
 
+## 2026-08-12 可信边界补强：GitHub 只读来源接入
+
+### 本次修改
+
+- GitHub 同步不再自行递增 `page` 参数，而是只跟随 GitHub 返回的 `Link: rel="next"` URL；因此兼容 REST 端点返回的 `page`、`after`、`before` 或 `since` 分页参数。
+- 下一页链接会验证 HTTPS、`api.github.com` 主机和当前 `owner/repository` 路径；达到 50 页上限或中途失败时，持久化已读取页数和安全的分页位置，不记录请求头或密钥。
+- 新增 `024_source_sync_pagination_cursor` 迁移，并将分页次数/续页位置返回给来源同步记录；历史同步记录默认保留为 0 页和空游标。
+- GitHub Fine-grained PAT 仅以环境变量引用登记。GitHub API 在运行期注入 Bearer Header；Git 只读拉取仅在子进程环境中通过 `http.extraHeader` 注入 Basic Header，禁止交互、Git Hook 和重定向，Token 不进入 URL、数据库、日志或 API 响应。
+- Git 仓库和外部来源连接可重新登记同一目标以更新“是否配置密钥引用”，并写入不含引用名和密钥值的审计事件。
+
+### 当前状态
+
+- 已完成 10 项最小自动化回归、迁移 SQL 生成检查和实际运行态部署：024 迁移已应用，API/Worker 就绪检查通过。
+- 以公开大型仓库 `octocat/Spoon-Knife` 进行了真实只读同步。首次请求已按 GitHub 返回的 `after` cursor 连续读取 6 页；未配置 Token 时触达公共限流后，以 `SOURCE_RATE_LIMITED` 终态保存 `page_count=6` 和可追溯 cursor，而不是退回旧的 `page` 递增逻辑或伪报成功。
+- 私有仓库真实拉取仍需在被忽略的 `infra/.env` 配置受限的 `GITHUB_SOURCE_TOKEN`；密钥注入通道和防泄漏回归已完成，但未持有用户的私有 PAT，不能将私有仓库实际访问记为已验收。
+- 下一步实现资料 Embedding 供应商切换后的活动索引重建；现有默认百炼真实全链路仍需在网络稳定的 Worker 中单独验收。
+
 ## 已完成
 
 ### 固定双核与默认编排
@@ -146,7 +163,7 @@
 - 用户已在本机 Worker 内完成一次最小真实百炼 Embedding 调用，输出为 `provider=dashscope`、`model=text-embedding-v4`、`dimensions=768`；百炼模型适配与 768 维向量契约已验收。由于当前执行通道到百炼的网络路由受限，资料上传、快照冻结和语义检索全链路改用临时 Gemini 真实模型验收：资料进入 `READY`，生成 3 个 768 维向量，冻结为 3 条 `DOCUMENT` 证据，语义改写问题返回含 `vectorRank` 的结果。验收后 API、Worker 已恢复为 DeepSeek 生成 + 百炼 Embedding，Gemini Key 已清除且不会提交。
 
 - 已完成本机 DeepSeek 配置，并在公开项目的冻结快照上完成真实联调：`LINK_PROPOSAL` 模型调用成功，双核的确定性裁决仍独立于模型建议。密钥仅位于被 Git 忽略的 `infra/.env`，不会进入提交。
-- GitHub 私有仓库的凭据注入与只读拉取尚未实现：当前容器读取私有远程地址会因缺少非交互凭据失败，不能宣称已支持验收私有项目。
+- GitHub 私有仓库已具备受控的 Fine-grained PAT 环境变量引用与只读拉取通道；尚未使用真实私有 PAT 执行验收，不能宣称已实际访问过用户私有项目。
 
 ## 尚未实现 / 明确不做
 

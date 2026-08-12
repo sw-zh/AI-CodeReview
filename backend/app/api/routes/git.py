@@ -11,6 +11,7 @@ from app.api.schemas import (
 )
 from app.application.services.git_service import freeze_git_snapshot, register_repository
 from app.domain.errors import DomainError
+from app.infrastructure.credential_resolver import normalize_secret_ref
 from app.infrastructure.git_reader import ReadOnlyGitReader
 
 repository_router = APIRouter(prefix="/projects/{project_id}/git-repositories")
@@ -27,7 +28,14 @@ def register(
     _: str = Depends(idempotency_key),
 ) -> GitRepositoryResponse:
     try:
-        repository = register_repository(session, project_id=project_id, display_url=payload.display_url, actor_id=user.id, correlation_id=correlation_id(request))
+        repository = register_repository(
+            session,
+            project_id=project_id,
+            display_url=payload.display_url,
+            credential_ref=normalize_secret_ref(payload.credential_ref),
+            actor_id=user.id,
+            correlation_id=correlation_id(request),
+        )
         session.commit()
         return GitRepositoryResponse(id=repository.id, project_id=repository.project_id, display_url=repository.display_url, read_only=repository.read_only)
     except DomainError as exc:

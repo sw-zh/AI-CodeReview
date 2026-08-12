@@ -205,6 +205,13 @@
 - 私有 GitHub 首期采用 Fine-grained PAT 的环境变量引用，凭据值不得进入数据库、日志、URL、API 响应或 Git 配置；GitHub App 延后。
 - Embedding 迁移使用派生索引版本和活动索引选择，不重写冻结事实；不同模型的向量不得混合比较。
 
+## 2026-08-12 GitHub 只读来源补强验收
+
+- 024 迁移已在本地开发数据库应用：`source_sync_runs` 新增 `page_count` 和 `continuation_cursor`，数据库版本为 `024_source_sync_pagination_cursor`；API 与 Worker 重建后均通过就绪检查。
+- GitHub 的真实 `Link` 下一页会把命名仓库 URL 规范为 `/repositories/<numeric-id>/issues`。客户端只接受 `api.github.com` 上同一端点的命名路径或这一官方等价路径，拒绝跨主机、跨仓库和缺少分页参数的链接。
+- 对公开大型仓库 `octocat/Spoon-Knife` 的真实同步在未配置 Token 的条件下连续读取 6 个 cursor 页后触发 GitHub 公共限流，终态为 `SOURCE_RATE_LIMITED`，并持久化 `page_count=6` 与 `after` cursor。它证明了 Cursor 续页和可追溯失败恢复信息，不证明无 Token 的全量同步成功。
+- 私有仓库已由环境变量引用通道支持：凭据值不会写入数据库、审计载荷、URL、命令行、日志或 API 响应；单测验证 Git 子进程只使用进程内 HTTP Header 配置并关闭交互/Hook/重定向。没有真实私有 PAT，因此私有仓库访问仍是未覆盖项。
+
 ## 仓库现状
 
 - 仓库已初始化，当前分支为 `main`，暂无提交。

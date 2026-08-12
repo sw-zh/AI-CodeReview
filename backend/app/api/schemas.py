@@ -136,6 +136,7 @@ class EvidenceResponse(BaseModel):
 
 class GitRepositoryCreateRequest(BaseModel):
     display_url: str = Field(min_length=8, max_length=2000)
+    credential_ref: str | None = Field(default=None, max_length=160)
 
 
 class GitRepositoryResponse(BaseModel):
@@ -392,6 +393,8 @@ class SourceSyncRunResponse(BaseModel):
     finished_at: datetime | None
     fetched_count: int
     changed_count: int
+    page_count: int
+    continuation_cursor: dict
     error_code: str | None
     error_message: str | None
 

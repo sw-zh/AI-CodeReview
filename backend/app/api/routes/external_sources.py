@@ -56,6 +56,8 @@ def _sync_response(sync) -> SourceSyncRunResponse:
         finished_at=sync.finished_at,
         fetched_count=sync.fetched_count,
         changed_count=sync.changed_count,
+        page_count=sync.page_count,
+        continuation_cursor=sync.continuation_cursor,
         error_code=sync.error_code,
         error_message=sync.error_message,
     )

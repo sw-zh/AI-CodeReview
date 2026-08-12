@@ -20,7 +20,8 @@ from app.domain.enums import (
     SourceSyncStatus,
 )
 from app.domain.errors import DomainError
-from app.infrastructure.github_source_client import GitHubSourceClient
+from app.infrastructure.credential_resolver import normalize_secret_ref
+from app.infrastructure.github_source_client import GitHubPaginationError, GitHubSourceClient
 from app.infrastructure.persistence.models import (
     DeliveryItem,
     DeliveryItemSourceLink,
@@ -33,7 +34,6 @@ from app.infrastructure.persistence.models import (
 
 _GITHUB_API_BASE_URL = "https://api.github.com"
 _GITHUB_REPOSITORY_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_SECRET_REF = re.compile(r"^[A-Z][A-Z0-9_]{2,159}$")
 
 
 def _canonical_hash(value: object) -> str:
@@ -46,15 +46,6 @@ def _normalize_repository_slug(value: str) -> str:
     if not _GITHUB_REPOSITORY_SLUG.fullmatch(slug):
         raise DomainError("INPUT_INVALID", "GitHub 仓库标识必须是 owner/repository")
     return slug
-
-
-def _normalize_secret_ref(value: str | None) -> str | None:
-    if value is None or not value.strip():
-        return None
-    secret_ref = value.strip()
-    if not _SECRET_REF.fullmatch(secret_ref):
-        raise DomainError("INPUT_INVALID", "密钥引用必须是服务端环境变量名称")
-    return secret_ref
 
 
 def _parse_source_time(value: object) -> datetime | None:
@@ -109,13 +100,26 @@ def create_connection(
     if not normalized_name:
         raise DomainError("INPUT_INVALID", "来源连接名称不能为空")
     slug = _normalize_repository_slug(repository_slug)
-    normalized_secret_ref = _normalize_secret_ref(secret_ref)
-    if session.query(ExternalConnection).filter_by(
+    normalized_secret_ref = normalize_secret_ref(secret_ref)
+    existing = session.query(ExternalConnection).filter_by(
         project_id=project_id,
         provider=provider,
         repository_slug=slug,
-    ).one_or_none() is not None:
-        raise DomainError("STATE_CONFLICT", "该项目已登记此 GitHub 仓库来源")
+    ).one_or_none()
+    if existing is not None:
+        if existing.secret_ref != normalized_secret_ref:
+            existing.secret_ref = normalized_secret_ref
+            append_audit_event(
+                session,
+                project_id=project_id,
+                actor_id=actor_id,
+                aggregate_type="ExternalConnection",
+                aggregate_id=existing.id,
+                action="EXTERNAL_CONNECTION_SECRET_REF_UPDATED",
+                correlation_id=correlation_id,
+                payload={"secretRefConfigured": normalized_secret_ref is not None},
+            )
+        return existing
     connection = ExternalConnection(
         project_id=project_id,
         provider=provider,
@@ -277,10 +281,15 @@ def sync_connection(
         sync.status = SourceSyncStatus.PARTIALLY_SUCCEEDED.value if payload.truncated else SourceSyncStatus.SUCCEEDED.value
         sync.fetched_count = fetched_count
         sync.changed_count = changed_count
+        sync.page_count = payload.page_count
+        sync.continuation_cursor = payload.continuation_cursor
     except DomainError as exc:
         sync.status = SourceSyncStatus.FAILED.value
         sync.error_code = exc.code
         sync.error_message = exc.message
+        if isinstance(exc, GitHubPaginationError):
+            sync.page_count = exc.page_count
+            sync.continuation_cursor = exc.continuation_cursor
     sync.finished_at = datetime.now(UTC)
     append_audit_event(
         session,

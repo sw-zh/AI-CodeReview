@@ -14,6 +14,11 @@
 - 编译检查已通过；最小 Python 检查首次因 shell 未加载本地 `.env`、缺少 `JWT_SECRET` 而在导入设置时失败，未连接或改动数据库。后续只为该进程注入临时占位值后重跑。
 - 已完成报告不可回退修复：所有报告写状态转换均以核验周期为锁定与终态检查边界；新增 `backend/tests/test_report_cycle_immutability.py`，编译与最小回归均通过。该切片尚未重建容器做真实运行态回归，将与后续切片一并进行。
 - 已完成来源与 Git 归属收紧：正式快照拒绝重复资料 ID；绑定事项后的冻结 Git、事项—PR/Git 关联和候选 Agent 目标只接受同一 GitHub 来源仓库。新增 URL 规范化回归测试，四项现有/新增最小测试均通过；未执行任何真实仓库写操作。
+- 已完成 GitHub 只读接入补强：同步按 GitHub `Link` 头续页并记录安全游标/页数；新增 024 迁移。Fine-grained PAT 只允许以环境变量引用登记，运行时只注入 GitHub API Header 或 Git 子进程 Header，关闭交互、Hook 和重定向。10 项最小自动化回归及 Alembic 离线 SQL 已通过；真实私有仓库拉取等待用户自行在本地忽略环境文件配置只读 Token。
+- 尝试以 `docker compose up -d --build api worker` 重建运行容器时命令在 64 秒无输出超时，尚未把运行态验收标记为通过；下一步先只读检查容器与镜像状态，再选择无构建重启或分步骤构建，不重复同一超时命令。
+- 分步构建 API 与 Worker 镜像已成功；随后运行 Compose `migrate` 容器报“无法定位 `023_peripheral_profile_runs`”。该错误说明 `migrate` 使用的镜像或构建缓存并未包含当前完整迁移链，尚未执行任何 024 数据库改造。下一步检查 `migrate` 实际镜像、容器内迁移文件和 Compose 构建目标，不重复运行同一迁移命令。
+- 已定位并解决 `migrate` 容器的旧镜像问题：单独构建 `migrate` 后，024 迁移已实际应用，API/Worker 已无构建重建并通过就绪检查。首次真实 `octocat/Spoon-Knife` 大型仓库同步仍失败为 `SOURCE_RESPONSE_INVALID`：GitHub 的 `Link` 头把下一页改写为 `/repositories/<numeric-id>/issues`，当前安全校验只接受原始 `/repos/<owner>/<repo>/` 路径。下一步收紧为“仅接受 GitHub 官方两种等价分页路径”，再重跑隔离验收；不会放宽主机或跨仓库限制。
+- 已补齐 GitHub 官方数字仓库路径的受控等价校验并重新部署。对 `octocat/Spoon-Knife` 的真实同步已跨越 6 个 cursor 页面；无 Token 触达公共限流后，运行如实落为 `FAILED / SOURCE_RATE_LIMITED`，保存 `page_count=6`、`after` cursor 和稳定错误码。该结果验证了分页续页、失败定位与持久化，不把限流误写为同步成功；私有 PAT 真实访问仍未覆盖。
 
 ## 2026-08-12 第一性原则全链路复核
 

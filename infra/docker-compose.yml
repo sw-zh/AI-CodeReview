@@ -33,6 +33,7 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      GITHUB_SOURCE_TOKEN: ${GITHUB_SOURCE_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
@@ -65,6 +66,7 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      GITHUB_SOURCE_TOKEN: ${GITHUB_SOURCE_TOKEN:-}
     volumes:
       - artifact-volume:/artifacts
     depends_on:

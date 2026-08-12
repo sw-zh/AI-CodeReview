@@ -44,7 +44,7 @@ class RenderedReport:
 class GitReaderPort:
     """Read-only Git boundary; it never executes repository content or hooks."""
 
-    def freeze_range(self, repository_url: str, base_ref: str, target_ref: str, diff_mode: str, include_paths: list[str], exclude_paths: list[str]) -> FrozenGitRange:
+    def freeze_range(self, repository_url: str, base_ref: str, target_ref: str, diff_mode: str, include_paths: list[str], exclude_paths: list[str], credential_ref: str | None = None) -> FrozenGitRange:
         raise NotImplementedError
 
     def read_frozen_diff(
@@ -58,6 +58,7 @@ class GitReaderPort:
         include_paths: list[str],
         exclude_paths: list[str],
         expected_diff_hash: str,
+        credential_ref: str | None = None,
     ) -> FrozenGitDiff:
         """Read only an immutable SHA range and reject a changed diff payload."""
         raise NotImplementedError
