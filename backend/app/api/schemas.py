@@ -120,8 +120,23 @@ class RetrievalIndexResponse(BaseModel):
 
 
 class RetrievalIndexRebuildResponse(RetrievalIndexResponse):
+    build_run_id: UUID
     reindexed_source_count: int
     reindexed_chunk_count: int
+
+
+class RetrievalIndexBuildRunResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    target_index_version: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    source_count: int
+    reindexed_source_count: int
+    reindexed_chunk_count: int
+    error_code: str | None
+    error_message: str | None
 
 
 class SnapshotCreateRequest(BaseModel):

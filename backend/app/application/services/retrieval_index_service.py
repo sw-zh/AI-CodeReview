@@ -18,7 +18,7 @@ from app.infrastructure.embedding_model import (
     create_embedding_model,
     embedding_index_version,
 )
-from app.infrastructure.persistence.models import DocumentChunk, ProjectRetrievalIndex, SourceRevision
+from app.infrastructure.persistence.models import DocumentChunk, ProjectRetrievalIndex, RetrievalIndexBuildRun, SourceRevision
 
 
 _ACTIVE = "ACTIVE"
@@ -114,6 +114,72 @@ def list_project_retrieval_indexes(session: Session, *, project_id: UUID, actor_
             }
         )
     return response
+
+
+def start_retrieval_index_build_run(
+    session: Session,
+    *,
+    project_id: UUID,
+    actor_id: UUID,
+) -> RetrievalIndexBuildRun:
+    require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
+    target_version = configured_embedding_index_version(get_settings(), MarkdownTextDocumentParser().version)
+    run = RetrievalIndexBuildRun(
+        project_id=project_id,
+        target_index_version=target_version,
+        status="RUNNING",
+        created_by=actor_id,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def finish_retrieval_index_build_run(
+    run: RetrievalIndexBuildRun,
+    *,
+    result: dict | None = None,
+    error: DomainError | None = None,
+) -> None:
+    run.finished_at = datetime.now(UTC)
+    if error is not None:
+        run.status = "FAILED"
+        run.error_code = error.code
+        run.error_message = error.message[:500]
+        return
+    if result is None:
+        raise ValueError("a successful retrieval-index run requires a result")
+    run.status = "SUCCEEDED"
+    run.source_count = result["ready_source_count"]
+    run.reindexed_source_count = result["reindexed_source_count"]
+    run.reindexed_chunk_count = result["reindexed_chunk_count"]
+
+
+def list_retrieval_index_build_runs(session: Session, *, project_id: UUID, actor_id: UUID, limit: int = 50) -> list[dict]:
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    runs = (
+        session.query(RetrievalIndexBuildRun)
+        .filter_by(project_id=project_id)
+        .order_by(RetrievalIndexBuildRun.started_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": run.id,
+            "project_id": run.project_id,
+            "target_index_version": run.target_index_version,
+            "status": run.status,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "source_count": run.source_count,
+            "reindexed_source_count": run.reindexed_source_count,
+            "reindexed_chunk_count": run.reindexed_chunk_count,
+            "error_code": run.error_code,
+            "error_message": run.error_message,
+        }
+        for run in runs
+    ]
 
 
 def rebuild_project_retrieval_index(

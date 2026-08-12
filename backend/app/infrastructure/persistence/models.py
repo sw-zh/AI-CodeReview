@@ -458,6 +458,28 @@ class ProjectRetrievalIndex(TimestampedEntity, Base):
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class RetrievalIndexBuildRun(Base):
+    """Durable outcome for a derived-index rebuild, including a safe failure summary."""
+
+    __tablename__ = "retrieval_index_build_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('RUNNING', 'SUCCEEDED', 'FAILED')", name="ck_retrieval_index_build_run_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    target_index_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reindexed_source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reindexed_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
 class GitRepository(TimestampedEntity, Base):
     __tablename__ = "git_repositories"
     __table_args__ = (UniqueConstraint("project_id", "canonical_url_hash", name="uq_project_git_repository"),)

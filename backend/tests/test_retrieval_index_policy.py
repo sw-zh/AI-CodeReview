@@ -3,11 +3,16 @@
 import unittest
 from uuid import uuid4
 
-from app.application.services.retrieval_index_service import active_index_version, ensure_initial_retrieval_index
+from app.application.services.retrieval_index_service import (
+    active_index_version,
+    ensure_initial_retrieval_index,
+    finish_retrieval_index_build_run,
+)
 from app.core.config import Settings
+from app.domain.errors import DomainError
 from app.domain.model_contracts import EmbeddingResult
 from app.infrastructure.embedding_model import configured_embedding_index_version
-from app.infrastructure.persistence.models import AuditEvent, ProjectRetrievalIndex
+from app.infrastructure.persistence.models import AuditEvent, ProjectRetrievalIndex, RetrievalIndexBuildRun
 
 
 class _Query:
@@ -93,3 +98,17 @@ class RetrievalIndexPolicyTests(unittest.TestCase):
         self.assertIsInstance(session.added[0], AuditEvent)
         self.assertEqual(session.added[0].action, "SOURCE_INDEX_VERSION_REQUIRES_REBUILD")
         self.assertEqual(active_index_version(session, project_id=active.project_id), active.index_version)
+
+    def test_rebuild_run_keeps_a_safe_failure_or_success_summary(self) -> None:
+        failed = RetrievalIndexBuildRun(project_id=uuid4(), target_index_version="index-v1", created_by=uuid4())
+        finish_retrieval_index_build_run(failed, error=DomainError("MODEL_UNAVAILABLE", "模型当前不可用"))
+        self.assertEqual(failed.status, "FAILED")
+        self.assertEqual(failed.error_code, "MODEL_UNAVAILABLE")
+
+        succeeded = RetrievalIndexBuildRun(project_id=uuid4(), target_index_version="index-v2", created_by=uuid4())
+        finish_retrieval_index_build_run(
+            succeeded,
+            result={"ready_source_count": 2, "reindexed_source_count": 1, "reindexed_chunk_count": 3},
+        )
+        self.assertEqual(succeeded.status, "SUCCEEDED")
+        self.assertEqual((succeeded.source_count, succeeded.reindexed_source_count, succeeded.reindexed_chunk_count), (2, 1, 3))
