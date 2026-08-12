@@ -5,6 +5,7 @@
 - 当前生成模型与 Embedding 模型通过独立端口和环境变量配置；本次只替换资料入库与查询阶段的 Embedding，不改变双核核验、冻结 Git Diff 或正式结论规则。
 - 使用用户提供的工作区 OpenAI 兼容地址 `/compatible-mode/v1/embeddings`；Key 仅写入被 Git 忽略的 `infra/.env`，不能写入 Compose、示例或文档。
 - 历史 FakeEmbedding 向量与百炼向量不能混用。当前本地 Compose 的 API、Worker、PostgreSQL 与前端正在运行，代码和环境变量更新后必须重建 API 与 Worker；后续真实资料入库将直接生成百炼向量。
+- 用户已在本机 Worker 中通过项目真实适配器完成调用，返回 `dashscope`、`text-embedding-v4` 和 768 维向量；这验证了百炼凭据、兼容地址、请求格式及维度契约。尚未以真实上传资料单独验收解析、入库和检索全链路。
 
 ## 2026-08-11 Agent 生命周期切片审计
 

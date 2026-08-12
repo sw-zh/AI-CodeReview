@@ -6,6 +6,7 @@
 - 已完成百炼 OpenAI 兼容适配、真实运行配置和向量索引隔离：新资料以 `markdown-v1|embedding:dashscope:text-embedding-v4:d768` 形式标记索引版本，旧 FakeEmbedding 向量仅保留关键词检索兜底，不再混入百炼相似度排序。
 - API 与 Worker 的首次重建命令在本地窗口超时，但后台构建已成功完成；随后以新镜像强制重建 API、Worker，API 健康检查通过，容器运行配置确认是 DeepSeek 生成 + 百炼 `text-embedding-v4`。
 - 已使用新 Worker 执行一次最小百炼 Embedding 调用；目标 Host 在 TLS 握手阶段提前断开，未返回 API 业务响应。适配器正确给出 `MODEL_UNAVAILABLE`，下一步等待用户修复该 Host 的网络/代理路由后再重试，不盲目重复调用。
+- 用户切换网络后，在本机 Worker 内用项目真实适配器完成最小调用，返回 `provider=dashscope`、`model=text-embedding-v4`、`dimensions=768`。百炼模型调用和 768 维契约已验收；未运行测试套件，未单独执行真实资料上传到语义检索的全链路验收。
 
 ## 2026-08-10
 

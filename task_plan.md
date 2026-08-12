@@ -10,6 +10,7 @@
 1. 核对当前向量列、检索链路、模型端口和百炼 OpenAI 兼容地址。`complete`
 2. 新增百炼 Embedding 适配与真实运行配置，禁止运行配置选择 FakeEmbedding。`complete`
 3. 更新示例配置、功能文档和进度记录，做静态验证并中文提交。`complete`
+4. 由用户本机 Worker 执行最小真实 Embedding 调用，确认供应商、模型和维度。`complete`
 
 ### Error log
 
@@ -18,6 +19,7 @@
 - 后台 `docker compose build api worker` 已退出，但 Compose 查询镜像时返回缺失的 SHA；现有容器仍健康运行。下一步改为直接读取 Dockerfile 并以带输出的单镜像构建定位原因，不重跑无输出的后台构建。
 - 百炼最小 Embedding 实调用在 Worker 内收到 `SSL: UNEXPECTED_EOF_WHILE_READING`，适配器已如预期转换为 `MODEL_UNAVAILABLE`；不立即重试相同请求，改为分别检查宿主机与容器到用户专属 Host 的 TLS/DNS 连通性。
 - 后台构建实际已产出新镜像；使用 `docker compose up -d --no-build --force-recreate api worker` 后，两个容器均已换成新配置，API 健康检查通过。百炼 Host 的 TLS 链路是唯一未验收项，等待外部网络条件恢复。
+- 用户切换网络后，宿主机与 Worker 的 TLS 检查均通过；随后项目真实适配器返回 `dashscope / text-embedding-v4 / 768`。此前 TLS 异常已解除，真实资料上传与检索全链路仍不在本次最小调用验收范围内。
 
 ## 2026-08-11 目标执行异常
 
