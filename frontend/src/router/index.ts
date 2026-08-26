@@ -34,7 +34,7 @@ export const router = createRouter({
         { path: 'workbench', component: WorkbenchHomePage, meta: { title: '工作台', area: 'project' } },
         { path: 'knowledge-base', component: KnowledgeBasePage, meta: { title: '项目知识库', area: 'project' } },
         { path: 'agent-blocks', component: AgentBlocksPage, meta: { title: 'Agent 功能块', area: 'project' } },
-        { path: 'tasks', component: TaskCenterPage, meta: { title: '研发事项 / 交付项', area: 'project' } },
+        { path: 'tasks', component: TaskCenterPage, meta: { title: '代码交付', area: 'project' } },
         { path: 'tasks/:taskId/notebook', component: NotebookWorkspacePage, meta: { title: 'Notebook 审查', area: 'project', section: 'notebook' } },
         { path: 'approvals', component: ApprovalQueuePage, meta: { title: '待审批队列', area: 'approval' } },
         { path: 'approvals/:approvalId', component: ApprovalDetailPage, meta: { title: '审批详情', area: 'approval' } },

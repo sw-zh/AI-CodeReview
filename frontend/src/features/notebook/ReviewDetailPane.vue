@@ -23,17 +23,21 @@ const props = defineProps<{
   orchestration?: RuntimeOrchestration | null
   runStatus?: string | null
   runSnapshotId?: string | null
+  hasReport?: boolean
 }>()
 
-const activeTab = ref<'风险' | '引用' | '运行' | '差异'>('风险')
+type DetailTab = '风险' | '引用' | '运行' | '差异' | '报告'
+
+const activeTab = ref<DetailTab>('风险')
 const relatedEvidence = computed(() => props.evidence.filter((item) => props.conclusion.evidenceIds.includes(item.id)))
 const orchestrationNodes = computed(() => [...(props.orchestration?.nodes ?? [])].sort((left, right) => left.displayOrder - right.displayOrder))
+const tabs = computed<DetailTab[]>(() => props.hasReport ? ['风险', '引用', '运行', '差异', '报告'] : ['风险', '引用', '运行', '差异'])
 </script>
 
 <template>
   <aside class="notebook-pane notebook-detail">
     <header class="notebook-pane-header"><div><h2>核验详情</h2><p>查看结论依据</p></div></header>
-    <div class="detail-tabs"><button v-for="tab in ['风险', '引用', '运行', '差异'] as const" :key="tab" type="button" :class="{ active: activeTab === tab }" @click="activeTab = tab">{{ tab }}</button></div>
+    <div class="detail-tabs"><button v-for="tab in tabs" :key="tab" type="button" :class="{ active: activeTab === tab }" @click="activeTab = tab">{{ tab }}</button></div>
     <section v-if="activeTab === '风险'" class="detail-section"><span class="detail-kicker">当前结论</span><h3>{{ conclusion.requirement }}</h3><p>{{ conclusion.summary }}</p><div v-if="conclusion.risk" class="risk-callout"><strong>{{ conclusion.risk }} 风险</strong><p>风险是否可接受需要回到当前结论的冻结引用和人工审批，不能由此处展示自动裁决。</p></div><p v-else class="quiet-note">当前结论没有记录需要升级的交付风险。</p></section>
     <section v-else-if="activeTab === '引用'" class="detail-section"><span class="detail-kicker">已授权引用</span><article v-for="item in relatedEvidence" :key="item.id" class="citation-item"><span>{{ item.kind }}</span><strong>{{ item.title }}</strong><small>{{ item.locator }}</small><p>{{ item.excerpt }}</p></article><p v-if="!relatedEvidence.length" class="quiet-note">当前没有可展示的冻结证据引用。</p></section>
     <section v-else-if="activeTab === '运行'" class="detail-section">
@@ -48,6 +52,7 @@ const orchestrationNodes = computed(() => [...(props.orchestration?.nodes ?? [])
         <p class="quiet-note">只有任务形成正式输入快照并启动后，才会展示本次冻结的双核、外围 Agent、Prompt 版本、工具授权和运行顺序。</p>
       </template>
     </section>
-    <section v-else class="detail-section"><span class="detail-kicker">版本差异</span><p v-if="runSnapshotId">当前运行的 Diff 与输入快照绑定。变更输入范围后必须创建新的正式快照。</p><p v-else>尚未形成冻结 Git Diff，因此没有可展示的版本差异。</p></section>
+    <section v-else-if="activeTab === '差异'" class="detail-section"><span class="detail-kicker">版本差异</span><p v-if="runSnapshotId">当前运行的 Diff 与输入快照绑定。变更输入范围后必须创建新的正式快照。</p><p v-else>尚未形成冻结 Git Diff，因此没有可展示的版本差异。</p></section>
+    <section v-else class="detail-section detail-report-tab"><slot name="report" /></section>
   </aside>
 </template>

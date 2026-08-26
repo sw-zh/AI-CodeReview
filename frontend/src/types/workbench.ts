@@ -1,41 +1,42 @@
-export type RiskLevel = 'P0' | 'P1' | 'P2'
-export type VerificationStatus = '已确认' | '部分支持' | '待人工确认' | '证据不足'
+export type RiskLevel = "P0" | "P1" | "P2";
+export type VerificationStatus =
+  "已确认" | "部分支持" | "待人工确认" | "证据不足" | "存在冲突";
 
 export interface ProjectTodo {
-  id: string
-  name: string
-  pendingCount: number
-  approvalCount: number
-  p0Count: number
-  nextAction: string
+  id: string;
+  name: string;
+  pendingCount: number;
+  approvalCount: number;
+  p0Count: number;
+  nextAction: string;
 }
 
 export interface VerificationTask {
-  id: string
-  title: string
-  snapshot: string
-  analysisRun: string
-  reportStatus: string
-  riskSummary: string
-  owner: string
-  updatedAt: string
+  id: string;
+  title: string;
+  snapshot: string;
+  analysisRun: string;
+  reportStatus: string;
+  riskSummary: string;
+  owner: string;
+  updatedAt: string;
 }
 
 export interface EvidenceReference {
-  id: string
-  kind: '需求' | '代码' | '测试' | '人工补证'
-  title: string
-  locator: string
-  excerpt: string
-  state: '已引用' | '待补充'
+  id: string;
+  kind: "需求" | "代码" | "测试" | "人工补证";
+  title: string;
+  locator: string;
+  excerpt: string;
+  state: "已引用" | "待补充";
 }
 
 export interface VerificationConclusion {
-  id: string
-  requirement: string
-  status: VerificationStatus
-  summary: string
-  needsHumanDecision: boolean
-  risk: RiskLevel | null
-  evidenceIds: string[]
+  id: string;
+  requirement: string;
+  status: VerificationStatus;
+  summary: string;
+  needsHumanDecision: boolean;
+  risk: RiskLevel | null;
+  evidenceIds: string[];
 }
