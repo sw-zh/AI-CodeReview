@@ -1,48 +1,132 @@
-# 交付代码审查核心 v2 承接说明
+# 交付代码审查核心：承接说明（更新至 2026-08-26）
 
-## 已实现
+## 1. 这条核心能力解决什么问题
 
-- `028_delivery_code_review_core.py` 新增不可变 `ArtifactObject`、`CodeReviewFinding`、Git Snapshot 制品引用与 `AnalysisCoverage.details`。
-- Git 冻结阶段通过 `ReadOnlyGitReader` 只读 clone/fetch/rev-parse/merge-base/diff/show，保存完整原始 Diff bytes 和 `CODE_CHANGE_BUNDLE`；不会 checkout 或执行仓库内容。
-- 分析图中的 `collect_git_evidence` 只读取本地 ArtifactObject，校验 Diff/Bundle 哈希后创建 `GIT_DIFF_HUNK` EvidenceItem；分析期不再访问远端 Git。
-- `review_code` 作为锁定 `delivery-git-diff` 内部节点执行。它只允许 DeepSeek；模型失败写入 ModelCall、Coverage 和 Manifest degradation，不切换 Fake/Gemini。
-- `CodeReviewFinding` 经过 evidence/claim/fingerprint 校验后保存。一般 Finding 仅展示，不直接改写最终 VerificationResult。
-- 新只读 API：`GET /git-snapshots/{id}/diff`、`GET /analysis-runs/{id}/code-review`。
-- Notebook 来源栏读取上述 API，展示冻结文件、二进制跳过、Finding、触发场景、建议和 Coverage。
+本项目不是“运行一次大模型就给代码打分”。它只回答一个受限问题：
 
-## 标准核验增强
+> 对一条已同步的 GitHub Pull Request，人工确认的交付主张能否在指定、冻结且可回放的 Git Diff 中获得证据支持；同时，这个 Diff 中是否存在需要开发者处理的代码 Finding。
 
-- `029_standard_verification_challenge.py` 新增不可变 `CodeReviewFindingChallenge`；同一运行的同一 Finding 只能保存一条复核结果，原 Finding 永不被覆盖或删除。
-- 固定图在 `review_code` 后运行 `challenge_code_findings`，再运行纯代码 `summarize_code_coverage`，随后才进入既有确定性链接与裁决。复核只能给出 `SUPPORTED`、`UNSUPPORTED`、`NEEDS_HUMAN`，不能生成新 Finding、改 Severity 或写 `VerificationResult`。
-- `challenge_code_findings` 仅将原 Finding、其冻结 Hunk、可选 Claim 和受预算限制的上下文传给 DeepSeek；Fake/Gemini/无 Key、超时或无效结构化输出均写 ModelCall、Manifest degradation 与 Coverage，不切换模型或制造结果。
-- `STANDARD_VERIFICATION` Coverage 汇总文件/Hunk、二进制、审查 Hunk、Finding 数、复核 verdict 和未覆盖原因；它不是完成率或无风险结论。
-- `GET /analysis-runs/{id}/code-review` 为每个 Finding 返回复核状态、结论、理由和 Hunk Evidence ID，并返回 `FINDING_CHALLENGE` 与 `STANDARD_VERIFICATION` Coverage。Notebook 显示“标准核验”、四种复核状态和针对模型/预算/制品失败的下一步。
+不回答“项目整体是否完成”“是否安全通过”“CI 是否通过”。Git 也始终是只读输入：禁止 checkout 工作区、写远端、执行仓库代码、构建、测试或 Hook。
 
-## 固定边界
+## 2. 当前主链路与状态边界
 
-- `requirement-claim-core -> delivery-git-diff -> evidence-reconciliation` 保持不变。
-- Hunk 才是正式代码证据；base/target 全文仅 `CONTEXT_ONLY`。
-- 不写 Git/GitHub，不运行任何仓库代码、构建、测试或 Hook。
-- `TWO_DOT` 和 `THREE_DOT` 兼容既有 Notebook；前者是精确 base/target，后者是 merge-base/target。
+```text
+GitHub PR 同步
+  -> DeliveryItem(PULL_REQUEST)
+  -> 创建 VerificationTask / VerificationCycle
+  -> DeepSeek 提取交付主张候选，人工确认
+  -> 只读 Git 冻结 base/target/path scope
+  -> GitSnapshot + 两份 ArtifactObject
+  -> Formal InputSnapshot（锁定 PR revision、Claim、资料、Diff）
+  -> AnalysisRun / Worker / 固定双核
+  -> VerificationResult + CodeReviewFinding + Challenge + Coverage
+  -> HumanVerificationDecision（如系统要求）
+  -> ReportVersion / ReportItem
+  -> 不同成员审批
+  -> PublishedRecord
+```
 
-## 运行与维护
+| 阶段 | 主状态/对象 | 可写性与关键门禁 |
+| --- | --- | --- |
+| 任务准备 | `VerificationCycle` 为 `DRAFT` / `NEEDS_EVIDENCE` / `NEEDS_CONFIRMATION` | 可继续确认主张、冻结 Diff、创建正式快照。跨仓库、空 Diff、资料未就绪、未确认主张都会拒绝。 |
+| 正式输入 | `InputSnapshot(purpose=FORMAL)` | 输入哈希由规范 JSON 计算；已有同哈希快照复用。只能绑定当前轮次的 GitSnapshot，且该 GitSnapshot 必须具备两份本地制品。 |
+| 分析 | `AnalysisRun`、`RunEvent`、`AnalysisCoverage`、`ModelCall` | Worker 异步消费。模型或制品失败写真实失败/降级状态，不能换 Fake/Gemini 伪造结论。 |
+| 人工裁决 | `HumanVerificationDecision` | 仅已结束运行、报告尚未提交时允许；追加新记录并指向被替代记录，不覆盖系统结果。 |
+| 报告 | `ReportVersion`、`ReportItem` | DRAFT 可更新说明、处置与随裁决刷新；提交前，所有 `requires_human_confirmation` 的结果必须有人工裁决。 |
+| 审批与固化 | `ApprovalAction`、`PublishedRecord` | 提交者不可审批自己的报告；仅 REVIEWER/ADMIN 可审批；仅 ADMIN 可固化 APPROVED 报告；发布后 cycle/report 不可写。 |
 
-- 新快照和新分析会拒绝没有 Diff/Bundle Artifact 的 Git Snapshot；历史快照返回 `GIT_ARTIFACT_MISSING`，不被伪装为可回放。
-- 上下文配置：`CODE_REVIEW_CONTEXT_MAX_FILE_BYTES`、`CODE_REVIEW_CONTEXT_MAX_TOTAL_BYTES`、`CODE_REVIEW_INPUT_CHAR_BUDGET`。
-- `CODE_REVIEW_INPUT_CHAR_BUDGET` 优先保障 Hunk；上下文超预算时成为 `CODE_CONTEXT_BUDGET_EXHAUSTED`，Coverage 必须显示。
-- 反证预算配置：`CODE_REVIEW_CHALLENGE_MAX_FINDINGS`、`CODE_REVIEW_CHALLENGE_INPUT_CHAR_BUDGET`、`CODE_REVIEW_CHALLENGE_TIMEOUT_SECONDS`；超预算和超时必须保留为 Coverage/降级状态。
+## 3. Git 读取、冻结、保存和持久化
 
-## 已验证与未覆盖
+### 3.1 冻结时实际发生什么
 
-- 已通过：Python 编译、029 Alembic 离线 SQL、8 项交付代码审查定向测试、完整后端 24 项 pytest、API 路由导入/声明校验与前端生产构建。
-- 已按项目 `pyproject.toml` 补齐本地依赖并安装 pytest；Docker Desktop Linux Engine 仍不可用，尚未启动容器或调用真实 DeepSeek。
-- 下一次在完整容器依赖和有效 DeepSeek Key 下，应执行：公开仓库冻结 Diff、正式快照、分析运行、`code-review` 读取、模型不可用受控失败、报告草稿回放。
+入口：`POST /api/v1/cycles/{cycleId}/git-snapshots`，实现位于 `backend/app/api/routes/git.py` 和 `backend/app/application/services/git_service.py:freeze_git_snapshot`。
 
-## 2026-08-25 真实 E2E 已完成
+1. 校验调用者是该项目的 `SUBMITTER` 或 `ADMIN`，轮次仍处于可准备状态。
+2. `assert_delivery_item_repository_match` 将登记仓库 URL 与该 PR 所属 GitHub 仓库比较；任务绑定 PR 时，不能选择其他仓库。
+3. `ReadOnlyGitReader.freeze_range`（`backend/app/infrastructure/git_reader.py`）在受控 artifact 根目录下按 URL hash 找到/创建裸工作副本：
+   - 首次：`git clone --no-checkout --filter=blob:none`；
+   - 后续：`git fetch --prune origin`；
+   - 只允许 `rev-parse`、`merge-base`、`diff --no-ext-diff --find-renames --binary`、`show`、`cat-file` 等白名单命令。
+4. 先把用户输入的 `baseRef`、`targetRef` 解析为不可变 commit SHA；`TWO_DOT` 使用 `base..target`，`THREE_DOT` 使用 `merge-base..target`。include/exclude pathspec 一并进入命令与覆盖范围。
+5. 读取完整 unified diff bytes，并生成：文件状态、增删行、二进制/删除/子模块/生成文件/超大文件的显式跳过信息；再解析 hunk，并仅补充受字节预算限制的 base/target 上下文，得到 `CODE_CHANGE_BUNDLE`。
+6. Diff 为空时立刻返回 `GIT_DIFF_EMPTY`，不会建立 `GitSnapshot` 或正式快照。
 
-- Docker 恢复后，开发数据库已安全追加迁移至 029。以隔离项目运行了公开只读 `octocat/Hello-World` 的精确两点 Diff：`553c2077f0edc3d5dc5d17262f6aa498e69d6f8e..7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`。
-- 正式快照 `288da59b-4310-46ca-868a-98f754d7012e` 的运行 `1a022c32-3235-4fe7-b5a9-eb71fd0bee23` 成功。事件顺序为 `load_snapshot → collect_git_evidence → create_claims → review_code → challenge_code_findings → summarize_code_coverage → link_deterministic → reconcile → report-draft`。
-- `CODE_REVIEW` 调用真实 DeepSeek 成功（`deepseek-v4-flash`，4,191 ms）。该 1 行 README 修改产生 0 条 Finding，所以 `FINDING_CHALLENGE` 正确为 `NOT_APPLICABLE / NO_CODE_REVIEW_FINDINGS`；`STANDARD_VERIFICATION` 为 `PARTIAL`，明确说明只审查了冻结范围，绝不输出完成率或无风险结论。
-- 已读取冻结 Diff、运行事件、代码审查投影和结果投影，并确认自动报告草稿生成。临时源码挂载 API/Worker 已移除；镜像构建完成后，正式 Compose API/Worker 已以当前源码镜像重建，并通过 `/health/ready` 与 `code-review` 投影回读。资料索引的 Dashscope Embedding 在本次上传中仍为 `MODEL_UNAVAILABLE`，该失败保持可见且未阻断 READY 资料用于正式快照。
-- 后续补跑了可产生 Finding 的真实公开 Diff：`atiradonet/weak-go-app` 从 `b4b8012bbebcc519ebf79b536e7398224101f689` 到 `72acebe2aebff3c2a17833d37cab970a2c14a984`，路径严格限制为 `handlers/system.go`。运行 `f0f3a5c9-0654-41b5-ad38-3376efff7469` 成功生成 2 条 SECURITY Finding。
-- 同一运行中 DeepSeek 的 `CODE_REVIEW_CHALLENGE` 调用成功并持久化 2 条 Challenge：`sh -c` 接收用户 cmd 的 Finding 为 `NEEDS_HUMAN`，因为 Diff 不含端点注册/部署可达性；错误详情泄露 Finding 为 `UNSUPPORTED`，因为 `fetchInternalReport` 在冻结实现内总返回 nil error。最终 Coverage：1 文件、1 Hunk、2 Finding、`SUPPORTED=0 / NEEDS_HUMAN=1 / UNSUPPORTED=1`。这验证了反证步骤不会把初步 Finding 写成最终安全结论。
+### 3.2 代码在哪里保存
+
+冻结不是“把 Git 仓库保存到数据库”。它保存的是可验证的变更制品：
+
+| 层 | 记录内容 | 实体/位置 |
+| --- | --- | --- |
+| PostgreSQL 元数据 | 制品类型、SHA-256、大小、媒体类型、schema 版本、存储 URI | `artifact_objects` / `ArtifactObject` |
+| Artifact storage 原始 Diff | 完整 `payload.diff` bytes | `${ARTIFACT_ROOT}/{projectId}/git-snapshots/{artifactId}/payload.diff` |
+| Artifact storage 结构化变更包 | 文件、hunk、可用上下文、跳过原因、覆盖范围 JSON | `${ARTIFACT_ROOT}/{projectId}/git-snapshots/{artifactId}/code-change-bundle.json` |
+| PostgreSQL Git 冻结元数据 | 用户选择的 refs、解析后的 SHA、merge base、path scope、diff hash、coverage、两份制品 ID | `git_snapshots` / `GitSnapshot` |
+| PostgreSQL 正式快照绑定 | `git_snapshot_id` + Diff hash | `input_snapshot_gits` / `InputSnapshotGit` |
+
+`ArtifactObject` 采用 `(project_id, kind, content_hash)` 唯一约束，同项目同内容同类型可去重。写入顺序是：先创建数据库行并 flush，再写 artifact storage，失败则抛出 `GIT_ARTIFACT_WRITE_FAILED`，外层 route rollback。读取时重新计算 SHA-256；哈希不符为 `GIT_ARTIFACT_HASH_MISMATCH`，制品缺失为 `GIT_ARTIFACT_MISSING/UNAVAILABLE`，不会悄悄重新抓取远端 Git。
+
+### 3.3 为什么分析阶段不再读取 GitHub/Git
+
+`collect_git_evidence`（`backend/app/workflows/verification_graph.py`）只读取正式快照绑定的本地 `GIT_DIFF` 与 `CODE_CHANGE_BUNDLE` 制品，并校验哈希。它为每个 hunk 建立 `EvidenceItem`：
+
+- `source_type=CODE`，`evidence_kind=GIT_DIFF_HUNK`；
+- `locator` 含 artifactId、target commit、路径、旧路径、hunk header、新旧行范围；
+- `content_hash` 是制品 ID + 路径 + hunk + payload 的规范身份哈希；
+- coverage 会记录 `GIT_CAPTURE` 成功、部分覆盖或不可用。
+
+这样即便远端分支已推进、仓库被删或凭据过期，历史运行仍使用当时冻结的输入；若本地制品不存在，系统诚实报告不可回放，不改用远端当前内容。
+
+## 4. 固定双核如何处理代码
+
+编排顺序由 `verification_graph.py` 固定：
+
+`load_snapshot -> collect_git_evidence -> create_claims -> review_code -> challenge_code_findings -> summarize_code_coverage -> link_deterministic -> reconcile -> report-draft`。
+
+| 节点 | 输入 | 输出/持久化 | 约束 |
+| --- | --- | --- | --- |
+| `create_claims` | `InputSnapshotClaim` 中人工确认的交付主张 | 本运行 `Claim` | 无确认主张即 `CLAIMS_NOT_CONFIRMED`。 |
+| `review_code` | 结构化变更包、精确 hunk Evidence、冻结 Claim | `CodeReviewFinding`、`ModelCall(CODE_REVIEW)`、`AnalysisCoverage(CODE_REVIEW)` | 仅 `GENERATION_PROVIDER=deepseek`；Finding 的 claim/evidence/fingerprint 必须校验通过。 |
+| `challenge_code_findings` | 已保存 Finding、其原始 hunk、可选 Claim | `CodeReviewFindingChallenge`、`ModelCall(CODE_REVIEW_CHALLENGE)`、Coverage | 只给 `SUPPORTED` / `UNSUPPORTED` / `NEEDS_HUMAN`；不生成新 Finding、不改严重级别、不改 `VerificationResult`。 |
+| `summarize_code_coverage` | bundle、两个前序 Coverage、Challenge | `AnalysisCoverage(STANDARD_VERIFICATION)` | 汇总文件/hunk/二进制/已审查 hunk/Finding/反证 verdict/未覆盖原因；不是完成率或“无风险”声明。 |
+| `link_deterministic` + `reconcile` | 所有冻结 Evidence、Claim、规则链路 | `ClaimEvidenceLink`、`VerificationResult` | 交付主张结论与 Finding 分开保存；Finding 是风险线索，不能直接替换交付结论。 |
+
+模型不可用、超时、结构化输出不合法或预算不足时，节点写 `ModelCall.status=FAILED`、`AnalysisCoverage.state=UNAVAILABLE/PARTIAL` 和 manifest degradation；页面应提示错误代码与下一步，而不是显示成功。
+
+## 5. 2026-08-24 至 08-26 已落地的新增/修订
+
+以下以当前工作树为准；前三个提交已在 `main`，人工裁决与报告回看仍是未提交改动。
+
+| 日期/状态 | 已落地内容 | 承接注意事项 |
+| --- | --- | --- |
+| 08-25，已提交 `c9cb191` / `fb9e934` | 固定“需求主张核 -> 交付 Git Diff 核 -> 证据汇总”设计，完成可回放 Git 制品、Finding 反证复核和标准核验覆盖的实现基础。 | 不恢复旧的可任意替换核心/任意执行模型路径。 |
+| 08-26，已提交 `97a752e` | 多格式知识库解析；Git 仓库列表；PR 作为代码交付入口；交付主张候选/确认；PR 同源仓库限制；正式快照增加 PR revision、Claim、制品绑定；Notebook 读取 Diff/Finding/Coverage。 | `VerificationTask.delivery_item_id` 已要求为 `PULL_REQUEST`，Issue 只保留为背景来源，不再直接创建代码审查。 |
+| 08-26，已提交 `5462093` | 工作台、项目创建与接入、知识库、PR 任务中心、Notebook 三栏、审批与记录页改为真实 API 驱动的使用流。 | Notebook 是任务行的钻取页，不放入左侧一级导航。 |
+| 08-26，未提交：`032_human_verification_decisions.py` 及服务/前端 | 增加追加式人工裁决；系统结论与人工有效结论分开展示；提交报告前强制完成必须裁决项；DRAFT 报告会刷新保存人工裁决快照。 | 部署前必须 `alembic upgrade head`；不得把人工裁决直接覆盖 `VerificationResult.status`。 |
+| 08-26，未提交：报告内容回看/审批页 | 新增 `GET /projects/{projectId}/report-versions/{reportId}/content`，从 `ReportItem.result_snapshot` 和正式快照 Evidence 回放内容；Notebook 草稿可看，审批页先展示报告正文和引用，哈希退为校验信息。 | 审批动作在冻结内容读取失败时必须禁用，不能只看 hash 批准。 |
+
+## 6. 关键接口速查
+
+| 用途 | 接口 |
+| --- | --- |
+| 登记/列出只读仓库 | `POST` / `GET /projects/{projectId}/git-repositories` |
+| 冻结与回看 Diff | `POST /cycles/{cycleId}/git-snapshots`；`GET /git-snapshots/{snapshotId}/diff` |
+| 创建正式快照与运行 | `POST /cycles/{cycleId}/formal-snapshots`；`POST /input-snapshots/{snapshotId}/analysis-runs` |
+| 观察真实运行 | `GET /analysis-runs/{id}`、`/events`、`/results`、`/code-review` |
+| 人工裁决 | `POST /analysis-runs/{runId}/results/{resultId}/human-decisions` |
+| 报告正文回放 | `GET /projects/{projectId}/report-versions/{reportId}/content` |
+| 报告流转 | `PUT /report-versions/{id}`；`POST /submit`、`/approve`、`/request-changes`、`/reject`、`/publish` |
+
+所有写接口需要 `Idempotency-Key`；项目授权以后端 `ProjectMember` 为准。前端项目选择仅是请求上下文，不是权限边界。
+
+## 7. 已验证与未验证
+
+- 已有定向后端测试：`test_delivery_code_review_core.py`、`test_git_repository_listing.py`、`test_report_cycle_immutability.py` 等；最新本地修改已执行 `python -m compileall backend/app`、`pytest -q backend/tests/test_report_cycle_immutability.py`（2 passed）、`npm run build`。
+- 08-25 曾以公开仓库完成真实 DeepSeek 代码审查和含 Finding 的公开 Diff 演示；这只证明该次环境/样本，不等于每个私有仓库、模型配额或网络环境可用。
+- 当前仍缺少浏览器级自动 E2E、私有仓库 PAT 验收、外部服务限流恢复演练和完整发布记录回放验收。
+
+## 8. 接手前必做检查
+
+1. `git status --short`：当前工作树有未提交的人工作裁决、报告正文回放、审批正文展示与 migration 032，不能 reset/checkout 覆盖。
+2. `docker compose ps` 与 `docker compose exec -T api alembic current`：确认 API/worker 镜像与数据库确实到 `032_human_verification_decisions`。
+3. 先选择一个真实 PR、产生非空 Diff，检查 `ArtifactObject` + artifact storage 是否同时存在，再启动运行。
+4. 将“代码存在”“静态构建通过”“容器健康”“真实模型成功”“用户页面可见”分开记录，不互相替代。
