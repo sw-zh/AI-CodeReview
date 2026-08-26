@@ -284,8 +284,6 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             return {}
         request = CodeReviewRequest(run_id=run_id, prompt_version="code-review-v1", schema_version="code-review-finding-v1", claims=coverage_payload["details"]["claims"], code_changes=changes)
         try:
-            if settings.generation_provider != "deepseek":
-                raise DomainError("MODEL_NOT_CONFIGURED", "P0 交付代码审查仅允许使用 DeepSeek")
             generated = create_generation_model(settings).review_code(request)
             _, rejected = persist_validated_findings(session, run_id=run_id, proposal_batch=generated.findings.findings, allowed_evidence_ids=allowed_evidence_ids, allowed_claim_ids={item.id for item in claims})
             session.add(ModelCall(run_id=run_id, provider=generated.provider, model=generated.model, operation="CODE_REVIEW", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_evidence_ids), status="SUCCEEDED", latency_ms=generated.latency_ms, attempts=generated.attempts))
@@ -296,7 +294,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             manifest = session.query(AnalysisRunManifest).filter_by(run_id=run_id).one_or_none()
             if manifest is not None:
                 manifest.degradation = {**manifest.degradation, "codeReview": {"code": exc.code, "promptVersion": request.prompt_version, "schemaVersion": request.schema_version}}
-            session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation="CODE_REVIEW", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_evidence_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+            session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model, operation="CODE_REVIEW", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_evidence_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
             session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CODE_REVIEW", scope_ref="delivery-git-diff", state="UNAVAILABLE", reason_code=exc.code, details=coverage_payload["details"]))
             return {"node_errors": [*state.get("node_errors", []), exc.code]}
 
@@ -340,8 +338,6 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         )
         allowed_ids = set(allowed_evidence)
         try:
-            if settings.generation_provider != "deepseek":
-                raise DomainError("MODEL_NOT_CONFIGURED", "P0 标准核验反证复核仅允许使用 DeepSeek")
             generated = create_generation_model(settings).challenge_code_findings(request)
             model_call = ModelCall(
                 run_id=run_id,
@@ -388,7 +384,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             manifest = session.query(AnalysisRunManifest).filter_by(run_id=run_id).one_or_none()
             if manifest is not None:
                 manifest.degradation = {**manifest.degradation, "findingChallenge": {"code": exc.code, "promptVersion": request.prompt_version, "schemaVersion": request.schema_version}}
-            session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation="CODE_REVIEW_CHALLENGE", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+            session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model, operation="CODE_REVIEW_CHALLENGE", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
             session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="FINDING_CHALLENGE", scope_ref="delivery-git-diff", state="UNAVAILABLE", reason_code=exc.code, details=coverage_payload["details"]))
             return {"node_errors": [*state.get("node_errors", []), exc.code]}
 
@@ -549,7 +545,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             session.add(ModelCall(
                 run_id=run_id,
                 provider=settings.generation_provider,
-                model=settings.generation_model_name,
+                model=settings.generation_model,
                 operation="LINK_PROPOSAL",
                 prompt_version=request.prompt_version,
                 schema_version=request.schema_version,
@@ -699,7 +695,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         session.add(ClaimEvidenceLink(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation, reason=proposal.rationale, confidence=0.5, produced_by="MODEL", requires_human_confirmation=True))
                 session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="ANALYZED"))
             except DomainError as exc:
-                session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+                session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model, operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
                 session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="UNAVAILABLE", reason_code=exc.code))
                 node_errors.append(f"{key}:{exc.code}")
         session.flush()

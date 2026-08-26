@@ -101,7 +101,7 @@ AI-CodeReview 采用**模块化单体**架构，分为以下层次：
 ### 基础设施层
 - PostgreSQL + pgvector：混合检索（全文搜索 + 向量相似度）
 - Git 只读读取器：子进程调用 git 命令
-- Gemini / Fake 模型适配器：生成与嵌入
+- OpenAI 兼容模型适配器：生成与嵌入
 - 本地文件存储：SHA-256 内容寻址
 
 ## Worker 设计

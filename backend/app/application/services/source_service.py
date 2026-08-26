@@ -141,7 +141,7 @@ def process_source_ingestion(session: Session, *, job: SourceIngestionJob, corre
         try:
             embedding_model = create_embedding_model(settings)
             embedded_rows = [
-                (item, embedding_model.embed(EmbeddingRequest(text=item["content"], model=settings.embedding_model_name)))
+                (item, embedding_model.embed(EmbeddingRequest(text=item["content"], model=settings.embedding_model)))
                 for item in chunk_rows
             ]
             embedding = embedded_rows[-1][1]

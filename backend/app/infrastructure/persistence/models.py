@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -7,6 +8,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+
+# The vector column dimension must match the configured embedding model output. It is
+# read from the environment at import time because SQLAlchemy models are built eagerly.
+_EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "768"))
 
 
 class TimestampedEntity:
@@ -454,7 +459,7 @@ class DocumentChunk(Base):
     text_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     locator: Mapped[dict] = mapped_column(JSONB, nullable=False)
     index_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(768))
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(_EMBEDDING_DIMENSIONS))
 
 
 class ProjectRetrievalIndex(TimestampedEntity, Base):

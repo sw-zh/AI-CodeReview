@@ -103,9 +103,9 @@ def start_analysis_run(
         "prompt": "v1",
         "schema": "v1",
         "generationProvider": settings.generation_provider,
-        "generationModel": settings.generation_model_name,
+        "generationModel": settings.generation_model,
         "embeddingProvider": settings.embedding_provider,
-        "embeddingModel": settings.embedding_model_name,
+        "embeddingModel": settings.embedding_model,
         "orchestrationHash": orchestration_fingerprint(session, task=task, actor_id=actor_id),
     }
     config_hash = f"sha256:{hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()}"

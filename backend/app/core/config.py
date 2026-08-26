@@ -1,7 +1,5 @@
 from functools import lru_cache
 
-from typing import Literal
-
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,17 +19,15 @@ class Settings(BaseSettings):
     worker_id: str = "worker-1"
     job_lease_seconds: int = Field(default=60, ge=15, le=300)
     job_max_attempts: int = Field(default=3, ge=1, le=10)
-    generation_provider: Literal["deepseek", "gemini"] = "deepseek"
-    embedding_provider: Literal["dashscope", "gemini"] = "dashscope"
-    gemini_api_key: str | None = None
-    gemini_generation_model: str = "gemini-2.5-flash"
-    gemini_embedding_model: str = "gemini-embedding-001"
-    deepseek_api_key: str | None = None
-    deepseek_generation_model: str = "deepseek-v4-flash"
-    deepseek_base_url: str = "https://api.deepseek.com"
-    dashscope_api_key: str | None = None
-    dashscope_embedding_model: str = "text-embedding-v4"
-    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    generation_provider: str = "deepseek"
+    generation_model: str = "deepseek-v4-flash"
+    generation_base_url: str = "https://api.deepseek.com"
+    generation_api_key: str | None = None
+    embedding_provider: str = "dashscope"
+    embedding_model: str = "text-embedding-v4"
+    embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    embedding_api_key: str | None = None
+    embedding_dimensions: int = Field(default=768, ge=1, le=8192)
     agent_tool_allowed_hosts: list[str] = Field(default_factory=list)
     agent_tool_timeout_seconds: int = Field(default=10, ge=1, le=30)
     agent_tool_response_limit_bytes: int = Field(default=262_144, ge=4_096, le=1_048_576)
@@ -48,18 +44,6 @@ class Settings(BaseSettings):
     code_review_challenge_max_findings: int = Field(default=30, ge=1, le=100)
     code_review_challenge_input_char_budget: int = Field(default=64_000, ge=8_000, le=400_000)
     code_review_challenge_timeout_seconds: int = Field(default=60, ge=5, le=180)
-
-    @property
-    def generation_model_name(self) -> str:
-        if self.generation_provider == "gemini":
-            return self.gemini_generation_model
-        return self.deepseek_generation_model
-
-    @property
-    def embedding_model_name(self) -> str:
-        if self.embedding_provider == "gemini":
-            return self.gemini_embedding_model
-        return self.dashscope_embedding_model
 
 
 @lru_cache

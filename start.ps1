@@ -85,10 +85,12 @@ POSTGRES_USER=ai_codereview
 POSTGRES_PASSWORD=$postgresPassword
 JWT_SECRET=$jwtSecret
 GENERATION_PROVIDER=deepseek
+GENERATION_MODEL=deepseek-v4-flash
+GENERATION_BASE_URL=https://api.deepseek.com
 EMBEDDING_PROVIDER=dashscope
-DEEPSEEK_GENERATION_MODEL=deepseek-v4-flash
-DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4
-DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_DIMENSIONS=768
 "@ | Set-Content -LiteralPath $environmentFile -Encoding utf8
     Write-Host "Generated local configuration: infra/.env"
 }

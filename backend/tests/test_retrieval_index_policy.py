@@ -43,7 +43,7 @@ class RetrievalIndexPolicyTests(unittest.TestCase):
         settings = Settings(
             jwt_secret="test-only-jwt-secret-with-at-least-32-characters",
             embedding_provider="dashscope",
-            dashscope_embedding_model="text-embedding-v4",
+            embedding_model="text-embedding-v4",
         )
         self.assertEqual(
             configured_embedding_index_version(settings, "markdown-text-v1"),
@@ -74,10 +74,10 @@ class RetrievalIndexPolicyTests(unittest.TestCase):
         active = ProjectRetrievalIndex(
             id=uuid4(),
             project_id=uuid4(),
-            index_version="markdown-text-v1|embedding:gemini:gemini-embedding-001:d768",
+            index_version="markdown-text-v1|embedding:siliconflow:BAAI/bge-m3:d768",
             parser_version="markdown-text-v1",
-            embedding_provider="gemini",
-            embedding_model="gemini-embedding-001",
+            embedding_provider="siliconflow",
+            embedding_model="BAAI/bge-m3",
             dimensions=768,
             status="ACTIVE",
             created_by=uuid4(),

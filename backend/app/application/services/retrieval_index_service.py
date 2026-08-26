@@ -244,7 +244,7 @@ def rebuild_project_retrieval_index(
     if missing:
         model = create_embedding_model(settings)
         for source, chunk_index, chunk in missing:
-            embedding = model.embed(EmbeddingRequest(text=chunk.content, model=settings.embedding_model_name))
+            embedding = model.embed(EmbeddingRequest(text=chunk.content, model=settings.embedding_model))
             if embedding_index_version(_CANONICAL_PARSER_VERSION, embedding) != target_version:
                 raise DomainError("MODEL_SCHEMA_INVALID", "Embedding 返回的索引版本与当前运行配置不一致")
             session.add(
@@ -277,8 +277,8 @@ def rebuild_project_retrieval_index(
             index_version=target_version,
             parser_version=_CANONICAL_PARSER_VERSION,
             embedding_provider=settings.embedding_provider,
-            embedding_model=settings.embedding_model_name,
-            dimensions=768,
+            embedding_model=settings.embedding_model,
+            dimensions=settings.embedding_dimensions,
             status=_HISTORICAL,
             created_by=actor_id,
         )

@@ -131,8 +131,8 @@ def propose_delivery_claims(
     }
     settings = get_settings()
     call = ModelCall(
-        provider="deepseek" if settings.generation_provider == "deepseek" else settings.generation_provider,
-        model=settings.generation_model_name,
+        provider=settings.generation_provider,
+        model=settings.generation_model,
         operation="DELIVERY_CLAIM_PROPOSAL",
         prompt_version="delivery-claim-proposal-v1",
         schema_version="delivery-claim-proposal-v1",
@@ -141,8 +141,6 @@ def propose_delivery_claims(
     )
     session.add(call)
     try:
-        if settings.generation_provider != "deepseek":
-            raise DomainError("MODEL_NOT_CONFIGURED", "交付主张提取仅允许使用 DeepSeek；请先在本地配置 DeepSeek")
         result = create_generation_model(settings).propose_delivery_claims({**manifest, "documents": documents})
         call.provider = result.provider
         call.model = result.model

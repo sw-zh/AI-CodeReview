@@ -30,7 +30,7 @@ def search_snapshot(session: Session, *, snapshot_id: UUID, query: str, limit: i
     try:
         if active_version is not None and active_version != configured_version:
             raise DomainError("MODEL_INDEX_UNAVAILABLE", "当前 Embedding 配置与项目活动索引不一致")
-        embedding = create_embedding_model(settings).embed(EmbeddingRequest(text=query, model=settings.embedding_model_name))
+        embedding = create_embedding_model(settings).embed(EmbeddingRequest(text=query, model=settings.embedding_model))
         candidates = PostgresHybridRetriever(session).search(
             source_revision_ids=source_ids,
             query=query,

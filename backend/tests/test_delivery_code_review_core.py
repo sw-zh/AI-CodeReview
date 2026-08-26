@@ -2,8 +2,6 @@ from app.infrastructure.diff_parser import enrich_context, parse_unified_diff
 from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.application.services.code_review_service import plan_code_review, plan_code_review_challenges
 from app.domain.model_contracts import CodeReviewFindingChallengeProposal
-from app.domain.errors import DomainError
-from app.infrastructure.generation_model import FakeGenerationModelAdapter
 from types import SimpleNamespace
 import subprocess
 from uuid import uuid4
@@ -152,15 +150,6 @@ def test_finding_challenge_budget_keeps_original_hunk_and_claim() -> None:
     assert coverage["details"]["selectedFindingIds"] == [str(finding_id)]
 
 
-def test_finding_challenge_schema_requires_hunk_evidence_and_fake_is_rejected() -> None:
+def test_finding_challenge_schema_requires_hunk_evidence() -> None:
     with pytest.raises(ValueError):
         CodeReviewFindingChallengeProposal(finding_id=uuid4(), verdict="SUPPORTED", reason="无证据", evidence_ids=[])
-    with pytest.raises(DomainError) as error:
-        FakeGenerationModelAdapter().challenge_code_findings(SimpleNamespace())
-    assert error.value.code == "MODEL_NOT_CONFIGURED"
-
-
-def test_delivery_claim_proposal_rejects_fake_generation_model() -> None:
-    with pytest.raises(DomainError) as error:
-        FakeGenerationModelAdapter().propose_delivery_claims({"pullRequest": {}, "documents": []})
-    assert error.value.code == "MODEL_NOT_CONFIGURED"
