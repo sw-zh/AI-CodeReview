@@ -243,3 +243,90 @@
 - 固定核心数据主链、不可变快照、四套状态机、证据协议、LangGraph 边界、权限审批和失败恢复。
 - 下一次对话必须产出一份完整架构文档和一份一个月实现计划，并通过端到端一致性走查与验收清单。
 - 使用默认值关闭非关键歧义；只有真实仓库冲突、覆盖风险或权限阻塞才停下询问。
+# 2026-08-24 双人协作开发功能清单审查发现
+
+- 审查开始时工作树存在多处未提交后端、前端、Docker、迁移和测试变更；这些变更属于当前项目事实，但其可用性需要与 HEAD 能力分开标注。
+- 既有架构目标为 FastAPI 模块化单体 + PostgreSQL/pgvector + 独立 Worker + Vue/Vite；可信边界为固定双核、只读 Git Diff、不可变快照、人工审批和可回放正式记录。
+- 当前 HEAD 为 `4b13ded 文档：明确多格式知识库设计`；工作树在此基础上有 31 个文件变动，主要是多格式知识库、项目 Git 仓库列表、Notebook P0、审批固化和前端布局，另有新迁移 027、新 ingestion worker 与 Git 仓库列表测试。
+- 后端有 28 个路由模块、26 个迁移（001-026 已提交，027 未提交）、6 个已提交测试文件加 1 个未提交测试；前端有 11 个页面、3 个 Notebook 子面板，无独立组件测试框架或 test script。
+- 前端技术栈为 Vue 3 + TypeScript + Vue Router + Pinia + Vite；后端为 Python 3.12 + FastAPI + SQLAlchemy/Alembic + PostgreSQL/pgvector + LangGraph，并在工作树新增 pypdf/python-docx/python-pptx/openpyxl/Pillow/pytesseract/BeautifulSoup/PyYAML 等多格式解析依赖。
+- 文档体系包含架构总览、双核/Agent、可信边界、工作台 UI 和多格式知识库设计；但架构文档中的全勾选验收是设计闭合，不等于当前代码/运行验收，必须以源码、测试和实时状态另行判定。
+- 当前领域表已覆盖项目/成员、外部来源同步、交付项、任务/轮次、资料/摄取任务/分块/检索索引、Git 仓库/快照、Claim/证据/裁决、运行/Job/事件/模型调用、报告/审批/发布、外围 Profile、安全基线、Agent 编排等；尚未看到新设计所需 `DeliveryItemRevision`、`ClaimSet`、`ArtifactObject`、正式 Manifest V2 独立对象。
+- 前端多数业务页面已通过统一 `apiRequest('/api/v1...')` 接真实接口；项目上下文在顶栏切换，写请求使用项目头和幂等头。是否闭环仍需逐页面核对按钮后的状态与后端权限。
+- P0 核心语义仍未按最新可信方案落地：Workflow 从知识块逐块生成 `ACCEPTANCE_CANDIDATE` Claim，没有冻结 GitHub Issue Revision，也没有模型草稿→人工确认→ClaimSet 的门禁；正式快照不含 Issue/ClaimSet。
+- 当前裁决仍使用旧五态：`CONFIRMED` 需要确定性支持 + SHA 绑定成功 TEST/BUILD + authority>=3；仅 Git Diff 命中只会得到 `PARTIALLY_SUPPORTED`。这与最新 P0 “Issue 验收项在冻结 Diff 中是否有可定位支持”的 `DIFF_SUPPORTED` 等五态设计不一致。
+- 正式快照只持久化 source/git/external/manual 关联、哈希与 EvidenceItem 摘要；Git Diff 正文仍在运行时从远端仓库重读，资料原件/提取文本仍依赖共享 artifact 卷。尚无自包含 ArtifactObject/Manifest V2，因此远端或 artifact 丢失后不能保证离线回放。
+- 正式记录 `PublishedRecord` 只存 task/cycle/report 外键、记录号/哈希/固化人；详情投影只展示哈希和审批元数据，没有报告条目、引用、快照清单、Diff/资料定位与完整审批事件，尚不满足“完整回放”。
+- 报告状态机后端已实现草稿编辑、提交、非自审批准/退回/驳回、管理员固化以及已发布轮次不可回退；前端未读取当前用户/项目角色，所有人都能看到审批和管理员固化按钮，依赖后端 403 才拒绝。
+- 身份入口只有登录，没有 `/auth/me` 或成员列表接口；前端左下角固定显示“张伟/交付核验负责人”。项目创建者自动为 ADMIN，成员添加仅有后端接口、无成员管理页面；新建项目无法仅靠 UI 把演示审核者加入项目，因此双人审批闭环无法从空项目纯前端完成。
+- 知识库工作树已实现异步多格式导入：文本/结构化文本、PDF、doc/docx、xls/xlsx、ppt/pptx、odt/ods/odp、图片 OCR，原件与提取文本分开存储，Worker 有租约/心跳/重试，Embedding 不可用时保留 READY+词法分块。该实现尚未提交、迁移 027 尚未验证应用，且没有任何解析器/上传/API/Worker/OCR/真实测试目录自动化用例。
+- 知识库前端支持批量顺序上传、3 秒轮询、分类/版本/状态/快照引用和提取文本查看；后端虽有原件下载和分块接口，但前端没有下载原件、查看定位分块、失败详情/手动重试、取消/删除/重新处理、批量进度与重复文件策略。
+- 多格式解析可靠性缺口：CSV 仅按 UTF-8 普通文本处理；XML 只保留原始文本且未做安全结构化解析；HTML 未显式移除 script/style；XLS/PPT/DOC/ODF 依赖 LibreOffice 转 PDF 后可能丢失表格结构；XLSX 公式只取缓存值；PPTX 不含备注/图表/表格完整语义；OCR 置信度按 token 均值，没有页面无文字时的独立低置信判定；压缩炸弹/超大行列/图片像素上限与并发资源隔离尚无门禁。
+- GitHub 公开来源、Cursor/Link 分页、限流错误、私有 PAT 引用和同仓库匹配已实现；设置页可创建连接、同步、登记/列出 Git 仓库。连接与仓库仍是两次手工录入，没有“一次连接自动登记同源 Git 仓库”、编辑/禁用/删除/连通性测试、续传同步操作与限流恢复倒计时。
+- Notebook 工作树已接入 READY 资料、项目仓库列表、Git Diff 冻结、正式快照、真实运行轮询、事件/结果、草稿保存/提交；但页面只在 `!liveRun` 时显示准备区，失败或终态后无法在原页面创建新轮次/重新冻结，`canStartRun` 计算值未实际用于按钮，取消运行按钮缺失，Diff tab 仅显示说明而不是实际只读高亮 Diff。
+- 当前 API 错误解析只提取 message，丢弃稳定 error code；多数页面共用一个 message 字符串，缺少字段级错误、可恢复动作和全局 401 失效处理。
+- 自动化测试目前仅覆盖凭据引用、GitHub 分页、已发布轮次锁、仓库标识、检索索引策略和新增 Git 仓库列表/缺 Git 快照门禁；架构文档宣称的 RBAC、快照、引用、幂等、Worker 恢复、浏览器 E2E 等广泛覆盖并不存在。前端没有测试脚本或组件/E2E 测试依赖。
+- 项目态势、安全与质量、外围 Profile、Agent 编排存在后端与真实页面，但多为“读取/固化已导入事实”，不执行扫描器、CI、构建或完整非交付 Worker；它们不属于当前可信 P0，宜保持二阶段能力而非与 P0 同时扩张。
+- 本轮 `docker compose ps` 无法连接 Docker Engine，当前运行态不能确认；只能确认源码与工作树，不能把 2026-08-12 文档中的历史运行验收当作当前可用证明。
+- `git diff --check` 本轮未输出空白错误，仅出现 Windows 工作树 LF→CRLF 提示；未运行后端/前端测试或构建。
+- 标准化承接文档已落在 `docs/handoff/2026-08-24-two-person-development-context.md`，不预设功能负责人，以功能切片组织协作，并要求共同确认迁移、状态枚举、Manifest 和正式记录公开契约。
+
+# 2026-08-25 GitHub 开源代码审查项目采纳调研
+
+- 候选包括 The-PR-Agent/pr-agent、Gerrit Code Review、Reviewpad 和早期开源 CodeRabbit reviewer。Gerrit 是成熟人工评审平台但不聚焦 LLM Diff 分析；Reviewpad 原仓库入口不可用；早期 CodeRabbit 开源实现体量和维护状态不适合作为当前主参考。
+- 选定 `The-PR-Agent/pr-agent`（原 `qodo-ai/pr-agent`）作为主参考：MIT 许可、完整 Python 源码、测试、GitHub Action/Docker/CLI 多种部署、GitHub/GitLab/Bitbucket/Azure DevOps/Gitea provider 抽象，具备 `/review`、`/describe`、`/improve`、`/ask`、大 PR 压缩、动态上下文和多模型支持。
+- 该仓库当前明确声明为社区维护的开源 PR Reviewer，与 Qodo 商业产品不同；截至官方仓库当前页面有约 5,148 次提交、12.7k stars，2026-07 仍发布新版本。适合作为“Diff 获取、Token 预算、Prompt 结构、结构化输出、评论定位”的代码参考，不作为审批/正式记录架构参考。
+- 已浅克隆官方仓库到系统临时目录，审查基线为 `f76c74cb8edd5ab8a46031aced2f30c5060756c1`（2026-08-25）。只读检查，不运行其依赖或外部调用。
+- 核心结构清晰分层：`git_providers/*` 统一不同代码托管平台；`algo/pr_processing.py` 负责 Diff 组织、Token 预算和大 PR 分片；`tools/pr_reviewer.py` 负责 review 用例；`settings/*_prompts.toml` 保存结构化 Prompt；`ai_handlers/*` 隔离模型；provider 负责评论/行号投影。
+- 其当前实现含增量审查、持久化行内评论、评论指纹去重、无 patch 时重建大 Diff、无在线 PR 的 plain-diff/local provider、关联 ticket 内容抽取、repo context/AGENTS.md、动态上下文和 CI artifact 注入。这些机制与当前项目的 Diff Artifact、Issue 上下文和证据定位缺口高度相关。
+- Review 主链为：provider 获取 PR/文件/merge-base → 过滤文件并构造 `FilePatchInfo(base, head, patch, editType)` → 扩展 Hunk 上下文并加新文件行号 → 根据模型上下文预算压缩/分组 → 将 PR 标题、描述、commit、ticket、repo context、Diff 注入结构化 Prompt → 解析 YAML → 验证文件/行号 → 发布摘要或行内评论。
+- 大 Diff 不会悄悄声称全覆盖：算法保留 `remaining_files_list`，Review 输出明确列出因 Token 预算未处理的文件；对单文件超限提供 skip/clip 策略，多分片路径用于部分工具。当前项目应借鉴 Coverage 契约，但不能照搬“按大文件优先”的排序作为证据权威顺序。
+- Prompt 明确限制“只审查 PR 新增代码、只报告本 PR 引入的问题、看不到全仓库时不要猜”；输出字段包含文件、start/end 行、具体触发场景和可操作问题。发布前再次验证文件存在、行号不越界，无法定位则留在摘要，不伪造行内定位。
+- Ticket 支持从 PR 描述和分支名提取 GitHub Issue，限制候选数和每项正文长度，读取标题/正文/标签/子任务并进入 `ticket_compliance_check`。其结果仍由模型直接生成，不具备本项目要求的 Issue Revision、ClaimDraft 人工确认和不可变 ClaimSet，因此只借鉴“上下文获取/裁剪/字段结构”，不能照搬其信任语义。
+- 评论采用正文指纹、代码建议指纹和位置指纹去重；先扫描已有评论中的隐藏 marker，失败时降级为单次运行内去重。该机制适合借鉴到“同一 Snapshot/Run 的 Finding 去重”，但本项目正式记录仍必须依赖数据库唯一键与哈希，不能把 HTML marker 当正式状态。
+- 模型重试支持 fallback models；这与当前 P0“DeepSeek 唯一真实模型、失败不切 Fake/其他模型”的约束冲突，不采纳 provider fallback，只可借鉴稳定错误分类、次数和耗时记录。
+- 仓库具有约 134 个 Python 测试文件，包含 Diff 预算、Coverage footer、Plain Diff、行内评论去重、Repo 设置安全等定向回归；测试切片设计值得借鉴。
+- 最终采纳方向：不引入或复制 PR-Agent 包；以其算法作为参考，在当前边界内实现 `FrozenDiffArtifact → CanonicalDiffFile/Hunk → TokenBudgetPlan/Coverage → EvidenceItem → DeepSeek LinkProposal → deterministic reconciliation`。
+- 第一优先级是冻结完整 Diff artifact 并让 Worker 从 artifact 读取；第二优先级是建立 file/hunk 规范结构和 Token/Coverage 清单；第三优先级是 Issue Revision→ClaimDraft→人工 ClaimSet；随后再补可信 base-SHA 仓库上下文、Finding 指纹和增量对比。
+- 全文件内容只可作为 `CONTEXT_ONLY`，来源必须是冻结 base/target SHA 且受大小/文件类型限制；正式支持结论只能引用冻结 Diff Evidence。删除 Hunk 不得像 PR-Agent 压缩策略那样默认降为文件名，因为删除实现也可能直接违背验收目标。
+- 明确不采纳：模型/Provider 自动 fallback、模型直接给“Ticket fully compliant”、回写 GitHub 评论/标签/Approve、自动应用代码建议、P0 多托管平台扩张、基于已有评论 marker 作为正式状态、任何 checkout/构建/测试/项目代码执行。
+- 用户确认采用“方案 1：增量升级现有交付核心”，允许新增数据库迁移和持久化对象，并要求在同一切片补 Notebook 的 Finding、文件行号、触发场景和未分析范围展示。
+- 性能决策：PR-Agent 的主要质量收益来自前后文件内容、规范化 Hunk、Token/Coverage 和结构化 Prompt，这些均可在现有 LangGraph/Worker 内实现；无需为较小的编排开销重写整个运行、报告和审批链路。
+
+## 2026-08-25 交付代码审查核心 v2 规格决策
+
+- 已按用户确认将设计写入 `docs/specs/2026-08-25-delivery-code-review-core-v2-design.md`。设计选择通用不可变 `ArtifactObject` 保存完整 Diff 与代码变更 Bundle，不把可回放输入继续依赖于远端 Git 或临时工作目录。
+- 手工 base/target 维持 `DIRECT_SHA_RANGE`，避免升级时静默改变现有范围语义；保存 merge-base 供后续 PR 语义扩展使用。由已确认 PR 创建范围时才允许显式切换为 `MERGE_BASE_TO_HEAD`。
+- `CodeReviewFinding` 与既有 `RiskFinding` 分离：一般代码风险不自动改变验收项结论；只有经过 Evidence/Claim 定位校验的关联候选才进入现有确定性协调流程。
+- 原始冻结 Diff Hunk 是唯一正式代码证据；base/target 文件全文只作为 `CONTEXT_ONLY`，读取失败或预算不足必须落入可见 Coverage，而不是伪装成全量审查。
+
+## 2026-08-25 标准交付核验规划发现
+
+- 当前 v2 已提供冻结 Hunk、`CodeReviewFinding`、DeepSeek-only `review_code`、`AnalysisCoverage.details` 和 Notebook 的真实 Diff/Finding 投影，可增量实现固定标准核验，不需要引入独立 Agent 编排框架。
+- 反证必须作为原 Finding 的不可变补充记录，而非覆盖 Finding 或影响 `VerificationResult`；否则会突破“模型草稿、确定性裁决”的既有边界。
+- Coverage 需要汇总审查输入、复核结果与未覆盖原因，但它是运行事实说明，不能转译为完成率或无风险结论。
+- 当前 Docker Desktop Linux Engine 不可用是唯一已知外部 E2E 阻断；不得为完成验收擅自重启 Docker、服务或调用真实模型。
+- 已实现固定反证节点：复核记录以 `(analysis_run_id, finding_id)` 唯一约束保存，模型输出必须携带原 Finding 的 Hunk Evidence ID；模型遗漏、虚构定位、预算截断和模型失败都通过 Coverage 透明暴露。
+
+## 2026-08-25 v2 实施前代码核对
+
+- 当前 `ReadOnlyGitReader.freeze_range` 已使用 `--no-checkout` 克隆、受控 fetch、`rev-parse`、`merge-base` 和 `git diff --binary`，但只把 hash/coverage 写进 `GitSnapshot`；`read_frozen_diff` 在运行时重新读取远端 Git，正是本切片要移除的可回放缺口。
+- 当前 Git 输出用文本 `.strip()` 和行分割解析 `--name-status`/`--numstat`，会丢失末尾换行且对带特殊字符路径不够稳健；v2 必须添加原始 bytes 与 NUL 分隔解析，不能改变只读命令边界。
+- `verification_graph` 目前自行 `_parse_hunks` 并只从新增行创建 Git Evidence；这不足以表示删除、重命名和二进制范围，v2 应以独立规范化 parser 替换这一局部解析。
+- 当前 `AnalysisCoverage` 只有 scope/ref/state/reason，`RiskFinding` 强制 claim/evidence 且字段不足，`GitSnapshot` 无 Artifact 引用；因此需要 028 追加迁移和独立 `CodeReviewFinding`。
+- Notebook 当前已能冻结 Diff 和轮询真实运行，但未读取实际 Diff/Finding/Coverage 接口；其 `TWO_DOT/THREE_DOT` 枚举须在 v2 保持兼容并映射为规格中的范围模式语义。
+
+## 2026-08-25 v2 实施结果与验证边界
+
+- 028 已新增 `ArtifactObject`、`CodeReviewFinding`、GitSnapshot 的 Diff/Bundle 制品引用和 `AnalysisCoverage.details`。新正式快照与新分析运行均拒绝没有可回放 Git 制品的范围；历史快照保持可读，但会得到明确的 `GIT_ARTIFACT_MISSING`。
+- `ReadOnlyGitReader.freeze_range` 在冻结期写入原始 Diff bytes、规范化 Hunk 和受限 base/target 上下文。Worker 只读取受哈希校验的本地制品，远端 Git 不再参与分析期证据读取。
+- 新增 `GET /git-snapshots/{id}/diff`、`GET /analysis-runs/{id}/code-review`。Notebook 已调用这些投影，展示变更文件、二进制跳过、模型 Finding、触发场景、建议与 Coverage 状态。
+- 静态与定向测试可证明 Parser/上下文以及前端类型构建，但不能替代完整 API 运行：当前 `.venv` 缺 `pytest`，且 API 导入被已有知识库模块引用的 `bs4` 缺失阻断。未安装依赖、未启动容器、未调用真实 DeepSeek。
+- 后续已按当前 `pyproject.toml` 安装声明依赖并安装 pytest：API 导入和新增路由声明通过，交付代码审查 6 项测试与后端全量 22 项 pytest 均通过。Docker Desktop Linux Engine 仍不可用，因此真实数据库、Worker 与 DeepSeek E2E 仍未覆盖。
+
+## 2026-08-26 交付主张确认改造发现
+
+- 当前 `Claim` 由 `analysis_run_id` 唯一约束，只能在运行图内创建；当前图的 `create_claims` 主要从正式快照资料生成 `DOC-*` Claim，资料为空时 Notebook 只能展示 PR 标题的前端占位，不构成可核验交付范围。
+- 当前正式快照哈希只覆盖资料、Git、外部/人工证据，不覆盖交付主张；需要新增“确认主张快照清单”并把其内容哈希加入正式快照，防止运行前后悄悄改变审查对象。
+- DeepSeek 已有严格 JSON 模式与 `MODEL_NOT_CONFIGURED` / `MODEL_UNAVAILABLE` 错误边界；候选主张提取应复用该边界，绝不能改用 `FakeGenerationModelAdapter`。
+- `CodeReviewFinding` 是代码风险阅读结果，不能被“未发现 P0”转译为交付已完成；Notebook 的交付结论应只聚合逐条 `VerificationResult`。

@@ -311,3 +311,219 @@ Phase 4 - complete
 
 - 本任务只产出文档，没有编写、安装或运行项目业务代码。
 - 后续实现必须按最小闭环提交并使用中文 Git 提交说明。
+# 2026-08-24 双人协作开发功能清单审查
+
+## Goal
+
+基于当前工作树、现有文档、前后端接口与测试，产出可供另一位开发者及其 AI 无缝承接的高颗粒度标准化上下文文档；严格区分代码存在、界面接入、自动化测试、运行验证与外部联调。
+
+## Phases
+
+1. 盘点仓库状态、文档与技术架构。`complete`
+2. 逐模块核对后端模型、服务、路由与 Worker。`complete`
+3. 逐页面核对前端路由、接口、交互与状态门禁。`complete`
+4. 核对测试覆盖、运行配置、未提交变更与外部条件。`complete`
+5. 形成功能拆解、完成度、TODO、Context Injection、协作顺序与全局约束文档。`complete`
+
+## Audit Rules
+
+- 不把文档声明、代码存在、页面按钮、构建通过或历史运行记录等同于当前完整可用。
+- 当前工作树存在用户未提交变更；审查须同时覆盖 HEAD 与工作树，不回退、不覆盖、不提交。
+- 本轮默认只读审查；除规划记录与最终上下文文档外，不修改业务代码，不主动运行广泛测试。
+
+## Errors Encountered
+
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| Docker 状态查询无法连接 `docker_engine`，且用户 Docker 配置不可读 | 1 | 将当前运行态标记为“未验证/服务未运行或不可访问”，不把历史容器状态当作本轮证据。 |
+| PowerShell 将 `rg` 双引号正则中的 `|` 解析成管道，路径扫描失败 | 1 | 不重复该命令；改用单引号模式或 `Select-String` 获取定位。 |
+
+# 2026-08-25 GitHub 开源代码审查项目采纳调研
+
+## Goal
+
+筛选一个与当前 AI-CodeReview 的只读 Git Diff、证据约束和人工审查方向最接近的完整开源项目，基于其当前源码与官方文档分析可采纳机制、适配方式和不应照搬的边界。
+
+## Phases
+
+1. 搜索并比较仍维护的开源代码审查项目。`complete`
+2. 选定目标仓库并核对实际代码结构、审查主链与扩展机制。`complete`
+3. 映射到当前项目，输出可采纳项、改造落点与明确排除项。`complete`
+
+## Research Rules
+
+- 优先官方 GitHub 仓库、官方文档和当前源码，不以第三方宣传文章作为实现证据。
+- 区分通用 PR 审查产品与当前“Issue 验收目标—冻结 Diff—证据结论—人工审批”产品边界。
+- 本轮只调研，不修改业务代码，不引入依赖，不执行外部项目代码。
+
+## Errors Encountered
+
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 一次 `rg` 搜索中的双引号模式被 PowerShell 拆分，产生无关“找不到文件”提示 | 1 | 其他精确模式已返回所需定位；未重复失败命令，改用单引号/分项搜索结论。 |
+| 完成检查脚本汇总了同一历史文件中的旧任务，显示 `4/18 phases complete` | 1 | 当前调研章节实际为 3/3 complete；保留历史任务状态，不为通过检查篡改旧记录。 |
+
+# 2026-08-25 交付代码审查核心增强
+
+## Goal
+
+参考 PR-Agent 的规范化 Diff、代码上下文、Token Coverage、结构化 Finding 和定位校验机制，把现有锁定的 `delivery-git-diff` 升级为受证据约束的交付代码审查核心；不新增第三核心，不允许模型直接裁决、回写 Git 或执行仓库代码。
+
+## Design Phases
+
+1. 核对当前双核、Git 输入、模型契约、持久化和未提交改动。`complete`
+2. 逐项确认本次实现范围、迁移边界和成功标准。`complete`
+3. 提出候选实现方式并确认推荐方案。`complete`
+4. 分节确认架构、数据流、错误处理和测试设计。`complete`
+5. 写入设计规格、自审并等待用户确认。`complete`（规格已由用户确认）
+6. 设计确认后制定详细实施计划。`complete`
+7. 实施、定向验证并更新承接文档。`complete`（完整运行态验证受 Docker 与本地依赖阻断，已记录）
+
+## Fixed Boundaries
+
+- 保持 `requirement-claim-core`、交付代码核心、`evidence-reconciliation` 三个锁定主干节点；交付代码能力属于现有双核的 DELIVERY 一侧。
+- DeepSeek 只生成 Finding/Link 草稿；最终 VerificationResult 继续由确定性裁决生成。
+- 不 checkout、不执行构建/测试/Hook、不写 Git、不回写 GitHub 评论或代码。
+- 当前工作树有用户未提交变更，实施不得 reset、checkout 或覆盖无关修改。
+
+## 已确认实施计划
+
+1. 追加 028 迁移，增加 `ArtifactObject`、`CodeReviewFinding`、GitSnapshot 制品/范围字段与 Coverage 明细，不改写历史快照。
+2. 把 Git 读取升级为“冻结时采集 bytes + 规范化 Bundle”，并从制品而非远端重读中构建代码证据。
+3. 新增 Diff Parser、上下文预算、代码审查模型 schema 与服务端 Finding 定位校验；DeepSeek 失败只写受控降级状态。
+4. 将 v2 节点接入既有 `delivery-git-diff`，维持确定性链接/裁决和现有报告流程。
+5. 新增 GitSnapshot Diff、AnalysisRun CodeReview 的只读投影，Notebook 显示真实 Diff、Finding、Coverage 和失败原因。
+6. 编写并运行定向后端测试、后端静态编译、Alembic 离线 SQL、前端构建；用本地临时 Git 仓库验证不执行仓库代码的采集链。
+
+## 2026-08-25 错误记录
+
+| 错误 | 尝试 | 处理 |
+| --- | --- | --- |
+| 设计规格使用 Markdown 硬换行，被 `git diff --check` 标记为尾随空白 | 1 | 已移除硬换行；后续规格元数据使用普通换行。将修订既有的本地设计提交。 |
+| 代码审查模型契约的组合补丁未命中 `generation_model.py` 的长行上下文 | 1 | 未重复该补丁；改为按类和方法的精确定位拆分修改。 |
+| Git/分析 API 的组合补丁未命中当前 `schemas.py` 中的定位上下文 | 1 | 未重复该补丁；改为按服务、schema、路由分别补丁，避免影响用户同时修改的 API 文件。 |
+| 项目虚拟环境未安装 `pytest`，无法直接执行新增测试文件 | 1 | 不安装新依赖；改用同一虚拟环境以 `runpy` 直接运行纯函数测试，并保留 pytest 测试文件供现有 CI/测试环境执行。 |
+| 错误记录补丁缺少结束标记 | 1 | 已改用完整补丁；未影响工作树。 |
+| 后端路由导入检查被现有多格式知识库依赖 `bs4` 缺失阻断 | 1 | 不安装或修改环境；已完成 Python 编译、迁移离线 SQL、纯函数测试和前端构建。完整 API 启动验证保留给依赖已安装的容器/CI。 |
+| 新增预算测试导入 ORM 时未传入仅用于测试进程的 `JWT_SECRET` | 1 | 不重复无配置导入；以进程内占位 `JWT_SECRET` 重跑，无任何配置文件改动。 |
+| 预算测试的 120 字符小于单个结构化 Hunk 的序列化大小 | 1 | 将测试预算调整为 300，仍不足以装入上下文，用于准确验证 Hunk 优先于上下文。 |
+| 承接文档首次新增补丁使用了错误的结束标记 | 1 | 已用完整补丁创建文件；未影响工作树。 |
+| Docker Desktop Linux Engine 管道不存在，`docker compose ps` 无法读取当前运行态 | 1 | 未重启 Docker 或服务；完整公开仓库/真实 DeepSeek E2E 保留为运行环境恢复后的验证项。 |
+| 进度日志中的长中文行未被精确补丁定位 | 2 | 改为稳定章节标题定位插入最终验证记录；未重试相同长行匹配。 |
+| API 路径校验先后误读了嵌套路由包装与声明路由器已带 prefix 的路径 | 3 | 已检查实际声明路径；最终按完整 `/analysis-runs/{run_id}/code-review` 与 `/git-snapshots/{snapshot_id}/diff` 校验，不再假设未带 prefix 的子路径。 |
+| 真实 Git 范围测试发现 Git 默认转义非 ASCII 路径，Parser 因而未识别 Diff 文件头 | 1 | 受控 Git 命令增加 `core.quotePath=false`，保留 UTF-8 路径后重跑完整测试。 |
+| 真实 Git Diff 文件头仍携带分隔制表符，规范化路径被保留了尾随 tab | 1 | Parser 对 Diff 文件头路径移除该格式分隔符；保持文件名中的普通空格不变。 |
+| Diff 的 `---`/`+++` 文件头同样携带格式分隔 tab，覆盖了首个 Diff 文件头的解析结果 | 1 | 对旧/新文件头统一移除格式分隔 tab；使用真实临时 Git 仓库回归验证。 |
+
+# 2026-08-25 标准交付核验：实施计划
+
+## Goal
+
+在既有交付代码审查 v2 之上，固化唯一的“标准核验”内置流程：代码 Finding、Finding 反证复核和可解释 Coverage 按固定顺序运行；普通用户不接触 Agent 编排，最终 `VerificationResult`、报告审批和正式记录的可信边界保持不变。
+
+## Fixed Decisions
+
+- 只实现标准核验；不增加快速/深度模式、Agent 画布、用户 Prompt/节点配置或任意工具权限。
+- 反证复核是 DeepSeek 的受 schema 约束草稿步骤，不能创建 Finding、改严重度、改 Claim 或写最终核验结论。
+- Coverage 只由代码汇总真实范围和失败原因，不输出完成率、全量审查或无风险语义。
+- 主链继续只读冻结制品；不 checkout、不执行仓库代码、不写 Git/GitHub，也不回退 Fake/Gemini。
+- 当前工作树已有用户未提交变更；每个切片只改必要文件，独立中文提交时只暂存本切片文件。
+
+## Phases
+
+1. **反证契约与迁移**：追加 029 迁移，新增 `CodeReviewFindingChallenge`；定义 verdict 枚举、模型 DTO、Generation Port 和配置预算，保持 028 与历史运行兼容。`complete`
+2. **反证服务与模型适配**：在独立服务中校验 Finding/Hunk/Claim/运行归属、生成稳定指纹并持久化；DeepSeek 实现 JSON Schema 调用，其他 Provider 显式受控失败。`complete`
+3. **固定图与 Coverage**：在 `review_code` 后接入 `challenge_code_findings`、`summarize_code_coverage`，写 ModelCall、Manifest 降级和标准 Coverage；不修改 `link_deterministic`/`reconcile` 的裁决算法。`complete`
+4. **只读投影与 Notebook**：扩展 CodeReview API 返回反证和汇总 Coverage；Notebook 展示标准核验标识、Hunk、四种复核状态、失败原因与下一步。`complete`
+5. **定向验证与承接**：补单元/API/组件状态测试，运行后端编译、Alembic 离线 SQL、定向 pytest 和前端构建；Docker 恢复后以真实公开仓库和有效 DeepSeek Key 做 E2E，并更新 handoff/progress。`in_progress`
+
+## Detailed Implementation Order
+
+### Phase 1 — 反证契约与迁移
+
+1. 确认当前最新迁移 revision，新增 `029_standard_verification_challenge.py`，只向前追加表/索引，不改写 028 或历史 Finding。
+2. 建立 `CodeReviewFindingChallenge` ORM：`analysis_run_id`、`finding_id`、`verdict`、`reason`、`evidence_ids`、`model_call_id`、`schema_version`、`created_at`；唯一键确保同一 run/finding 不重复成功记录。
+3. 在 Domain 层增加 `SUPPORTED`、`UNSUPPORTED`、`NEEDS_HUMAN` 复核枚举及 Pydantic proposal/batch/request/result；禁止新 Finding 或 Severity 字段进入挑战响应。
+4. 在 Settings 增加每运行最大复核数、输入字符预算和超时配置，默认保守值；预算耗尽成为可见 Coverage reason code。
+
+### Phase 2 — 反证服务与模型适配
+
+1. 新建 `code_review_challenge_service`，按当前 AnalysisRun 查询既有 Finding、`GIT_DIFF_HUNK` Evidence 和 Claim；验证 ID 均属于同一 Run/Snapshot，拒绝跨运行引用。
+2. 生成 `(run, finding, evidence, verdict schema)` 稳定 fingerprint；以幂等写入保留原始 Finding，绝不覆盖或删除。
+3. 给 Generation Port 增加 `challenge_code_findings`；DeepSeek Prompt 仅含必要制品和任务约束，要求返回 verdict/reason/evidence IDs。
+4. Fake/Gemini/未配置 Provider 统一抛出 `MODEL_NOT_CONFIGURED`，由上层写失败状态；JSON Schema、定位或归属无效时拒绝 proposal 并保留受限错误摘要。
+
+### Phase 3 — 固定图与 Coverage
+
+1. 在 `verification_graph` 的既有 `review_code` 之后插入 `challenge_code_findings`，随后插入 `summarize_code_coverage`，再进入现有 `link_deterministic`。
+2. 没有 Finding 时跳过模型调用并写 `FINDING_CHALLENGE/NOT_APPLICABLE`；模型不可用、无效输出、超时、制品缺失均写 ModelCall、Manifest degradation 和 `PARTIAL/FAILED` Coverage。
+3. `summarize_code_coverage` 从冻结 Bundle、代码审查 Coverage、Challenge 记录计算文件/Hunk、预算截断、二进制跳过、Finding 与 verdict 数量；不得询问模型。
+4. 确认新增节点不读取远端 Git、不写入 `VerificationResult`，取消/重试/幂等语义沿用 AnalysisRun 的既有控制。
+
+### Phase 4 — API 与 Notebook
+
+1. 扩展 `GET /analysis-runs/{runId}/code-review` 的 schema/service，返回每条 Finding 的 challenge（或 `NOT_STARTED`）、关联 Hunk locator、根级 Coverage 和 degradation；不返回 Prompt、思维链或凭据。
+2. 在 `NotebookWorkspacePage` 继续复用现有真实请求和轮询，在 `SourceEvidencePane`/结果面板加入“标准核验”标签和复核状态映射。
+3. 固定四种文案：证据支持、当前证据不足、需人工确认、复核未完成；每种失败都显示下一步，不使用成功色假装全量覆盖。
+4. 不新增菜单、页面或 Agent 编辑器；报告流程仅消费既有确定性结果，Finding/Challenge 作为可追溯审查上下文展示。
+
+### Phase 5 — 验证、文档与提交
+
+1. 后端：挑战契约、持久化幂等、跨运行拒绝、三种 verdict、无 Finding、DeepSeek 异常/JSON 无效、Coverage 汇总、`VerificationResult` 不被影响。
+2. API/前端：CodeReview 只读投影、四种复核状态、预算/模型失败说明；运行 `vue-tsc`/Vite 构建。
+3. 运行 Python 编译、Alembic `upgrade head --sql`、定向与全量 pytest（在当前已安装依赖环境）；不执行被审查仓库内容。
+4. 记录 Docker/DB/DeepSeek 外部 E2E 结果。Docker 不可用时只标记未覆盖，不重启服务；环境恢复并有用户本地有效 Key 后再做真实调用。
+5. 每个完成切片更新 `docs/handoff`、`progress.md`、`task_plan.md`，以中文提交且不推送；绝不把与用户现有多格式知识库/UI 改动混入提交。
+
+## Acceptance Matrix
+
+| 场景 | 必须结果 |
+| --- | --- |
+| 有效 Finding 且 Hunk/Claim 可定位 | 保存不可变 Challenge，Notebook 可回放 verdict 与理由 |
+| 当前证据无法证明触发 | `UNSUPPORTED`，保留原 Finding，不能影响最终结论 |
+| 缺运行态/外部配置 | `NEEDS_HUMAN`，报告中仅作为人工处置上下文 |
+| 无 Finding | 不调用复核模型，Coverage 为 `NOT_APPLICABLE` |
+| 模型 Key 缺失/限流/JSON 无效 | 明确降级与下一步，无占位结论/回退模型 |
+| 二进制/预算截断/上下文失败 | Coverage 列出真实未覆盖范围与原因码 |
+| 重新运行 | 新 AnalysisRun 产生新挑战记录，历史记录不可回写 |
+| 既有裁决与报告 | Challenge 不直接改写 `VerificationResult` 或审批状态 |
+
+## Errors Encountered
+
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 组合补丁未命中 `findings.md` 的历史尾部锚点 | 1 | 未重复同一组合补丁；先单独写入主计划，再用实际尾部定位同步发现与进度。 |
+| 在 `frontend` 工作目录调用根目录 `.venv`，后端编译与 pytest 找不到解释器 | 1 | 前端构建已通过；后端验证改回仓库根目录执行，避免重复相同路径错误。 |
+| 后端 Settings 要求 `JWT_SECRET` 至少 32 字符，临时校验值过短导致 pytest/Alembic 收集失败 | 1 | 不写入配置文件；后续仅为当前进程注入满足长度的占位值后重跑。 |
+| 前端构建命令后仍在 `frontend` 目录执行后端 API/Alembic 校验，根目录虚拟环境与 `backend` 配置路径不可见 | 2 | 前端构建已通过；不在子目录重试后端校验，后续只从仓库根目录执行后端命令。 |
+| API 路由校验直接读取 `app.routes` 中包装路由的 `.path`，遇到 `_IncludedRouter` 属性错误 | 1 | 改用 `getattr(route, 'path', None)` 过滤包装对象；不影响应用导入或路由实现。 |
+| `app.routes` 仅暴露聚合包装路由，无法直接断言嵌套 `/api/v1` 子路径 | 1 | 不再用顶层路由做字符串断言；改校验声明 `run_router` 的 `/{run_id}/code-review` 路径，并保留应用导入检查。 |
+| 声明路由器本身已带 `/analysis-runs` prefix，校验时误把路径当作未带 prefix 的子路径 | 1 | 先读取声明路径再做最终精确断言；不改路由实现。 |
+## 2026-08-25 标准核验真实 E2E 结果
+
+- 阶段 5（运行环境 E2E）已完成：Docker 恢复后对当前源码挂载的 API/Worker 完成一次隔离项目运行，并已恢复原 Compose Worker。
+- 实际链路：Markdown 资料 `READY` → 公开只读 Git Diff 冻结（1 文件、1 Hunk）→ 正式快照 → `standard-verification-v1` → DeepSeek 代码审查 → 反证步骤/覆盖汇总 → 确定性裁决 → 自动报告草稿。
+- 运行 `1a022c32-3235-4fe7-b5a9-eb71fd0bee23` 为 `SUCCEEDED`；`CODE_REVIEW` ModelCall 成功（4,191 ms），但只读 README Diff 未产生 Finding，因此反证步骤正确写为 `NOT_APPLICABLE / NO_CODE_REVIEW_FINDINGS`，不应被描述为“Finding 已反证”。
+- 数据库已从 027 升级到 029。首次直接重建 API/Worker 曾在 Docker Hub 鉴权请求处收到 EOF；恢复网络后构建成功，正式 Compose API/Worker 已以当前镜像重建。E2E 使用的临时源码挂载容器已清理，当前 `localhost:8000` 已验证 readiness 与 `code-review` 只读投影。
+- 非零 Finding 的真实反证分支也已完成：公开教育用途仓库 `atiradonet/weak-go-app` 的单文件冻结 Diff 产生 2 条 Finding，并持久化 1 条 `NEEDS_HUMAN` 与 1 条 `UNSUPPORTED` Challenge。`FINDING_CHALLENGE` 和 `STANDARD_VERIFICATION` Coverage 均为 `ANALYZED`，证明模型 Finding 不是最终结论，且可被冻结证据否定或限制为需人工确认。
+
+## 2026-08-26 交付主张确认闭环
+
+### Goal
+
+将“PR 标题即唯一结论”的当前实现替换为：DeepSeek 先从只读 PR 元数据提取候选交付主张，提交人确认、编辑或补充后，与 Git Diff 和可选资料一起冻结；后续固定双核按每条已确认主张输出核验结果。代码 Finding 与交付是否实现保持分离。
+
+### Phases
+
+1. `complete`：新增可编辑但可冻结的轮次级交付主张、只读 API、DeepSeek 候选提取和审计事件；模型不可用时返回真实失败，不回退 Fake。
+2. `complete`：已确认主张摘要写入正式快照哈希与清单；启动运行时拒绝没有已确认主张的快照；工作流从快照主张创建运行内 Claim。
+3. `complete`：Notebook 准备页加入“确认交付内容”第一步，支持候选主张确认、编辑、删除和新增；冻结和运行按钮按状态门禁。
+4. `complete`：交付结论改为“总体交付状态 + 逐项主张”，将 P0 Finding 摘要与交付结论语义分离。
+5. `complete`：已完成迁移离线 SQL、定向后端回归、前端构建与机械 UI 检查；未执行被审查仓库内容或调用真实模型。
+
+### Fixed Decisions
+
+- 候选提取只读取同步的 PR 标题、正文、关联链接和用户在本轮选择的资料摘要；不会读取未冻结 Git 代码，不会执行仓库内容。
+- 模型只产出候选主张，任何候选必须由提交人明确确认后才可进入正式快照；用户可手动补充主张，但不能在正式快照后改写。
+- 每次正式快照复制已确认主张为不可变清单，运行内 `Claim` 从该清单派生；旧运行、报告和记录保持原样可回放。
+- 无已确认主张、模型提取失败、主张为空或快照不完整均给出下一步动作，不生成“已交付”或“无风险”假结论。

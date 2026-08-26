@@ -146,3 +146,63 @@
 - 完成 Git 暂存内容、空白字符和文档结构检查，准备以中文说明提交并推送。
 - 首次提交 `42e25ff` 已推送到 `origin/main`。
 - 根据文件化规划模板补齐标准 Phase/Status 结构，使完成状态可被检查脚本识别。
+# 2026-08-24 双人协作开发功能清单审查
+
+- 已读取文件化规划技能、历史决策索引与上一轮 P0/C 架构审查摘要。
+- 已确认仓库当前存在未提交改动；本轮将保护这些改动并进行只读核对。
+- 已完成仓库、提交、文件树、依赖、迁移与测试文件的第一轮盘点；下一步进入后端路由/服务/模型与前端真实 API 接入核对。
+- 已完成文档约束、API 路由总图、前端请求入口和持久化领域表的结构盘点；开始逐模块检查实际逻辑与缺口。
+- 已完成 P0 主链、知识库、多格式解析、身份/RBAC、报告审批/正式记录、外围模块与测试覆盖的源码核对，确认最新可信设计与当前旧领域模型之间仍有关键语义差距。
+- 已尝试读取当前容器状态，但 Docker Engine 不可连接；已按“运行态未验证”记录。`git diff --check` 未发现空白错误；遵循约束未运行测试套件或构建。
+- 已完成 `docs/handoff/2026-08-24-two-person-development-context.md`：包含 49 个高颗粒度功能单元、协作使用说明、完成度、具体 TODO、逐模块 Context Injection、P0 协作顺序、全局代码/状态/API/前端/测试约束和可直接注入下游 AI 的上下文。
+
+# 2026-08-25 GitHub 开源代码审查项目采纳调研
+
+- 已启动候选项目筛选；只读取官方仓库、官方文档和源码，不执行候选项目代码。
+- 已完成候选比较并选定 `The-PR-Agent/pr-agent`；下一步浅克隆到临时目录，只读检查代码审查主链。
+- 已完成浅克隆和第一轮结构扫描，确认目标仓库有完整 provider、Diff 压缩、Review Prompt、模型适配、行内评论和测试实现；正在读取关键算法与输出契约。
+- 已核对 Review 主链、大 Diff Coverage、Ticket 上下文、结构化 Prompt、定位验证、增量审查和评论去重；开始映射到当前项目的具体代码落点。
+- 已完成与当前项目的映射并形成采纳边界；未修改业务代码、未执行候选项目、未运行本项目测试或外部模型。
+
+# 2026-08-25 交付代码审查核心增强
+
+- 已按项目 `pyproject.toml` 补齐本地后端依赖，并安装 pytest 作为测试工具；标准 pytest 已通过 5 项定向用例。首次路由校验误读嵌套路由对象，改用主应用展开路由校验。
+- 依赖补齐后 API 导入及两个新增路由声明通过；真实临时 Git 仓库回归发现并修复 Unicode 路径转义与 Diff 文件头分隔 tab 两个 Parser 问题。最终 6 项交付代码审查测试和后端全量 22 项 pytest 均通过，迁移离线 SQL、Python 编译、前端生产构建、变更空白检查均通过。
+- 最终定向验证已扩展为五项 Diff Parser/上下文/NUL 路径/预算测试；`docker compose ps` 因 Docker Desktop Linux Engine 管道不存在而无法读取运行态。未重启服务、未调用真实 DeepSeek，E2E 验收需在依赖完整的运行环境继续。
+
+- 已读取 brainstorming 与 planning-with-files 技能并进入设计门禁；已核对当前工作树、最近提交、双核编排、Git 读取、模型节点和历史差距，本阶段尚未修改业务代码。
+- 用户已确认增量升级方案、允许迁移并补最小 Notebook 展示；正在分节确认详细设计。
+- 用户已确认总体设计；已写入交付代码审查核心 v2 规格，下一步为规格自审、独立提交并请用户复核规格，尚未开始业务实现。
+- 规格已完成占位符/歧义/范围/一致性检查，并以 `c9cb191 设计：固化交付代码审查核心升级方案` 单独提交；`git diff --check` 的尾随空白已在提交前修复。等待用户复核规格后再创建实施计划。
+- 用户已确认规格，开始实施前核对：现有 Git 读取仍在运行时重读冻结范围，分析图仍有内嵌新增行 Hunk 解析，Notebook 尚无真实 Diff/Finding/Coverage 投影；这些将作为本切片的首要替换点。
+- 已新增 028 迁移、不可变 Diff/Bundle 制品、规范化 Diff Parser、受限上下文、代码 Finding 契约和 DeepSeek 审查节点；运行从本地制品校验哈希后读取，不再重读远端 Git。
+- 已新增 Git Snapshot Diff 与 Analysis Run CodeReview 只读投影，并将 Notebook 来源栏接入冻结 Diff、Finding、Coverage 与真实失败原因；前端生产构建通过。
+- 验证：Python 编译通过、028 Alembic 离线 SQL 通过、三个 Diff Parser/上下文定向测试通过、前端生产构建通过。项目 `.venv` 未安装 pytest，且完整 API 导入被既有多格式知识库依赖 `bs4` 缺失阻断，未安装依赖或修改环境。
+
+# 2026-08-25 标准交付核验实施规划
+
+- 用户确认暂不向普通用户开放 Agent 自主编排，先固定唯一的标准交付核验流程。
+- 已提交设计规格 `fb9e934 设计：固定标准交付核验流程`；用户已要求制定实施计划。
+- 已将五阶段实施计划、固定边界、验收矩阵和外部 E2E 条件写入 `task_plan.md`，并同步规划发现到 `findings.md`。本阶段没有修改业务代码或运行测试。
+- 已完成 029 迁移、反证 DTO/Port/DeepSeek 适配、反证服务、固定 `challenge_code_findings → summarize_code_coverage` 图节点、`STANDARD_VERIFICATION` Coverage、CodeReview API 投影与 Notebook 状态展示。
+- 已通过 Python 编译、029 Alembic 离线 SQL、8 项定向 pytest、完整 24 项后端 pytest、前端生产构建、API 导入及声明路由校验。Docker Desktop Linux Engine 仍未恢复，真实数据库/Worker/DeepSeek E2E 尚未覆盖；未重启服务或调用真实模型。
+- 最后一次只读 Docker Compose 检查仍返回 `dockerDesktopLinuxEngine` 命名管道不存在。保持第 5 阶段为运行环境 E2E 待验证，不以静态通过替代真实运行。
+## 2026-08-25 标准核验真实 Docker E2E
+
+- Docker Engine 恢复后，已将开发数据库从 Alembic `027_multiformat_source_ingestion` 升级至 `029_standard_verification_challenge`；迁移为追加式，未改写已有记录。
+- 使用隔离项目完成真实闭环：上传 Markdown 验收资料并进入 `READY`，冻结公开只读仓库 `octocat/Hello-World` 的 `553c207..7fd1a60` Diff，创建正式输入快照并启动 AnalysisRun `1a022c32-3235-4fe7-b5a9-eb71fd0bee23`。
+- Worker 以当前源码运行并成功完成 `standard-verification-v1`：冻结 Diff 1 文件/1 Hunk，真实 DeepSeek `CODE_REVIEW` 调用成功（4,191 ms），生成 0 条 Finding；因此 `FINDING_CHALLENGE` 如实写入 `NOT_APPLICABLE / NO_CODE_REVIEW_FINDINGS`，`STANDARD_VERIFICATION` 为 `PARTIAL`，而非伪造反证结论。
+- 已通过只读 API 回放 `/analysis-runs/{id}/events`、`/code-review`、`/results` 与 `/git-snapshots/{id}/diff`；自动报告草稿已生成。临时 API/Worker 容器已停止，原 Compose Worker 已恢复启动。
+- 本次上传资料的向量索引仍反馈 `MODEL_UNAVAILABLE`（Dashscope Embedding）；它没有被伪装为成功，也未阻塞使用已就绪资料创建正式快照。本次标准核验的 DeepSeek 代码审查实际成功。
+- Docker 镜像构建随后完成，已用新镜像重建正式 Compose API/Worker；`/api/v1/health/ready` 与已生成运行的 `/analysis-runs/{id}/code-review` 均在 `localhost:8000` 返回成功，当前 API、Worker、Postgres、Frontend 均运行中。
+- 已补齐真实非零 Finding 分支：对公开教育用途仓库 `atiradonet/weak-go-app` 的 `b4b8012..72acebe` Diff 仅冻结 `handlers/system.go`，运行 `f0f3a5c9-0654-41b5-ad38-3376efff7469` 成功。真实 DeepSeek 生成 2 条 SECURITY Finding，并完成 2 条反证复核：命令执行入口为 `NEEDS_HUMAN`（Diff 未冻结路由挂载/可达性），错误详情泄露为 `UNSUPPORTED`（冻结实现中数据库错误分支不可达）。
+- 本次 `STANDARD_VERIFICATION` 为 `ANALYZED`：1 文件、1 Hunk、2 Finding、2 条已持久化 Challenge；ModelCall 为 `CODE_REVIEW` 16,051 ms、`CODE_REVIEW_CHALLENGE` 28,157 ms，均成功，无 Fake 回退。
+
+## 2026-08-26 交付主张确认闭环
+
+- 用户确认采用“模型先提出候选主张，人工确认后冻结，再逐项核验”的交付核验流程。
+- 已完成现状核对：当前 PR 标题被前端作为唯一待确认占位，正式快照未包含主张清单，运行内 Claim 只在工作流中生成；尚未修改业务代码。
+- 已新增 031 迁移、`DeliveryClaimDraft` 与 `InputSnapshotClaim`：确认主张文本、来源清单和哈希进入正式快照，运行内 Claim 仅从该不可变清单派生。
+- 已新增项目级候选提取/确认 API。候选提取只允许 DeepSeek；配置缺失、不可用或结构异常均返回真实错误，不回退 Fake。候选资料必须在快照中再次选择，否则拒绝冻结。
+- Notebook 现先展示“确认交付内容”，可提取候选、手动补充、编辑、删除和确认；旧版无主张快照给出“新建核验轮次”动作，不篡改历史输入。
+- 交付结论顶部现只汇总逐项交付状态；P0 代码风险不再被显示为交付是否完成。验证通过：Python 编译、10 项定向 pytest、031 Alembic 离线 SQL、前端生产构建、Impeccable 机械检测（无问题）。
