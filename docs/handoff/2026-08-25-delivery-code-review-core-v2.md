@@ -94,15 +94,15 @@ GitHub PR 同步
 
 ## 5. 2026-08-24 至 08-26 已落地的新增/修订
 
-以下以当前工作树为准；前三个提交已在 `main`，人工裁决与报告回看仍是未提交改动。
+以下以 `main@13813fc` 为准；8 月 26 日的人工裁决与报告回看已提交为 `f67f59e`，承接文档更新已提交为 `13813fc`。
 
 | 日期/状态 | 已落地内容 | 承接注意事项 |
 | --- | --- | --- |
 | 08-25，已提交 `c9cb191` / `fb9e934` | 固定“需求主张核 -> 交付 Git Diff 核 -> 证据汇总”设计，完成可回放 Git 制品、Finding 反证复核和标准核验覆盖的实现基础。 | 不恢复旧的可任意替换核心/任意执行模型路径。 |
 | 08-26，已提交 `97a752e` | 多格式知识库解析；Git 仓库列表；PR 作为代码交付入口；交付主张候选/确认；PR 同源仓库限制；正式快照增加 PR revision、Claim、制品绑定；Notebook 读取 Diff/Finding/Coverage。 | `VerificationTask.delivery_item_id` 已要求为 `PULL_REQUEST`，Issue 只保留为背景来源，不再直接创建代码审查。 |
 | 08-26，已提交 `5462093` | 工作台、项目创建与接入、知识库、PR 任务中心、Notebook 三栏、审批与记录页改为真实 API 驱动的使用流。 | Notebook 是任务行的钻取页，不放入左侧一级导航。 |
-| 08-26，未提交：`032_human_verification_decisions.py` 及服务/前端 | 增加追加式人工裁决；系统结论与人工有效结论分开展示；提交报告前强制完成必须裁决项；DRAFT 报告会刷新保存人工裁决快照。 | 部署前必须 `alembic upgrade head`；不得把人工裁决直接覆盖 `VerificationResult.status`。 |
-| 08-26，未提交：报告内容回看/审批页 | 新增 `GET /projects/{projectId}/report-versions/{reportId}/content`，从 `ReportItem.result_snapshot` 和正式快照 Evidence 回放内容；Notebook 草稿可看，审批页先展示报告正文和引用，哈希退为校验信息。 | 审批动作在冻结内容读取失败时必须禁用，不能只看 hash 批准。 |
+| 08-26，已提交 `f67f59e`：人工裁决 | 增加追加式人工裁决；系统结论与人工有效结论分开展示；提交报告前强制完成必须裁决项；DRAFT 报告会刷新保存人工裁决快照。 | 部署时必须执行 `alembic upgrade head`；不得把人工裁决直接覆盖 `VerificationResult.status`。 |
+| 08-26，已提交 `f67f59e`：报告内容回看/审批页 | 新增 `GET /projects/{projectId}/report-versions/{reportId}/content`，从 `ReportItem.result_snapshot` 和正式快照 Evidence 回放内容；Notebook 草稿可看，审批页先展示报告正文和引用，哈希退为校验信息。 | 审批动作在冻结内容读取失败时必须禁用，不能只看 hash 批准。 |
 
 ## 6. 关键接口速查
 
@@ -126,7 +126,7 @@ GitHub PR 同步
 
 ## 8. 接手前必做检查
 
-1. `git status --short`：当前工作树有未提交的人工作裁决、报告正文回放、审批正文展示与 migration 032，不能 reset/checkout 覆盖。
+1. `git status --short`：承接时先确认工作树是否干净；本次文档更新时，核心功能已在 `f67f59e`，不应再按“未提交改动”处理。
 2. `docker compose ps` 与 `docker compose exec -T api alembic current`：确认 API/worker 镜像与数据库确实到 `032_human_verification_decisions`。
 3. 先选择一个真实 PR、产生非空 Diff，检查 `ArtifactObject` + artifact storage 是否同时存在，再启动运行。
 4. 将“代码存在”“静态构建通过”“容器健康”“真实模型成功”“用户页面可见”分开记录，不互相替代。

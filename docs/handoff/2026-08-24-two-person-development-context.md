@@ -1,7 +1,7 @@
 # AI-CodeReview 双人协作开发功能清单与承接上下文
 
 > 更新日期：2026-08-26
-> 基线：`main@ea8d1d3` + 当前未提交工作树。
+> 基线：`main@13813fc`；文档更新时工作树干净。
 > 判断口径：明确区分“代码已实现”“已部署/迁移”“已做定向验证”“真实外部服务已验收”。完成度是当前目标闭环程度，不是测试通过率。
 
 ## 1. 产品边界与当前可操作主流程
@@ -19,7 +19,7 @@
 | 状态 | 变更 |
 | --- | --- |
 | 已提交 | 多格式知识库、只读 Git 仓库列表/冻结制品、PR 驱动的代码交付、交付主张确认、固定代码审查/反证核心、Notebook 真实数据流、项目创建接入、工作台导航重构。 |
-| 当前未提交 | `032_human_verification_decisions` 迁移；人工裁决 API/报告门禁；草稿报告正文回看 API 与 Notebook 展示；审批页正文和冻结引用展示。 |
+| 08-26，已提交 `f67f59e` | `032_human_verification_decisions` 迁移；人工裁决 API/报告门禁；草稿报告正文回看 API 与 Notebook 展示；审批页正文和冻结引用展示。 |
 | 已部署到本地 Docker | 08-26 已重建 API 并运行迁移 032；当前 API 健康。前端使用 compose bind mount，刷新即可加载当前源码。 |
 | 验证证据 | 最近运行：后端编译、报告回归测试（2 passed）、前端 `npm run build`、API OpenAPI 路由检查；8-25 曾做公开 GitHub + DeepSeek 的人工 E2E。仍非完整自动 E2E。 |
 
@@ -36,20 +36,20 @@
 | 正式输入快照 | `InputSnapshot` 固定 PR revision、已确认 Claim、READY 资料、Git 制品 hash、可选外部/人工证据；明细绑定表和 EvidenceItem 均已创建。 | 86% | P0：快照 manifest 下载/详情 UI；缺失 artifact 的修复说明；主张/资料/PR revision 更新后的新轮次引导。 | 任何输入变化都应创建新 cycle/snapshot/run，不能修改旧正式快照。Preparation snapshot 与 Formal snapshot 不可混用。 |
 | 运行编排与真实模型 | PostgreSQL Job + Worker；运行、事件、编排快照、模型调用记录；固定双核；每 3 秒轮询；DeepSeek 唯一 P0 生成模型；无 Key/失败真实展示。 | 80% | P0：运行取消/重试的页面闭环与 worker fencing；模型 JSON schema 失败的可读恢复；重启后 Job 恢复演练。P1：运行列表/历史筛选。 | API 只入队，Worker 执行。模型失败写 `ModelCall/AnalysisCoverage/Manifest degradation`，不得切 Fake/Gemini。 |
 | 代码审查与反证 | 从冻结 hunk 建 CODE Evidence；DeepSeek 生成校验后的 `CodeReviewFinding`；再对 Finding 反证复核；Coverage 汇总范围/跳过原因；Notebook IDE 风格 Diff 与 Finding 展示。 | 87% | P0：更多真实公开/私有 diff 样本的 Finding 回归；Finding 跳转到 hunk；结论与 Finding 的联动解释。P1：Finding 人工处置状态和修复后新轮次关联。 | Finding 不等于交付结论。Challenge 只可 `SUPPORTED/UNSUPPORTED/NEEDS_HUMAN`，不可生成新 Finding 或改原始 Finding。 |
-| 交付结论与人工裁决 | 系统 `VerificationResult`；当前未提交的 `HumanVerificationDecision` 追加记录、允许动作矩阵、裁决后前端显示有效状态、报告提交门禁。 | 82%（部署前待提交） | P0：为裁决动作写后端回归；增加裁决历史/撤销语义；统一报告、Notebook、交付记录对有效状态的投影。 | 系统原始结论不可覆盖；人工裁决通过 `supersedes_decision_id` 链追加。仅终态运行、报告未提交可裁决。 |
-| 报告草稿与提交 | 自动/手动报告草稿、乐观版本锁、报告项快照、冻结引用、提交说明、提交前裁决门禁；未提交的 report content API/Notebook 预览。 | 85%（预览待提交） | P0：报告 item 处置项编辑 UI；报告内容 API 回归；明确代码 Finding 是否纳入报告 schema（当前只包含主张结果与引用）。 | 报告正文必须读 `ReportItem.result_snapshot`，不能根据当前 live result 重算。`content_hash` 覆盖结果、人工裁决、说明和处置。 |
-| 审批与正式记录 | 提交者不能自审；REVIEWER/ADMIN 批准/驳回/要求补证；补证复制新 draft；ADMIN 发布 `PublishedRecord`；未提交的审批页先显示冻结报告正文与引用。 | 83%（正文待提交） | P0：不同账户真实双人审批 E2E；正式记录详情回放报告正文/引用/审批操作；审批状态变更通知。 | 审批哈希是完整性校验，不是审批对象。正文读取失败时审批按钮必须禁用。发布后不可回写。 |
+| 交付结论与人工裁决 | 系统 `VerificationResult`；`HumanVerificationDecision` 追加记录、允许动作矩阵、裁决后前端显示有效状态、报告提交门禁。 | 85% | P0：为裁决动作写后端回归；增加裁决历史/撤销语义；统一报告、Notebook、交付记录对有效状态的投影。 | 系统原始结论不可覆盖；人工裁决通过 `supersedes_decision_id` 链追加。仅终态运行、报告未提交可裁决。 |
+| 报告草稿与提交 | 自动/手动报告草稿、乐观版本锁、报告项快照、冻结引用、提交说明、提交前裁决门禁；report content API/Notebook 预览。 | 88% | P0：报告 item 处置项编辑 UI；报告内容 API 回归；明确代码 Finding 是否纳入报告 schema（当前只包含主张结果与引用）。 | 报告正文必须读 `ReportItem.result_snapshot`，不能根据当前 live result 重算。`content_hash` 覆盖结果、人工裁决、说明和处置。 |
+| 审批与正式记录 | 提交者不能自审；REVIEWER/ADMIN 批准/驳回/要求补证；补证复制新 draft；ADMIN 发布 `PublishedRecord`；审批页先显示冻结报告正文与引用。 | 86% | P0：不同账户真实双人审批 E2E；正式记录详情回放报告正文/引用/审批操作；审批状态变更通知。 | 审批哈希是完整性校验，不是审批对象。正文读取失败时审批按钮必须禁用。发布后不可回写。 |
 | 交付记录与回放 | 正式记录列表/详情、报告和快照关联的基础投影已存在。 | 65% | P0：把 report-content 投影接入记录详情；显示证据、Diff、审批理由和 artifact 可用性；历史 V1 明确 `replay_limited`。 | 不可用当前数据“补算”历史内容；缺 artifact 要显式标记不可完整回放。 |
 | Agent 功能块 | 固定核心 + `SHARED` 外围 Agent block、工具白名单、运行编排快照有后端/页面基础。 | 50% | P2：仅在固定核心之外增加受控能力块配置、版本与审计；不要恢复面向无基础用户的自由 Agent 编排。 | 核验三段核心、审批、发布不可删除/替换/绕过。禁止任意 HTTP、代码执行、扫描器接口。 |
 | 项目态势、安全与质量 | 有项目态势、安全基线、摘要草稿等页面/服务基础。 | 35% | P2：先重新定义与“交付核验”关系；未完成数据/真实扫描前不要展示完成率、安全通过结论。 | 当前 P0 不包含安全基线、全项目态势或 CI 工件。避免把它们混入交付结论。 |
 | 前端体验与可观测性 | 左侧导航简化；项目空态创建引导；页面滚动规则；Notebook 三栏、运行记录弹层、报告/人工裁决 tabs；当前审批页内容化。 | 70% | P0：逐页检查无项目、无 PR、无 READY 资料、空 Diff、模型不可用、限流；删除无 handler 按钮；统一加载/错误/重试。P1：响应式和键盘可达性。 | 用户应从“代码交付”开始，而不是先猜资料库。普通页面偏线性布局，Notebook 仅作为任务钻取。 |
-| 测试、迁移与交付 | Alembic 001—031 已提交；032 未提交；7 个后端测试文件；前端 build 已验证。 | 55% | P0：迁移 032 回归；Git/快照/人工裁决/报告正文 API 测试；知识库格式矩阵；最小 browser->API->DB->artifact E2E。P1：Vue 组件测试、Playwright 主链。 | 每项更改先执行目标测试，避免以容器健康或构建成功代替主链验收；真实 Key 只在本地忽略环境使用。 |
+| 测试、迁移与交付 | Alembic 001—032 已提交；7 个后端测试文件；前端 build 已验证。 | 60% | P0：迁移 032 回归；Git/快照/人工裁决/报告正文 API 测试；知识库格式矩阵；最小 browser->API->DB->artifact E2E。P1：Vue 组件测试、Playwright 主链。 | 每项更改先执行目标测试，避免以容器健康或构建成功代替主链验收；真实 Key 只在本地忽略环境使用。 |
 
 ## 4. 优先级实施队列
 
 | 优先级 | 必须完成的切片 | 验收标准 |
 | --- | --- | --- |
-| P0-1：提交并稳定当前工作树 | 提交 migration 032、人工裁决、报告正文回看、审批正文；补各自 API 回归。 | 新库迁移到 032 后，提交者/审核者可分别裁决、看草稿、看审批正文；hash 与正文一致。 |
+| P0-1：稳定已提交的人工裁决与报告回看 | 补 migration 032、人工裁决、报告正文 API 的回归测试，并在新数据库验证部署。 | 新库迁移到 032 后，提交者/审核者可分别裁决、看草稿、看审批正文；hash 与正文一致。 |
 | P0-2：双人身份/成员闭环 | `/auth/me`、成员管理、创建项目后邀请 reviewer、前端角色门禁。 | 不能自审；第二账户可看到同项目待审批并完成批准/补证。 |
 | P0-3：知识库可靠性 | 用真实文件目录建立格式矩阵、失败/重试与上传进度。 | 每种宣称支持格式有成功/失败样本、原件/抽取文本/状态可查看，失败不变成 READY。 |
 | P0-4：完整可回放正式记录 | 记录详情复用报告正文、引用、Diff、审批链；制品缺失显式失败。 | 发布后在“正式记录”可回放报告和证据，不依赖 live run/当前 GitHub。 |
