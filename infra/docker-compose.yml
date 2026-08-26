@@ -88,6 +88,12 @@ services:
     build: ../frontend
     ports:
       - "5173:5173"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "500"
+    volumes:
+      - ../frontend:/app
+      - frontend-node-modules:/app/node_modules
     depends_on:
       api:
         condition: service_healthy
@@ -95,3 +101,4 @@ services:
 volumes:
   postgres-data:
   artifact-volume:
+  frontend-node-modules:

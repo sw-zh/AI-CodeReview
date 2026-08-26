@@ -8,7 +8,7 @@ from google.genai import types
 
 from app.core.config import Settings
 from app.domain.errors import DomainError
-from app.domain.model_contracts import EvidenceAnswerPayload, EvidenceAnswerRequest, EvidenceAnswerResult, GenerationRequest, GenerationResult, ModelLinkProposal, ModelProposalBatch
+from app.domain.model_contracts import CodeReviewFindingBatch, CodeReviewFindingChallengeBatch, CodeReviewChallengeRequest, CodeReviewChallengeResult, CodeReviewRequest, CodeReviewResult, DeliveryClaimCandidateBatch, DeliveryClaimProposalResult, EvidenceAnswerPayload, EvidenceAnswerRequest, EvidenceAnswerResult, GenerationRequest, GenerationResult, ModelLinkProposal, ModelProposalBatch
 from app.domain.ports import GenerationModelPort
 
 
@@ -39,6 +39,16 @@ class FakeGenerationModelAdapter(GenerationModelPort):
         started = time.monotonic()
         excerpts = "；".join(str(item.get("excerpt", ""))[:240] for item in request.evidence)
         return EvidenceAnswerResult(provider="fake", model="fake-model-v1", attempts=1, latency_ms=int((time.monotonic() - started) * 1000), payload=EvidenceAnswerPayload(answer=f"基于已授权的 {len(request.evidence)} 条证据：{excerpts}", fact_status="INSUFFICIENT_EVIDENCE"))
+
+
+    def review_code(self, request: CodeReviewRequest) -> CodeReviewResult:
+        raise DomainError("MODEL_NOT_CONFIGURED", "交付代码审查不允许使用 Fake 模型")
+
+    def challenge_code_findings(self, request: CodeReviewChallengeRequest) -> CodeReviewChallengeResult:
+        raise DomainError("MODEL_NOT_CONFIGURED", "标准交付核验不允许使用 Fake 模型进行反证复核")
+
+    def propose_delivery_claims(self, payload: dict) -> DeliveryClaimProposalResult:
+        raise DomainError("MODEL_NOT_CONFIGURED", "交付主张提取不允许使用 Fake 模型")
 
 
 class GeminiGenerationModelAdapter(GenerationModelPort):
@@ -121,6 +131,16 @@ class GeminiGenerationModelAdapter(GenerationModelPort):
         raise DomainError("MODEL_UNAVAILABLE", "Gemini 问答模型调用不可用") from last_error
 
 
+    def review_code(self, request: CodeReviewRequest) -> CodeReviewResult:
+        raise DomainError("MODEL_NOT_CONFIGURED", "P0 交付代码审查仅允许使用 DeepSeek")
+
+    def challenge_code_findings(self, request: CodeReviewChallengeRequest) -> CodeReviewChallengeResult:
+        raise DomainError("MODEL_NOT_CONFIGURED", "P0 标准核验反证复核仅允许使用 DeepSeek")
+
+    def propose_delivery_claims(self, payload: dict) -> DeliveryClaimProposalResult:
+        raise DomainError("MODEL_NOT_CONFIGURED", "P0 交付主张提取仅允许使用 DeepSeek")
+
+
 class DeepSeekGenerationModelAdapter(GenerationModelPort):
     """DeepSeek Chat Completions adapter using JSON-mode structured output."""
 
@@ -129,7 +149,7 @@ class DeepSeekGenerationModelAdapter(GenerationModelPort):
         self._model = model
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
-    def _complete(self, task: str, payload: dict) -> dict:
+    def _complete(self, task: str, payload: dict, *, timeout_seconds: int = 60) -> dict:
         request_body = {
             "model": self._model,
             "messages": [
@@ -152,7 +172,7 @@ class DeepSeekGenerationModelAdapter(GenerationModelPort):
             method="POST",
         )
         try:
-            with urlopen(http_request, timeout=60) as response:
+            with urlopen(http_request, timeout=timeout_seconds) as response:
                 response_body = json.loads(response.read().decode("utf-8"))
             content = response_body["choices"][0]["message"]["content"]
             if not isinstance(content, str):
@@ -218,6 +238,95 @@ class DeepSeekGenerationModelAdapter(GenerationModelPort):
             attempts=1,
             latency_ms=int((time.monotonic() - started) * 1000),
             payload=payload,
+        )
+
+
+    def review_code(self, request: CodeReviewRequest) -> CodeReviewResult:
+        started = time.monotonic()
+        response = self._complete(
+            "Review only problems introduced by supplied frozen Diff hunks. Return no finding when unsure; never decide final verification status.",
+            {
+                "rules": [
+                    "Use only supplied evidenceId and related claim IDs.",
+                    "A code context is CONTEXT_ONLY and is not citable evidence.",
+                    "Report a concrete trigger scenario and actionable recommendation.",
+                    "Do not report style-only observations or claim an Issue/project/security result.",
+                ],
+                "outputSchema": CodeReviewFindingBatch.model_json_schema(),
+                "claims": request.claims,
+                "codeChanges": request.code_changes,
+            },
+        )
+        try:
+            findings = CodeReviewFindingBatch.model_validate(response)
+        except ValueError as exc:
+            raise DomainError("MODEL_SCHEMA_INVALID", "DeepSeek 代码审查输出不符合协议") from exc
+        return CodeReviewResult(
+            provider="deepseek",
+            model=self._model,
+            attempts=1,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            findings=findings,
+        )
+
+    def challenge_code_findings(self, request: CodeReviewChallengeRequest) -> CodeReviewChallengeResult:
+        started = time.monotonic()
+        response = self._complete(
+            "Challenge only supplied code-review findings against their frozen Diff hunks and Claims. Do not create findings or decide final verification status.",
+            {
+                "rules": [
+                    "Return exactly one challenge per supplied finding using only supplied IDs.",
+                    "SUPPORTED means the frozen evidence supports the reported trigger scenario.",
+                    "UNSUPPORTED means the frozen evidence cannot establish the trigger scenario.",
+                    "NEEDS_HUMAN means runtime state, external configuration, or unfrozen context is required.",
+                    "Every challenge must cite at least one supplied Hunk evidenceId.",
+                    "Do not change severity, create findings, or claim an Issue/project/security result.",
+                ],
+                "outputSchema": CodeReviewFindingChallengeBatch.model_json_schema(),
+                "claims": request.claims,
+                "codeChanges": request.code_changes,
+                "findings": request.findings,
+            },
+            timeout_seconds=request.timeout_seconds,
+        )
+        try:
+            challenges = CodeReviewFindingChallengeBatch.model_validate(response)
+        except ValueError as exc:
+            raise DomainError("MODEL_SCHEMA_INVALID", "DeepSeek 反证复核输出不符合协议") from exc
+        return CodeReviewChallengeResult(
+            provider="deepseek",
+            model=self._model,
+            attempts=1,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            challenges=challenges,
+        )
+
+    def propose_delivery_claims(self, payload: dict) -> DeliveryClaimProposalResult:
+        started = time.monotonic()
+        response = self._complete(
+            "仅根据 Pull Request 提取候选交付主张。所有输出字段（claims[].text、claims[].rationale）必须使用简体中文；即使 Pull Request 或资料为其他语言，也必须翻译为准确、自然的中文。不得检查代码、判断是否完成、推断未提供的需求，或输出最终核验结论。",
+            {
+                "rules": [
+                    "只能使用提供的 Pull Request 元数据和可选资料摘录。",
+                    "每一条主张必须描述一个可由用户或验收人员观察到的交付结果，不得描述代码实现细节。",
+                    "主张文本和提取依据必须始终使用简体中文，禁止输出英文或其他语言。",
+                    "如果材料过于模糊，返回空列表。",
+                    "候选主张必须经人工确认，才能创建快照或启动核验。",
+                ],
+                "outputSchema": DeliveryClaimCandidateBatch.model_json_schema(),
+                "input": payload,
+            },
+        )
+        try:
+            claims = DeliveryClaimCandidateBatch.model_validate(response)
+        except ValueError as exc:
+            raise DomainError("MODEL_SCHEMA_INVALID", "DeepSeek 交付主张提取输出不符合协议") from exc
+        return DeliveryClaimProposalResult(
+            provider="deepseek",
+            model=self._model,
+            attempts=1,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            claims=claims,
         )
 
 

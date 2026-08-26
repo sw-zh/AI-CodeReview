@@ -33,6 +33,7 @@ class GitHubPaginationError(DomainError):
 @dataclass(frozen=True)
 class GitHubSyncPayload:
     issues: list[dict]
+    pull_requests: list[dict]
     milestones: list[dict]
     truncated: bool
     page_count: int
@@ -68,21 +69,35 @@ class GitHubSourceClient:
             exc.continuation_cursor = {"issues": exc.continuation_cursor}
             raise
         try:
-            milestones = self._list_paginated(f"/repos/{self._repository_slug}/milestones", {"state": "all"})
+            pull_requests = self._list_paginated(f"/repos/{self._repository_slug}/pulls", {"state": "all"})
         except GitHubPaginationError as exc:
             exc.page_count += issues.page_count
+            exc.continuation_cursor = {"pullRequests": exc.continuation_cursor}
+            raise
+        try:
+            milestones = self._list_paginated(f"/repos/{self._repository_slug}/milestones", {"state": "all"})
+        except GitHubPaginationError as exc:
+            exc.page_count += issues.page_count + pull_requests.page_count
             exc.continuation_cursor = {"milestones": exc.continuation_cursor}
             raise
         continuation_cursor = {
             key: value
-            for key, value in {"issues": issues.continuation_cursor, "milestones": milestones.continuation_cursor}.items()
+            for key, value in {
+                "issues": issues.continuation_cursor,
+                "pullRequests": pull_requests.continuation_cursor,
+                "milestones": milestones.continuation_cursor,
+            }.items()
             if value
         }
         return GitHubSyncPayload(
-            issues=issues.items,
+            # GitHub's Issues endpoint embeds a partial PR representation.  Pull
+            # requests are fetched separately below so they have immutable base/
+            # head refs and must not be duplicated as issue sources here.
+            issues=[item for item in issues.items if not isinstance(item.get("pull_request"), dict)],
+            pull_requests=pull_requests.items,
             milestones=milestones.items,
-            truncated=issues.truncated or milestones.truncated,
-            page_count=issues.page_count + milestones.page_count,
+            truncated=issues.truncated or pull_requests.truncated or milestones.truncated,
+            page_count=issues.page_count + pull_requests.page_count + milestones.page_count,
             continuation_cursor=continuation_cursor,
         )
 

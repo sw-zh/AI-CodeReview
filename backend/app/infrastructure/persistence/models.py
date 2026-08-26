@@ -367,7 +367,7 @@ class VerificationTask(TimestampedEntity, Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    delivery_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("delivery_items.id", ondelete="RESTRICT"))
+    delivery_item_id: Mapped[UUID] = mapped_column(ForeignKey("delivery_items.id", ondelete="RESTRICT"), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     requirement_key: Mapped[str] = mapped_column(String(100), nullable=False)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -399,7 +399,7 @@ class SourceRevision(TimestampedEntity, Base):
     __table_args__ = (
         UniqueConstraint("project_id", "logical_name", "revision_no", name="uq_source_revision"),
         CheckConstraint(
-            "processing_status IN ('UPLOADED', 'PARSING', 'CHUNKING', 'INDEXING', 'READY', 'FAILED')",
+            "processing_status IN ('UPLOADED', 'PARSING', 'OCR_CHECKING', 'CHUNKING', 'INDEXING', 'READY', 'FAILED')",
             name="ck_source_processing_status",
         ),
     )
@@ -411,10 +411,36 @@ class SourceRevision(TimestampedEntity, Base):
     revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    extracted_artifact_uri: Mapped[str | None] = mapped_column(Text)
+    extraction_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    ocr_confidence: Mapped[float | None] = mapped_column(nullable=True)
     media_type: Mapped[str] = mapped_column(String(100), nullable=False)
     processing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="UPLOADED")
     parser_version: Mapped[str | None] = mapped_column(String(64))
     failure_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class SourceIngestionJob(TimestampedEntity, Base):
+    """Durable document processing job; deliberately separate from analysis runs."""
+
+    __tablename__ = "source_ingestion_jobs"
+    __table_args__ = (
+        CheckConstraint("job_status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED')", name="ck_source_ingestion_job_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    source_revision_id: Mapped[UUID] = mapped_column(ForeignKey("source_revisions.id", ondelete="CASCADE"), unique=True, nullable=False)
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    job_status: Mapped[str] = mapped_column(String(32), nullable=False, default="QUEUED")
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class DocumentChunk(Base):
@@ -492,6 +518,20 @@ class GitRepository(TimestampedEntity, Base):
     read_only: Mapped[bool] = mapped_column(nullable=False, default=True)
 
 
+class ArtifactObject(TimestampedEntity, Base):
+    __tablename__ = "artifact_objects"
+    __table_args__ = (UniqueConstraint("project_id", "kind", "content_hash", name="uq_artifact_project_kind_hash"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GitSnapshot(TimestampedEntity, Base):
     __tablename__ = "git_snapshots"
 
@@ -508,6 +548,10 @@ class GitSnapshot(TimestampedEntity, Base):
     exclude_paths: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     diff_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    effective_base_sha: Mapped[str | None] = mapped_column(String(64))
+    capture_version: Mapped[str | None] = mapped_column(String(64))
+    diff_artifact_id: Mapped[UUID | None] = mapped_column(ForeignKey("artifact_objects.id"))
+    code_change_artifact_id: Mapped[UUID | None] = mapped_column(ForeignKey("artifact_objects.id"))
 
 
 class Claim(TimestampedEntity, Base):
@@ -606,6 +650,44 @@ class RiskFinding(Base):
     recommendation: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class CodeReviewFinding(Base):
+    __tablename__ = "code_review_findings"
+    __table_args__ = (UniqueConstraint("analysis_run_id", "fingerprint", name="uq_code_review_finding_run_fingerprint"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    analysis_run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    evidence_id: Mapped[UUID] = mapped_column(ForeignKey("evidence_items.id"), nullable=False)
+    claim_id: Mapped[UUID | None] = mapped_column(ForeignKey("claims.id", ondelete="SET NULL"))
+    fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    finding_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    problem: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_scenario: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False)
+    produced_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    requires_human_confirmation: Mapped[bool] = mapped_column(nullable=False, default=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CodeReviewFindingChallenge(Base):
+    __tablename__ = "code_review_finding_challenges"
+    __table_args__ = (UniqueConstraint("analysis_run_id", "finding_id", name="uq_code_review_challenge_run_finding"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    analysis_run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    finding_id: Mapped[UUID] = mapped_column(ForeignKey("code_review_findings.id", ondelete="CASCADE"), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    model_call_id: Mapped[UUID | None] = mapped_column(ForeignKey("model_calls.id", ondelete="SET NULL"))
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AnalysisCoverage(Base):
     __tablename__ = "analysis_coverages"
 
@@ -615,6 +697,7 @@ class AnalysisCoverage(Base):
     scope_ref: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     reason_code: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class ReportVersion(TimestampedEntity, Base):
@@ -689,6 +772,41 @@ class InputSnapshot(TimestampedEntity, Base):
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     purpose: Mapped[str] = mapped_column(String(32), nullable=False, default="PREPARATION")
     assessment_profile: Mapped[str] = mapped_column(String(48), nullable=False, default="DELIVERY_VERIFICATION")
+
+
+class DeliveryClaimDraft(TimestampedEntity, Base):
+    __tablename__ = "delivery_claim_drafts"
+    __table_args__ = (
+        UniqueConstraint("cycle_id", "claim_key", name="uq_delivery_claim_draft_cycle_key"),
+        CheckConstraint("origin IN ('MODEL', 'HUMAN')", name="ck_delivery_claim_draft_origin"),
+        CheckConstraint("claim_status IN ('CANDIDATE', 'CONFIRMED', 'DISCARDED')", name="ck_delivery_claim_draft_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    cycle_id: Mapped[UUID] = mapped_column(ForeignKey("verification_cycles.id", ondelete="CASCADE"), nullable=False)
+    claim_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    claim_status: Mapped[str] = mapped_column(String(16), nullable=False, default="CANDIDATE")
+    source_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InputSnapshotClaim(Base):
+    __tablename__ = "input_snapshot_claims"
+    __table_args__ = (UniqueConstraint("snapshot_id", "claim_key", name="uq_input_snapshot_claim_key"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("input_snapshots.id", ondelete="CASCADE"), nullable=False)
+    delivery_claim_draft_id: Mapped[UUID] = mapped_column(ForeignKey("delivery_claim_drafts.id"), nullable=False)
+    claim_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
 
 
 class InputSnapshotSource(Base):

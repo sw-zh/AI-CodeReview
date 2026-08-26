@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.domain.errors import DomainError
 from app.domain.ports import FrozenGitDiff, FrozenGitRange, GitReaderPort
 from app.infrastructure.credential_resolver import resolve_environment_secret
+from app.infrastructure.diff_parser import enrich_context, parse_unified_diff
 
 
 class ReadOnlyGitReader(GitReaderPort):
@@ -28,16 +29,30 @@ class ReadOnlyGitReader(GitReaderPort):
         comparison = f"{base_sha}..{target_sha}" if diff_mode == "TWO_DOT" else f"{merge_base_sha}..{target_sha}"
         pathspecs = [*include_paths, *(f":(exclude){path}" for path in exclude_paths)]
         suffix = ("--", *pathspecs) if pathspecs else ()
-        diff = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--binary", comparison, *suffix, repository_url=repository_url, credential_ref=credential_ref)
-        name_status = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", comparison, *suffix, repository_url=repository_url, credential_ref=credential_ref)
-        numstat = self._run(repository, "diff", "--no-ext-diff", "--find-renames", "--numstat", comparison, *suffix, repository_url=repository_url, credential_ref=credential_ref)
+        diff_bytes = self._run_bytes(repository, "diff", "--no-ext-diff", "--find-renames", "--binary", comparison, *suffix, repository_url=repository_url, credential_ref=credential_ref)
+        diff = diff_bytes.decode("utf-8", errors="replace")
+        name_status = self._run_bytes(repository, "diff", "--no-ext-diff", "--find-renames", "--name-status", "-z", comparison, *suffix, repository_url=repository_url, credential_ref=credential_ref)
+        numstat = self._run_bytes(repository, "diff", "--no-ext-diff", "--find-renames", "--numstat", "-z", comparison, *suffix, repository_url=repository_url, credential_ref=credential_ref)
         coverage = self._coverage(comparison, include_paths, exclude_paths, diff, name_status, numstat)
+        settings = get_settings()
+        files = parse_unified_diff(diff)
+        bundle = enrich_context(
+            files,
+            read_blob=lambda sha, path: self._run_bytes(repository, "show", f"{sha}:{path}", repository_url=repository_url, credential_ref=credential_ref),
+            base_sha=base_sha,
+            target_sha=target_sha,
+            max_file_bytes=settings.code_review_context_max_file_bytes,
+            max_total_bytes=settings.code_review_context_max_total_bytes,
+        )
+        coverage = {**coverage, "codeReview": bundle["coverage"]}
         return FrozenGitRange(
             base_sha=base_sha,
             target_sha=target_sha,
             merge_base_sha=merge_base_sha,
-            diff_hash=f"sha256:{hashlib.sha256(diff.encode('utf-8')).hexdigest()}",
+            diff_hash=f"sha256:{hashlib.sha256(diff_bytes).hexdigest()}",
             coverage=coverage,
+            diff=diff_bytes,
+            code_change_bundle=bundle,
         )
 
     def read_frozen_diff(
@@ -72,15 +87,28 @@ class ReadOnlyGitReader(GitReaderPort):
         )
 
     @staticmethod
-    def _coverage(comparison: str, include_paths: list[str], exclude_paths: list[str], diff: str, name_status: str, numstat: str) -> dict:
+    def _coverage(comparison: str, include_paths: list[str], exclude_paths: list[str], diff: str, name_status: str | bytes, numstat: str | bytes) -> dict:
         """Make non-text or intentionally skipped Git inputs explicit to the workflow."""
         notices: list[dict] = []
         skipped: list[dict] = []
-        changed = [line for line in name_status.splitlines() if line]
-        for line in changed:
-            parts = line.split("\t")
-            status = parts[0]
-            paths = parts[1:]
+        name_records: list[tuple[str, list[str]]] = []
+        if isinstance(name_status, bytes):
+            tokens = [item.decode("utf-8", errors="replace") for item in name_status.split(b"\0") if item]
+            index = 0
+            while index < len(tokens):
+                status = tokens[index]; index += 1
+                count = 2 if status.startswith(("R", "C")) else 1
+                paths = tokens[index:index + count]; index += count
+                if paths:
+                    name_records.append((status, paths))
+        else:
+            for line in name_status.splitlines():
+                if not line:
+                    continue
+                parts = line.split("\t")
+                name_records.append((parts[0], parts[1:]))
+        changed = ["\t".join([status, *paths]) for status, paths in name_records]
+        for status, paths in name_records:
             if status.startswith("R") and len(paths) >= 2:
                 notices.append({"kind": "RENAMED", "from": paths[-2], "to": paths[-1]})
             elif status.startswith("D") and paths:
@@ -93,11 +121,12 @@ class ReadOnlyGitReader(GitReaderPort):
             skipped.append({"kind": "SUBMODULE", "path": path, "reasonCode": "SUBMODULE_POINTER"})
 
         generated_pattern = re.compile(r"(^|/)(dist|build|coverage|node_modules)/|\.(min\.js|map|lock)$", re.IGNORECASE)
-        for line in changed:
-            path = line.split("\t")[-1]
+        for _, paths in name_records:
+            path = paths[-1]
             if generated_pattern.search(path):
                 skipped.append({"kind": "GENERATED", "path": path, "reasonCode": "GENERATED_PATH_RULE"})
-        for line in numstat.splitlines():
+        numstat_lines = (numstat.decode("utf-8", errors="replace").split("\0") if isinstance(numstat, bytes) else numstat.splitlines())
+        for line in numstat_lines:
             parts = line.split("\t")
             if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
                 continue
@@ -124,6 +153,10 @@ class ReadOnlyGitReader(GitReaderPort):
 
     @staticmethod
     def _run(cwd: Path, *args: str, repository_url: str, credential_ref: str | None) -> str:
+        return ReadOnlyGitReader._run_bytes(cwd, *args, repository_url=repository_url, credential_ref=credential_ref).decode("utf-8", errors="replace").strip()
+
+    @staticmethod
+    def _run_bytes(cwd: Path, *args: str, repository_url: str, credential_ref: str | None) -> bytes:
         environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         if credential_ref:
             parsed = urlparse(repository_url)
@@ -142,9 +175,9 @@ class ReadOnlyGitReader(GitReaderPort):
                     "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}",
                 }
             )
-        command = ["git", "-c", "core.hooksPath=/dev/null", "-c", "http.followRedirects=false", "-C", str(cwd), *args]
+        command = ["git", "-c", "core.hooksPath=/dev/null", "-c", "http.followRedirects=false", "-c", "core.quotePath=false", "-C", str(cwd), *args]
         try:
             result = subprocess.run(command, capture_output=True, check=True, text=False, timeout=60, env=environment)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             raise DomainError("GIT_RANGE_INVALID", "无法读取只读 Git 范围") from exc
-        return result.stdout.decode("utf-8", errors="replace").strip()
+        return result.stdout

@@ -58,6 +58,8 @@ def _parse_source_time(value: object) -> datetime | None:
 
 
 def _planning_status(*, state: object, state_reason: object) -> str:
+    if state_reason == "merged":
+        return DeliveryPlanningStatus.DECLARED_DONE.value
     if state == "closed" and state_reason == "not_planned":
         return DeliveryPlanningStatus.CANCELLED.value
     if state == "closed":
@@ -68,17 +70,32 @@ def _planning_status(*, state: object, state_reason: object) -> str:
 def _normalize_resource_payload(item: dict, *, resource_type: str) -> dict:
     milestone = item.get("milestone")
     milestone_key = str(milestone.get("number")) if isinstance(milestone, dict) and milestone.get("number") is not None else None
+    base = item.get("base") if isinstance(item.get("base"), dict) else {}
+    head = item.get("head") if isinstance(item.get("head"), dict) else {}
+    state = str(item.get("state") or "UNKNOWN")
+    merged_at = str(item.get("merged_at") or "")
+    state_reason = "merged" if resource_type == ExternalResourceType.PULL_REQUEST.value and merged_at else str(item.get("state_reason") or "")
     return {
         "resourceType": resource_type,
         "externalKey": str(item.get("number")),
         "title": str(item.get("title") or ""),
         "body": str(item.get("body") or item.get("description") or ""),
-        "state": str(item.get("state") or "UNKNOWN"),
-        "stateReason": str(item.get("state_reason") or ""),
+        "state": state,
+        "stateReason": state_reason,
         "webUrl": str(item.get("html_url") or ""),
         "milestoneKey": milestone_key,
         "sourceUpdatedAt": str(item.get("updated_at") or ""),
         "labels": [str(label.get("name")) for label in item.get("labels", []) if isinstance(label, dict) and label.get("name")],
+        "pullRequest": {
+            "number": str(item.get("number") or ""),
+            "baseRef": str(base.get("ref") or ""),
+            "baseSha": str(base.get("sha") or ""),
+            "headRef": str(head.get("ref") or ""),
+            "headSha": str(head.get("sha") or ""),
+            "mergedAt": merged_at or None,
+            "draft": bool(item.get("draft")),
+            "changedFiles": item.get("changed_files") if isinstance(item.get("changed_files"), int) else None,
+        } if resource_type == ExternalResourceType.PULL_REQUEST.value else None,
     }
 
 
@@ -204,7 +221,7 @@ def _upsert_resource(
     return resource, revision, True
 
 
-def _project_delivery_item(
+def _project_delivery_item_from_pull_request(
     session: Session,
     *,
     project_id: UUID,
@@ -222,7 +239,10 @@ def _project_delivery_item(
             external_resource_id=resource.id,
             external_key=resource.logical_key,
             title=revision.title,
-            planning_status=_planning_status(state=source.get("state"), state_reason=source.get("state_reason")),
+            planning_status=_planning_status(
+                state=source.get("state"),
+                state_reason="merged" if source.get("merged_at") else source.get("state_reason"),
+            ),
             verification_status=DeliveryVerificationStatus.NOT_ASSESSED.value,
             source_updated_at=revision.source_updated_at,
         )
@@ -231,7 +251,10 @@ def _project_delivery_item(
     else:
         item.external_resource_id = resource.id
         item.title = revision.title
-        item.planning_status = _planning_status(state=source.get("state"), state_reason=source.get("state_reason"))
+        item.planning_status = _planning_status(
+            state=source.get("state"),
+            state_reason="merged" if source.get("merged_at") else source.get("state_reason"),
+        )
         item.source_updated_at = revision.source_updated_at
     if created or changed:
         session.add(
@@ -268,12 +291,34 @@ def sync_connection(
         fetched_count = 0
         changed_count = 0
         for source in payload.issues:
-            resource_type = ExternalResourceType.PULL_REQUEST.value if isinstance(source.get("pull_request"), dict) else ExternalResourceType.ISSUE.value
-            resource, revision, changed = _upsert_resource(session, connection=connection, source=source, resource_type=resource_type)
+            resource, _, changed = _upsert_resource(
+                session,
+                connection=connection,
+                source=source,
+                resource_type=ExternalResourceType.ISSUE.value,
+            )
             fetched_count += 1
             changed_count += int(changed)
-            if resource_type == ExternalResourceType.ISSUE.value:
-                changed_count += int(_project_delivery_item(session, project_id=project_id, resource=resource, revision=revision, source=source, actor_id=actor_id, changed=changed))
+        for source in payload.pull_requests:
+            resource, revision, changed = _upsert_resource(
+                session,
+                connection=connection,
+                source=source,
+                resource_type=ExternalResourceType.PULL_REQUEST.value,
+            )
+            fetched_count += 1
+            changed_count += int(changed)
+            changed_count += int(
+                _project_delivery_item_from_pull_request(
+                    session,
+                    project_id=project_id,
+                    resource=resource,
+                    revision=revision,
+                    source=source,
+                    actor_id=actor_id,
+                    changed=changed,
+                )
+            )
         for source in payload.milestones:
             _, _, changed = _upsert_resource(session, connection=connection, source=source, resource_type=ExternalResourceType.MILESTONE.value)
             fetched_count += 1
@@ -328,6 +373,10 @@ def list_delivery_items(session: Session, *, project_id: UUID, actor_id: UUID, l
     result: list[dict] = []
     for item in items:
         resource = session.get(ExternalResource, item.external_resource_id)
+        if resource is None or resource.resource_type != ExternalResourceType.PULL_REQUEST.value:
+            # Historical Issue-backed items remain available to old records but
+            # are deliberately not exposed as code deliveries.
+            continue
         connection = session.get(ExternalConnection, resource.connection_id) if resource else None
         latest = (
             session.query(ExternalResourceRevision)
@@ -351,6 +400,8 @@ def list_delivery_items(session: Session, *, project_id: UUID, actor_id: UUID, l
                 "web_url": latest.web_url if latest else "",
                 "milestone_key": latest.milestone_key if latest else None,
                 "resource_revision": latest.revision_no if latest else 0,
+                "resource_type": resource.resource_type,
+                "pull_request": (latest.payload.get("pullRequest") if latest and isinstance(latest.payload, dict) else None),
             }
         )
     return result

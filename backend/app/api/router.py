@@ -10,7 +10,7 @@ from app.api.routes.delivery_associations import router as delivery_associations
 from app.api.routes.project_status import router as project_status_router
 from app.api.routes.peripheral_profiles import router as peripheral_profiles_router
 from app.api.routes.security_baselines import router as security_baselines_router
-from app.api.routes.git import repository_router, snapshot_router
+from app.api.routes.git import repository_router, snapshot_read_router, snapshot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.manual_evidence import router as manual_evidence_router
 from app.api.routes.orchestration import project_router as orchestration_project_router, run_router as orchestration_run_router, task_router as orchestration_task_router
@@ -43,6 +43,7 @@ api_router.include_router(orchestration_task_router, tags=["agent-orchestration"
 api_router.include_router(orchestration_run_router, tags=["agent-orchestration"])
 api_router.include_router(repository_router, tags=["git"])
 api_router.include_router(snapshot_router, tags=["git"])
+api_router.include_router(snapshot_read_router, tags=["git"])
 api_router.include_router(projects_router, tags=["projects"])
 api_router.include_router(questions_router, tags=["questions"])
 api_router.include_router(retrieval_router, tags=["retrieval"])

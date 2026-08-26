@@ -3,7 +3,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import TaskCreateRequest, TaskDeliveryItemBindingRequest, TaskResponse, VerificationTaskListResponse
+from app.api.schemas import DeliveryClaimConfirmRequest, DeliveryClaimProposalRequest, DeliveryClaimResponse, TaskCreateRequest, TaskDeliveryItemBindingRequest, TaskResponse, VerificationTaskListResponse
+from app.application.services.delivery_claim_service import confirm_delivery_claims, list_delivery_claims, propose_delivery_claims
 from app.application.services.delivery_association_service import bind_task_delivery_item
 from app.application.services.task_service import create_next_cycle, create_task, list_tasks
 from app.domain.errors import DomainError
@@ -29,6 +30,36 @@ def get_tasks(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> li
     try:
         return [VerificationTaskListResponse(**item) for item in list_tasks(session, project_id=project_id, actor_id=user.id)]
     except DomainError as exc:
+        raise _failure(exc)
+
+
+@router.get("/{task_id}/delivery-claims", response_model=list[DeliveryClaimResponse])
+def get_delivery_claims(project_id: UUID, task_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[DeliveryClaimResponse]:
+    try:
+        return [DeliveryClaimResponse(**item) for item in list_delivery_claims(session, project_id=project_id, task_id=task_id, actor_id=user.id)]
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@router.post("/{task_id}/delivery-claims/propose", response_model=list[DeliveryClaimResponse])
+def propose_claims(project_id: UUID, task_id: UUID, payload: DeliveryClaimProposalRequest, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> list[DeliveryClaimResponse]:
+    try:
+        claims = propose_delivery_claims(session, project_id=project_id, task_id=task_id, source_revision_ids=payload.source_revision_ids, actor_id=user.id, correlation_id=correlation_id(request))
+        session.commit()
+        return [DeliveryClaimResponse(**item) for item in claims]
+    except DomainError as exc:
+        session.rollback()
+        raise _failure(exc)
+
+
+@router.put("/{task_id}/delivery-claims", response_model=list[DeliveryClaimResponse])
+def confirm_claims(project_id: UUID, task_id: UUID, payload: DeliveryClaimConfirmRequest, request: Request, session: SessionDep, user: CurrentUserDep, _: str = Depends(idempotency_key)) -> list[DeliveryClaimResponse]:
+    try:
+        claims = confirm_delivery_claims(session, project_id=project_id, task_id=task_id, claims=[item.model_dump() for item in payload.claims], actor_id=user.id, correlation_id=correlation_id(request))
+        session.commit()
+        return [DeliveryClaimResponse(**item) for item in claims]
+    except DomainError as exc:
+        session.rollback()
         raise _failure(exc)
 
 

@@ -112,6 +112,7 @@ def _report_projection(session: Session, *, report: ReportVersion, cycle: Verifi
         "status": report.status,
         "record_type": report.record_type,
         "content_hash": report.content_hash,
+        "version": report.version,
         "snapshot_hash": report.snapshot_hash,
         "editorial_note": report.editorial_note,
         "submitted_at": report.submitted_at,
@@ -397,7 +398,7 @@ def publish(session: Session, *, report_id: UUID, actor_id: UUID, correlation_id
     report = session.get(ReportVersion, report_id); cycle = _locked_cycle_for_report(session, report=report) if report else None; task = session.get(VerificationTask, cycle.task_id) if cycle else None
     if task is None or report.status != "APPROVED": raise DomainError("STATE_CONFLICT", "仅已批准报告可发布")
     _assert_cycle_open_for_report_write(cycle)
-    require_project_role(session, task.project_id, actor_id, {ProjectRole.REVIEWER, ProjectRole.ADMIN})
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.ADMIN})
     run = session.get(AnalysisRun, report.run_id)
     snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
     if run is None or snapshot is None or report.record_type != run.assessment_profile:

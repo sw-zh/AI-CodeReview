@@ -60,7 +60,10 @@ def _latest_resource_revision(session: Session, resource_id: UUID) -> ExternalRe
 def _item_for_project(session: Session, *, project_id: UUID, delivery_item_id: UUID) -> DeliveryItem:
     item = session.get(DeliveryItem, delivery_item_id)
     if item is None or item.project_id != project_id:
-        raise DomainError("RESOURCE_NOT_FOUND", "研发事项不存在")
+        raise DomainError("RESOURCE_NOT_FOUND", "代码交付不存在")
+    resource = session.get(ExternalResource, item.external_resource_id)
+    if resource is None or resource.resource_type != ExternalResourceType.PULL_REQUEST.value:
+        raise DomainError("INPUT_INVALID", "核验任务只能归属当前项目已同步的 GitHub PR")
     return item
 
 

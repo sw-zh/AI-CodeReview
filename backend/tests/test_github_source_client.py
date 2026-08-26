@@ -3,10 +3,38 @@
 import unittest
 
 from app.domain.errors import DomainError
-from app.infrastructure.github_source_client import GitHubPaginationError, GitHubSourceClient
+from app.infrastructure.github_source_client import GitHubPaginationError, GitHubSourceClient, _PaginatedPayload
 
 
 class GitHubSourcePaginationTests(unittest.TestCase):
+    def test_sync_fetches_full_pull_requests_and_keeps_issue_discussions_out_of_delivery_input(self) -> None:
+        client = object.__new__(GitHubSourceClient)
+        client._repository_slug = "octocat/example"
+
+        def fake_list(path: str, _query: dict[str, str]):
+            if path.endswith("/issues"):
+                return _PaginatedPayload(
+                    items=[{"number": 11, "title": "咨询"}, {"number": 12, "pull_request": {"url": "partial"}}],
+                    truncated=False,
+                    page_count=1,
+                    continuation_cursor={},
+                )
+            if path.endswith("/pulls"):
+                return _PaginatedPayload(
+                    items=[{"number": 12, "base": {"ref": "main", "sha": "base"}, "head": {"ref": "feature", "sha": "head"}}],
+                    truncated=False,
+                    page_count=1,
+                    continuation_cursor={},
+                )
+            return _PaginatedPayload(items=[], truncated=False, page_count=1, continuation_cursor={})
+
+        client._list_paginated = fake_list
+        result = client.fetch()
+
+        self.assertEqual([item["number"] for item in result.issues], [11])
+        self.assertEqual([item["number"] for item in result.pull_requests], [12])
+        self.assertEqual(result.page_count, 3)
+
     def test_follows_the_next_link_instead_of_constructing_page_numbers(self) -> None:
         client = object.__new__(GitHubSourceClient)
         client._repository_slug = "octocat/example"

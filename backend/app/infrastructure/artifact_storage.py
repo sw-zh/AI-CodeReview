@@ -21,7 +21,13 @@ class LocalArtifactStorage(ArtifactStoragePort):
         return str(target)
 
     def read_text(self, uri: str) -> str:
+        return self.resolve_path(uri).read_text(encoding="utf-8")
+
+    def read_bytes(self, uri: str) -> bytes:
+        return self.resolve_path(uri).read_bytes()
+
+    def resolve_path(self, uri: str) -> Path:
         path = Path(uri).resolve()
         if self._root not in path.parents:
             raise ValueError("artifact uri escapes configured root")
-        return path.read_text(encoding="utf-8")
+        return path

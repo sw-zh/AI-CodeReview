@@ -13,12 +13,18 @@ from app.infrastructure.persistence.models import (
     DocumentChunk,
     EvidenceItem,
     InputSnapshot,
+    InputSnapshotClaim,
     InputSnapshotSource,
     InputSnapshotGit,
     InputSnapshotExternalEvidence,
     InputSnapshotManualEvidence,
     GitSnapshot,
     ExternalEvidence,
+    DeliveryItemSourceLink,
+    DeliveryItem,
+    DeliveryClaimDraft,
+    ExternalResource,
+    ExternalResourceRevision,
     ManualEvidence,
     VerificationCycle,
     VerificationTask,
@@ -170,14 +176,47 @@ def freeze_formal_snapshot(
     git = session.get(GitSnapshot, git_snapshot_id)
     if task is None or git is None or git.cycle_id != cycle_id:
         raise DomainError("GIT_RANGE_INVALID", "正式快照必须绑定当前轮次已冻结的 Git 范围")
+    if not git.diff_artifact_id or not git.code_change_artifact_id:
+        raise DomainError("GIT_ARTIFACT_MISSING", "正式快照必须使用已保存且可回放的 Git Diff 制品")
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     if cycle.business_status not in {"DRAFT", "NEEDS_EVIDENCE", "NEEDS_CONFIRMATION"}:
         raise DomainError("STATE_CONFLICT", "当前轮次不能再冻结新的正式输入快照")
+    confirmed_claims = (
+        session.query(DeliveryClaimDraft)
+        .filter_by(cycle_id=cycle.id, claim_status="CONFIRMED")
+        .order_by(DeliveryClaimDraft.claim_key)
+        .all()
+    )
+    if not confirmed_claims:
+        raise DomainError("CLAIMS_NOT_CONFIRMED", "请先确认本次 Pull Request 的交付主张，再创建正式快照")
+    primary_link = (
+        session.query(DeliveryItemSourceLink)
+        .filter_by(delivery_item_id=task.delivery_item_id, link_role="PRIMARY")
+        .filter(DeliveryItemSourceLink.external_resource_revision_id.is_not(None))
+        .order_by(DeliveryItemSourceLink.created_at.desc())
+        .first()
+    )
+    requirement_revision = session.get(ExternalResourceRevision, primary_link.external_resource_revision_id) if primary_link else None
+    if requirement_revision is None:
+        raise DomainError("INPUT_INVALID", "正式快照缺少本次 Pull Request 的同步版本")
+    item = session.get(DeliveryItem, task.delivery_item_id)
+    resource = session.get(ExternalResource, item.external_resource_id) if item else None
+    if resource is None or resource.resource_type != "PULL_REQUEST":
+        raise DomainError("INPUT_INVALID", "正式快照只能从当前项目已同步的 Pull Request 创建")
     if len(source_revision_ids) != len(set(source_revision_ids)):
         raise DomainError("INPUT_INVALID", "正式快照的资料版本不能重复选择")
     sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == task.project_id).all()
     if len(sources) != len(source_revision_ids) or any(x.processing_status != SourceProcessingStatus.READY for x in sources):
         raise DomainError("SOURCE_NOT_READY", "正式快照的全部资料必须存在且处于 READY")
+    selected_source_ids = {str(source.id) for source in sources}
+    referenced_source_ids = {
+        str(item.get("sourceRevisionId"))
+        for claim in confirmed_claims
+        for item in claim.source_manifest.get("documents", [])
+        if isinstance(item, dict) and item.get("sourceRevisionId")
+    }
+    if not referenced_source_ids.issubset(selected_source_ids):
+        raise DomainError("INPUT_STALE", "候选交付主张引用的资料版本未被纳入本次正式快照；请重新选择资料或重新提取候选")
     if len(external_evidence_ids) != len(set(external_evidence_ids)):
         raise DomainError("INPUT_INVALID", "external evidence cannot be selected twice")
     external_evidence = session.query(ExternalEvidence).filter(ExternalEvidence.id.in_(external_evidence_ids), ExternalEvidence.project_id == task.project_id, ExternalEvidence.cycle_id == cycle.id).all() if external_evidence_ids else []
@@ -195,12 +234,27 @@ def freeze_formal_snapshot(
     if len(manual_evidence) != len(manual_evidence_ids):
         raise DomainError("INPUT_INVALID", "manual evidence does not belong to this verification cycle")
     storage = LocalArtifactStorage(get_settings().artifact_root)
-    normalized = {"purpose": "FORMAL", "assessmentProfile": _DELIVERY_PROFILE, "cycleId": str(cycle.id), "policyVersion": "v1", "workflowVersion": "v1", "git": {"baseSha": git.base_sha, "targetSha": git.target_sha, "mergeBaseSha": git.merge_base_sha, "diffMode": git.diff_mode, "diffHash": git.diff_hash}, "sources": sorted([{"id": str(x.id), "hash": x.content_hash, "parser": x.parser_version} for x in sources], key=lambda x: x["id"]), "externalEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "commitSha": x.commit_sha, "type": x.evidence_type} for x in external_evidence], key=lambda x: x["id"]), "manualEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "submittedBy": str(x.submitted_by)} for x in manual_evidence], key=lambda x: x["id"])}
+    delivery_claims = [
+        {
+            "id": str(claim.id),
+            "key": claim.claim_key,
+            "text": claim.text,
+            "origin": claim.origin,
+            "sourceManifest": claim.source_manifest,
+            "contentHash": f"sha256:{hashlib.sha256(claim.text.encode()).hexdigest()}",
+        }
+        for claim in confirmed_claims
+    ]
+    normalized = {"purpose": "FORMAL", "assessmentProfile": _DELIVERY_PROFILE, "cycleId": str(cycle.id), "policyVersion": "v1", "workflowVersion": "v1", "requirement": {"deliveryItemId": str(task.delivery_item_id), "externalResourceRevisionId": str(requirement_revision.id), "hash": requirement_revision.content_hash, "title": requirement_revision.title, "body": requirement_revision.body, "webUrl": requirement_revision.web_url}, "deliveryClaims": delivery_claims, "git": {"baseSha": git.base_sha, "targetSha": git.target_sha, "mergeBaseSha": git.merge_base_sha, "effectiveBaseSha": git.effective_base_sha, "diffMode": git.diff_mode, "diffHash": git.diff_hash, "diffArtifactId": str(git.diff_artifact_id), "codeChangeArtifactId": str(git.code_change_artifact_id)}, "sources": sorted([{"id": str(x.id), "hash": x.content_hash, "parser": x.parser_version} for x in sources], key=lambda x: x["id"]), "externalEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "commitSha": x.commit_sha, "type": x.evidence_type} for x in external_evidence], key=lambda x: x["id"]), "manualEvidence": sorted([{"id": str(x.id), "hash": x.content_hash, "submittedBy": str(x.submitted_by)} for x in manual_evidence], key=lambda x: x["id"])}
     snapshot_hash = f"sha256:{hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
     existing = session.query(InputSnapshot).filter_by(snapshot_hash=snapshot_hash).one_or_none()
     if existing is not None: return existing
     snapshot = InputSnapshot(cycle_id=cycle.id, snapshot_hash=snapshot_hash, policy_version="v1", workflow_version="v1", created_by=actor_id, purpose="FORMAL", assessment_profile=_DELIVERY_PROFILE)
     session.add(snapshot); session.flush()
+    for claim, payload in zip(confirmed_claims, delivery_claims, strict=True):
+        session.add(InputSnapshotClaim(snapshot_id=snapshot.id, delivery_claim_draft_id=claim.id, claim_key=claim.claim_key, text=claim.text, origin=claim.origin, source_manifest=claim.source_manifest, content_hash=payload["contentHash"]))
+    requirement_content = f"{requirement_revision.title}\n\n{requirement_revision.body}".strip()
+    session.add(EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="PULL_REQUEST", evidence_kind="RAW_FACT", content_hash=requirement_revision.content_hash, excerpt_safe=safe_excerpt(requirement_content), locator={"deliveryItemId": str(task.delivery_item_id), "externalResourceRevisionId": str(requirement_revision.id), "webUrl": requirement_revision.web_url}, locator_precision="EXACT", extractor_version="github-pr-v1"))
     active_version = active_index_version(session, project_id=task.project_id)
     for source in sources:
         session.add(InputSnapshotSource(snapshot_id=snapshot.id, source_revision_id=source.id, content_hash=source.content_hash, parser_version=source.parser_version or "unknown"))
@@ -233,5 +287,5 @@ def freeze_formal_snapshot(
             requires_human_confirmation=True,
         ))
     session.add(InputSnapshotGit(snapshot_id=snapshot.id, git_snapshot_id=git.id, diff_hash=git.diff_hash))
-    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id), "assessmentProfile": _DELIVERY_PROFILE})
+    append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="InputSnapshot", aggregate_id=snapshot.id, action="FORMAL_SNAPSHOT_FROZEN", correlation_id=correlation_id, payload={"snapshotHash": snapshot.snapshot_hash, "gitSnapshotId": str(git.id), "deliveryClaimCount": len(delivery_claims), "assessmentProfile": _DELIVERY_PROFILE})
     return snapshot

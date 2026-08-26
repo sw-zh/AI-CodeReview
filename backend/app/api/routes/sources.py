@@ -1,10 +1,11 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import ChunkItemResponse, SourceContentResponse, SourceDetailResponse, SourceResponse
-from app.application.services.source_service import create_source_revision, list_project_sources, list_source_chunks, read_source_content
+from app.application.services.source_service import create_source_revision, list_project_sources, list_source_chunks, read_source_content, read_source_download
 from app.domain.errors import DomainError
 
 router = APIRouter(prefix="/projects/{project_id}/sources")
@@ -22,6 +23,16 @@ def list_sources(project_id: UUID, session: SessionDep, user: CurrentUserDep) ->
 def read_content(project_id: UUID, source_id: UUID, session: SessionDep, user: CurrentUserDep) -> SourceContentResponse:
     try:
         return SourceContentResponse(**read_source_content(session, project_id=project_id, source_id=source_id, actor_id=user.id))
+    except DomainError as exc:
+        code = status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_409_CONFLICT if exc.code == "SOURCE_NOT_READY" else status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=code, detail={"code": exc.code, "message": exc.message})
+
+
+@router.get("/{source_id}/download")
+def download_source(project_id: UUID, source_id: UUID, session: SessionDep, user: CurrentUserDep) -> FileResponse:
+    try:
+        item = read_source_download(session, project_id=project_id, source_id=source_id, actor_id=user.id)
+        return FileResponse(item["path"], media_type=item["media_type"], filename=item["filename"])
     except DomainError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_404_NOT_FOUND, detail={"code": exc.code, "message": exc.message})
 
@@ -46,12 +57,13 @@ async def upload(
     _: str = Depends(idempotency_key),
 ) -> SourceResponse:
     try:
-        source = create_source_revision(
+        source, job = create_source_revision(
             session,
             project_id=project_id,
             source_role=source_role,
             logical_name=logical_name,
-            media_type=file.content_type or "text/plain",
+            original_filename=file.filename or logical_name,
+            claimed_media_type=file.content_type,
             content=await file.read(),
             actor_id=user.id,
             correlation_id=correlation_id(request),
@@ -65,6 +77,7 @@ async def upload(
             content_hash=source.content_hash,
             processing_status=source.processing_status,
             parser_version=source.parser_version,
+            ingestion_job_id=job.id,
         )
     except DomainError as exc:
         session.rollback()

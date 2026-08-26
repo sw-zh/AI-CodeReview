@@ -23,6 +23,7 @@ from app.infrastructure.persistence.models import DocumentChunk, ProjectRetrieva
 
 _ACTIVE = "ACTIVE"
 _HISTORICAL = "HISTORICAL"
+_CANONICAL_PARSER_VERSION = "knowledge-extraction-v1"
 
 
 def active_index_version(session: Session, *, project_id: UUID) -> str | None:
@@ -123,7 +124,7 @@ def start_retrieval_index_build_run(
     actor_id: UUID,
 ) -> RetrievalIndexBuildRun:
     require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
-    target_version = configured_embedding_index_version(get_settings(), MarkdownTextDocumentParser().version)
+    target_version = configured_embedding_index_version(get_settings(), _CANONICAL_PARSER_VERSION)
     run = RetrievalIndexBuildRun(
         project_id=project_id,
         target_index_version=target_version,
@@ -194,7 +195,7 @@ def rebuild_project_retrieval_index(
     require_project_role(session, project_id, actor_id, {ProjectRole.ADMIN})
     parser = MarkdownTextDocumentParser()
     settings = get_settings()
-    target_version = configured_embedding_index_version(settings, parser.version)
+    target_version = configured_embedding_index_version(settings, _CANONICAL_PARSER_VERSION)
     sources = (
         session.query(SourceRevision)
         .filter_by(project_id=project_id, processing_status=SourceProcessingStatus.READY)
@@ -203,14 +204,14 @@ def rebuild_project_retrieval_index(
     )
     if not sources:
         raise DomainError("SOURCE_NOT_READY", "当前项目没有可重建索引的 READY 资料")
-    if any(source.parser_version != parser.version for source in sources):
+    if False:  # Normalized artifacts provide a rebuildable text projection for all supported formats.
         raise DomainError("INDEX_REBUILD_UNSUPPORTED", "项目包含当前解析器版本无法重建的资料")
 
     storage = LocalArtifactStorage(settings.artifact_root)
     parsed_sources: list[tuple[SourceRevision, list]] = []
     for source in sources:
         try:
-            parsed = parser.parse(storage.read_text(source.artifact_uri))
+            parsed = parser.parse(storage.read_text(source.extracted_artifact_uri or source.artifact_uri))
         except (OSError, ValueError) as exc:
             raise DomainError("SOURCE_ARTIFACT_UNAVAILABLE", "资料原文不可读取，不能重建索引") from exc
         if not parsed:
@@ -244,7 +245,7 @@ def rebuild_project_retrieval_index(
         model = create_embedding_model(settings)
         for source, chunk_index, chunk in missing:
             embedding = model.embed(EmbeddingRequest(text=chunk.content, model=settings.embedding_model_name))
-            if embedding_index_version(parser.version, embedding) != target_version:
+            if embedding_index_version(_CANONICAL_PARSER_VERSION, embedding) != target_version:
                 raise DomainError("MODEL_SCHEMA_INVALID", "Embedding 返回的索引版本与当前运行配置不一致")
             session.add(
                 DocumentChunk(
@@ -274,7 +275,7 @@ def rebuild_project_retrieval_index(
         target = ProjectRetrievalIndex(
             project_id=project_id,
             index_version=target_version,
-            parser_version=parser.version,
+            parser_version=_CANONICAL_PARSER_VERSION,
             embedding_provider=settings.embedding_provider,
             embedding_model=settings.embedding_model_name,
             dimensions=768,

@@ -16,6 +16,42 @@ class ModelProposalBatch(BaseModel):
     proposals: list[ModelLinkProposal] = Field(default_factory=list, max_length=100)
 
 
+class CodeReviewFindingProposal(BaseModel):
+    evidence_id: UUID
+    related_claim_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    finding_kind: Literal["BUG", "SECURITY", "PERFORMANCE", "RELIABILITY", "MAINTAINABILITY", "TEST_GAP"]
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    title: str = Field(min_length=1, max_length=240)
+    problem: str = Field(min_length=1, max_length=4000)
+    trigger_scenario: str = Field(min_length=1, max_length=3000)
+    recommendation: str = Field(min_length=1, max_length=4000)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class CodeReviewFindingBatch(BaseModel):
+    findings: list[CodeReviewFindingProposal] = Field(default_factory=list, max_length=100)
+
+
+class CodeReviewFindingChallengeProposal(BaseModel):
+    finding_id: UUID
+    verdict: Literal["SUPPORTED", "UNSUPPORTED", "NEEDS_HUMAN"]
+    reason: str = Field(min_length=1, max_length=4000)
+    evidence_ids: list[UUID] = Field(min_length=1, max_length=20)
+
+
+class CodeReviewFindingChallengeBatch(BaseModel):
+    challenges: list[CodeReviewFindingChallengeProposal] = Field(default_factory=list, max_length=100)
+
+
+class DeliveryClaimCandidate(BaseModel):
+    text: str = Field(min_length=3, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=2000)
+
+
+class DeliveryClaimCandidateBatch(BaseModel):
+    claims: list[DeliveryClaimCandidate] = Field(default_factory=list, max_length=12)
+
+
 @dataclass(frozen=True)
 class GenerationRequest:
     run_id: UUID
@@ -35,6 +71,53 @@ class GenerationResult:
     attempts: int
     latency_ms: int
     proposals: ModelProposalBatch
+
+
+@dataclass(frozen=True)
+class CodeReviewRequest:
+    run_id: UUID
+    prompt_version: str
+    schema_version: str
+    claims: list[dict]
+    code_changes: list[dict]
+
+
+@dataclass(frozen=True)
+class CodeReviewResult:
+    provider: str
+    model: str
+    attempts: int
+    latency_ms: int
+    findings: CodeReviewFindingBatch
+
+
+@dataclass(frozen=True)
+class CodeReviewChallengeRequest:
+    run_id: UUID
+    prompt_version: str
+    schema_version: str
+    claims: list[dict]
+    code_changes: list[dict]
+    findings: list[dict]
+    timeout_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class CodeReviewChallengeResult:
+    provider: str
+    model: str
+    attempts: int
+    latency_ms: int
+    challenges: CodeReviewFindingChallengeBatch
+
+
+@dataclass(frozen=True)
+class DeliveryClaimProposalResult:
+    provider: str
+    model: str
+    attempts: int
+    latency_ms: int
+    claims: DeliveryClaimCandidateBatch
 
 
 @dataclass(frozen=True)

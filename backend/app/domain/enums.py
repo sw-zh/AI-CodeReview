@@ -51,6 +51,7 @@ class DeliveryVerificationStatus(StrEnum):
 class SourceProcessingStatus(StrEnum):
     UPLOADED = "UPLOADED"
     PARSING = "PARSING"
+    OCR_CHECKING = "OCR_CHECKING"
     CHUNKING = "CHUNKING"
     INDEXING = "INDEXING"
     READY = "READY"

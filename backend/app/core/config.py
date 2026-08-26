@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     agent_tool_response_limit_bytes: int = Field(default=262_144, ge=4_096, le=1_048_576)
     github_sync_timeout_seconds: int = Field(default=15, ge=1, le=30)
     github_sync_response_limit_bytes: int = Field(default=2_097_152, ge=65_536, le=8_388_608)
+    source_max_bytes: int = Field(default=100 * 1024 * 1024, ge=1_048_576, le=524_288_000)
+    source_pdf_max_pages: int = Field(default=500, ge=1, le=2_000)
+    source_ocr_min_average_confidence: float = Field(default=85.0, ge=0.0, le=100.0)
+    source_ocr_min_page_confidence: float = Field(default=60.0, ge=0.0, le=100.0)
+    source_ingestion_timeout_seconds: int = Field(default=180, ge=30, le=900)
+    code_review_context_max_file_bytes: int = Field(default=262_144, ge=4_096, le=2_097_152)
+    code_review_context_max_total_bytes: int = Field(default=1_048_576, ge=65_536, le=8_388_608)
+    code_review_input_char_budget: int = Field(default=96_000, ge=8_000, le=400_000)
+    code_review_challenge_max_findings: int = Field(default=30, ge=1, le=100)
+    code_review_challenge_input_char_budget: int = Field(default=64_000, ge=8_000, le=400_000)
+    code_review_challenge_timeout_seconds: int = Field(default=60, ge=5, le=180)
 
     @property
     def generation_model_name(self) -> str:

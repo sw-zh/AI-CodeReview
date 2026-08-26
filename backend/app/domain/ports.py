@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from app.domain.model_contracts import EmbeddingRequest, EmbeddingResult, EvidenceAnswerRequest, EvidenceAnswerResult, GenerationRequest, GenerationResult
+from app.domain.model_contracts import CodeReviewChallengeRequest, CodeReviewChallengeResult, CodeReviewRequest, CodeReviewResult, DeliveryClaimProposalResult, EmbeddingRequest, EmbeddingResult, EvidenceAnswerRequest, EvidenceAnswerResult, GenerationRequest, GenerationResult
 
 
 @dataclass(frozen=True)
@@ -11,6 +11,8 @@ class FrozenGitRange:
     merge_base_sha: str
     diff_hash: str
     coverage: dict
+    diff: bytes
+    code_change_bundle: dict
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,15 @@ class GenerationModelPort:
         raise NotImplementedError
 
     def answer_evidence(self, request: EvidenceAnswerRequest) -> EvidenceAnswerResult:
+        raise NotImplementedError
+
+    def review_code(self, request: CodeReviewRequest) -> CodeReviewResult:
+        raise NotImplementedError
+
+    def challenge_code_findings(self, request: CodeReviewChallengeRequest) -> CodeReviewChallengeResult:
+        raise NotImplementedError
+
+    def propose_delivery_claims(self, payload: dict) -> DeliveryClaimProposalResult:
         raise NotImplementedError
 
 

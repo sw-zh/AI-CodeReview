@@ -5,7 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
-RUN apt-get update && apt-get install --no-install-recommends -y git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    git libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
+    poppler-utils tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY app ./app

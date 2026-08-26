@@ -16,6 +16,7 @@ from app.domain.errors import DomainError
 from app.application.services.report_service import create_automatic_draft
 from app.infrastructure.persistence.models import AnalysisJob, AnalysisRun, AnalysisRunManifest, AnalysisRunOrchestrationSnapshot, InputSnapshot, RunEvent, VerificationCycle, VerificationResult
 from app.workflows.verification_graph import run_verification_graph
+from app.worker.source_ingestion import claim_and_complete_one as claim_and_complete_one_source_ingestion
 
 logger = logging.getLogger(__name__)
 _RETRY_SECONDS = (30, 120, 300)
@@ -31,6 +32,7 @@ def main() -> None:
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
             _claim_and_complete_one(settings.worker_id, settings.job_lease_seconds)
+            claim_and_complete_one_source_ingestion(worker_id=settings.worker_id, lease_seconds=settings.job_lease_seconds)
             logger.info("worker_heartbeat worker_id=%s", settings.worker_id)
         except SQLAlchemyError:
             logger.exception("worker_database_unavailable worker_id=%s", settings.worker_id)

@@ -64,7 +64,7 @@ def draft(cycle_id: UUID, run_id: UUID, request: Request, session: SessionDep, u
         report = create_draft(session, cycle_id=cycle_id, run_id=run_id, actor_id=user.id, correlation_id=correlation_id(request)); session.commit()
         return to_response(report)
     except DomainError as exc:
-        session.rollback(); raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
+        session.rollback(); raise HTTPException(status_code=403 if exc.code == "AUTH_FORBIDDEN" else 409, detail={"code": exc.code, "message": exc.message})
 
 
 @report_router.post("/{report_id}/submit", response_model=ReportResponse)
@@ -113,4 +113,4 @@ def publish_report(report_id: UUID, request: Request, session: SessionDep, user:
     try:
         record = publish(session, report_id=report_id, actor_id=user.id, correlation_id=correlation_id(request)); session.commit(); return {"id": str(record.id), "recordType": record.record_type, "recordNo": record.record_no, "recordHash": record.record_hash}
     except DomainError as exc:
-        session.rollback(); raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
+        session.rollback(); raise HTTPException(status_code=403 if exc.code == "AUTH_FORBIDDEN" else 409, detail={"code": exc.code, "message": exc.message})

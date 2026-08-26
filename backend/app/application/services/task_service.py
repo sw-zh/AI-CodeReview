@@ -6,7 +6,16 @@ from sqlalchemy.orm import Session
 from app.application.services.common import append_audit_event, require_project_role
 from app.domain.enums import CycleStatus, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import DeliveryItem, InputSnapshot, PublishedRecord, ReportVersion, VerificationCycle, VerificationTask
+from app.infrastructure.persistence.models import (
+    DeliveryItem,
+    ExternalResource,
+    ExternalResourceRevision,
+    InputSnapshot,
+    PublishedRecord,
+    ReportVersion,
+    VerificationCycle,
+    VerificationTask,
+)
 from app.application.services.orchestration_service import bind_task_default_orchestration, bind_task_template
 
 
@@ -18,14 +27,16 @@ def create_task(
     requirement_key: str,
     actor_id: UUID,
     correlation_id: str,
-    delivery_item_id: UUID | None = None,
+    delivery_item_id: UUID,
     orchestration_template_id: UUID | None = None,
 ) -> tuple[VerificationTask, VerificationCycle]:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
-    if delivery_item_id is not None:
-        item = session.get(DeliveryItem, delivery_item_id)
-        if item is None or item.project_id != project_id:
-            raise DomainError("INPUT_INVALID", "研发事项不存在或不属于当前项目")
+    item = session.get(DeliveryItem, delivery_item_id)
+    if item is None or item.project_id != project_id:
+        raise DomainError("INPUT_INVALID", "代码交付不存在或不属于当前项目")
+    resource = session.get(ExternalResource, item.external_resource_id)
+    if resource is None or resource.resource_type != "PULL_REQUEST":
+        raise DomainError("INPUT_INVALID", "审查任务只能从当前项目已同步的 GitHub PR 创建")
     task = VerificationTask(
         project_id=project_id, delivery_item_id=delivery_item_id, title=title, requirement_key=requirement_key, created_by=actor_id
     )
@@ -50,7 +61,7 @@ def create_task(
         action="VERIFICATION_TASK_CREATED",
         correlation_id=correlation_id,
         after_version=task.version,
-        payload={"cycleId": str(cycle.id), "deliveryItemId": str(delivery_item_id) if delivery_item_id else None},
+        payload={"cycleId": str(cycle.id), "deliveryItemId": str(delivery_item_id)},
     )
     return task, cycle
 
@@ -82,6 +93,21 @@ def list_tasks(session: Session, *, project_id: UUID, actor_id: UUID, limit: int
     )
     result: list[dict] = []
     for task in tasks:
+        item = session.get(DeliveryItem, task.delivery_item_id)
+        resource = session.get(ExternalResource, item.external_resource_id) if item else None
+        revision = (
+            session.query(ExternalResourceRevision)
+            .filter_by(resource_id=resource.id)
+            .order_by(ExternalResourceRevision.revision_no.desc())
+            .first()
+            if resource is not None
+            else None
+        )
+        pull_request = (
+            revision.payload.get("pullRequest")
+            if resource is not None and resource.resource_type == "PULL_REQUEST" and revision is not None and isinstance(revision.payload, dict)
+            else None
+        )
         cycle = (
             session.query(VerificationCycle)
             .filter_by(task_id=task.id)
@@ -119,6 +145,7 @@ def list_tasks(session: Session, *, project_id: UUID, actor_id: UUID, limit: int
                 "report_id": report.id if report else None,
                 "report_status": report.status if report else None,
                 "published_record_id": record.id if record else None,
+                "delivery_pull_request": pull_request,
                 "created_at": task.created_at,
                 "updated_at": task.updated_at,
             }

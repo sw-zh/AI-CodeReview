@@ -30,7 +30,7 @@ class ProjectResponse(BaseModel):
 class TaskCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     requirement_key: str = Field(min_length=1, max_length=100)
-    delivery_item_id: UUID | None = None
+    delivery_item_id: UUID
     orchestration_template_id: UUID | None = None
 
 
@@ -43,6 +43,31 @@ class TaskResponse(BaseModel):
     cycle_id: UUID
     cycle_status: str
     version: int
+
+
+class DeliveryClaimInput(BaseModel):
+    id: UUID | None = None
+    text: str = Field(min_length=3, max_length=2000)
+
+
+class DeliveryClaimProposalRequest(BaseModel):
+    source_revision_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+
+class DeliveryClaimConfirmRequest(BaseModel):
+    claims: list[DeliveryClaimInput] = Field(min_length=1, max_length=12)
+
+
+class DeliveryClaimResponse(BaseModel):
+    id: UUID
+    claim_key: str
+    text: str
+    rationale: str
+    origin: str
+    status: str
+    source_manifest: dict
+    created_at: datetime
+    updated_at: datetime
 
 
 class VerificationTaskListResponse(BaseModel):
@@ -60,6 +85,7 @@ class VerificationTaskListResponse(BaseModel):
     report_id: UUID | None
     report_status: str | None
     published_record_id: UUID | None
+    delivery_pull_request: dict | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -72,6 +98,7 @@ class SourceResponse(BaseModel):
     content_hash: str
     processing_status: str
     parser_version: str | None
+    ingestion_job_id: UUID
 
 
 class SourceDetailResponse(BaseModel):
@@ -82,8 +109,13 @@ class SourceDetailResponse(BaseModel):
     revision_no: int
     content_hash: str
     media_type: str
+    original_filename: str
     processing_status: str
     parser_version: str | None
+    failure_code: str | None
+    ocr_confidence: float | None
+    extraction_metadata: dict
+    ingestion_job_status: str | None
     in_snapshot: bool
     created_at: datetime
     updated_at: datetime
@@ -93,6 +125,8 @@ class SourceContentResponse(BaseModel):
     content: str
     media_type: str
     logical_name: str
+    original_filename: str
+    locator_summary: dict
 
 
 class ChunkItemResponse(BaseModel):
@@ -143,7 +177,8 @@ class SnapshotCreateRequest(BaseModel):
     source_revision_ids: list[UUID] = Field(min_length=1)
 
 
-class FormalSnapshotCreateRequest(SnapshotCreateRequest):
+class FormalSnapshotCreateRequest(BaseModel):
+    source_revision_ids: list[UUID] = Field(default_factory=list, max_length=100)
     git_snapshot_id: UUID
     external_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
     manual_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
@@ -201,6 +236,18 @@ class GitSnapshotResponse(BaseModel):
     coverage: dict
 
 
+class GitSnapshotDiffResponse(BaseModel):
+    snapshotId: UUID
+    baseSha: str
+    targetSha: str
+    effectiveBaseSha: str
+    diffMode: str
+    diffHash: str
+    diffArtifactId: UUID
+    coverage: dict
+    files: list[dict]
+
+
 class AnalysisRunResponse(BaseModel):
     id: UUID
     snapshot_id: UUID
@@ -219,6 +266,12 @@ class AnalysisResultResponse(BaseModel):
     requires_human_confirmation: bool
     evidence: list[dict]
     risks: list[dict] = Field(default_factory=list)
+
+
+class CodeReviewResponse(BaseModel):
+    gitSnapshotId: UUID | None = None
+    findings: list[dict] = Field(default_factory=list)
+    coverage: list[dict] = Field(default_factory=list)
 
 
 class ReportResponse(BaseModel):
@@ -241,6 +294,7 @@ class ProjectReportResponse(BaseModel):
     status: str
     record_type: str
     content_hash: str
+    version: int
     snapshot_hash: str
     editorial_note: str
     submitted_at: datetime | None
@@ -448,6 +502,8 @@ class DeliveryItemResponse(BaseModel):
     web_url: str
     milestone_key: str | None
     resource_revision: int
+    resource_type: str
+    pull_request: dict | None = None
 
 
 class TaskDeliveryItemBindingRequest(BaseModel):

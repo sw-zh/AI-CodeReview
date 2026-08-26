@@ -7,15 +7,17 @@ from app.api.schemas import (
     GitRepositoryCreateRequest,
     GitRepositoryResponse,
     GitSnapshotCreateRequest,
+    GitSnapshotDiffResponse,
     GitSnapshotResponse,
 )
-from app.application.services.git_service import freeze_git_snapshot, register_repository
+from app.application.services.git_service import freeze_git_snapshot, get_git_snapshot_diff, list_repositories, register_repository
 from app.domain.errors import DomainError
 from app.infrastructure.credential_resolver import normalize_secret_ref
 from app.infrastructure.git_reader import ReadOnlyGitReader
 
 repository_router = APIRouter(prefix="/projects/{project_id}/git-repositories")
 snapshot_router = APIRouter(prefix="/cycles/{cycle_id}/git-snapshots")
+snapshot_read_router = APIRouter(prefix="/git-snapshots")
 
 
 @repository_router.post("", response_model=GitRepositoryResponse, status_code=status.HTTP_201_CREATED)
@@ -43,6 +45,30 @@ def register(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"code": exc.code, "message": exc.message})
 
 
+@repository_router.get("", response_model=list[GitRepositoryResponse])
+def list_registered_repositories(
+    project_id: UUID,
+    session: SessionDep,
+    user: CurrentUserDep,
+) -> list[GitRepositoryResponse]:
+    try:
+        repositories = list_repositories(session, project_id=project_id, actor_id=user.id)
+        return [
+            GitRepositoryResponse(
+                id=repository.id,
+                project_id=repository.project_id,
+                display_url=repository.display_url,
+                read_only=repository.read_only,
+            )
+            for repository in repositories
+        ]
+    except DomainError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": exc.message},
+        )
+
+
 @snapshot_router.post("", response_model=GitSnapshotResponse, status_code=status.HTTP_201_CREATED)
 def freeze(
     cycle_id: UUID,
@@ -59,4 +85,13 @@ def freeze(
     except DomainError as exc:
         session.rollback()
         http_status = status.HTTP_403_FORBIDDEN if exc.code == "AUTH_FORBIDDEN" else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code=http_status, detail={"code": exc.code, "message": exc.message})
+
+
+@snapshot_read_router.get("/{snapshot_id}/diff", response_model=GitSnapshotDiffResponse)
+def get_diff(snapshot_id: UUID, session: SessionDep, user: CurrentUserDep) -> GitSnapshotDiffResponse:
+    try:
+        return GitSnapshotDiffResponse(**get_git_snapshot_diff(session, snapshot_id=snapshot_id, actor_id=user.id))
+    except DomainError as exc:
+        http_status = status.HTTP_404_NOT_FOUND if exc.code == "RESOURCE_NOT_FOUND" else status.HTTP_422_UNPROCESSABLE_ENTITY
         raise HTTPException(status_code=http_status, detail={"code": exc.code, "message": exc.message})

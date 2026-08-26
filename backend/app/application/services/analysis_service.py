@@ -13,7 +13,11 @@ from app.infrastructure.persistence.models import (
     AnalysisJob,
     AnalysisRun,
     AnalysisRunManifest,
+    AnalysisCoverage,
+    CodeReviewFinding,
+    CodeReviewFindingChallenge,
     InputSnapshot,
+    InputSnapshotClaim,
     InputSnapshotGit,
     Claim,
     EvidenceItem,
@@ -41,8 +45,15 @@ def start_analysis_run(
         raise DomainError("INPUT_STALE", "只有正式输入快照可以启动分析")
     if snapshot.assessment_profile != _DELIVERY_PROFILE:
         raise DomainError("ASSESSMENT_PROFILE_NOT_ENABLED", f"运行配置 {snapshot.assessment_profile} 尚未开放执行")
-    if session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none() is None:
+    git_binding = session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none()
+    if git_binding is None:
         raise DomainError("INPUT_STALE", "交付核验必须包含冻结 Git 范围")
+    from app.infrastructure.persistence.models import GitSnapshot
+    git_snapshot = session.get(GitSnapshot, git_binding.git_snapshot_id)
+    if git_snapshot is None or not git_snapshot.diff_artifact_id or not git_snapshot.code_change_artifact_id:
+        raise DomainError("GIT_ARTIFACT_MISSING", "交付核验的 Git 输入不具备可回放制品")
+    if not session.query(InputSnapshotClaim).filter_by(snapshot_id=snapshot.id).first():
+        raise DomainError("CLAIMS_NOT_CONFIRMED", "正式输入快照缺少已确认的交付主张，不能启动交付核验")
     if cycle.business_status not in {"DRAFT", "NEEDS_EVIDENCE", "NEEDS_CONFIRMATION"}:
         raise DomainError("STATE_CONFLICT", "当前轮次状态不允许启动新的分析运行")
     existing_job = session.query(AnalysisJob).filter_by(idempotency_key=idempotency_key).one_or_none()
@@ -73,7 +84,7 @@ def start_analysis_run(
     if config["orchestrationHash"] != orchestration_snapshot.content_hash:
         raise DomainError("ORCHESTRATION_CHANGED", "启动过程中编排模板发生变化，请重新发起分析")
     session.add(orchestration_snapshot)
-    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="dual-core-v1", rule_set_version="v1", prompt_set_version="v1", generation_model=config["generationModel"], embedding_model=config["embeddingModel"], schema_version="v1"))
+    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="standard-verification-v1", rule_set_version="v1", prompt_set_version="code-review-v1+challenge-v1", generation_model=config["generationModel"], embedding_model=config["embeddingModel"], schema_version="standard-verification-v1"))
     session.add(AnalysisJob(run_id=run.id, idempotency_key=idempotency_key, max_attempts=settings.job_max_attempts))
     cycle.business_status = "ANALYZING"
     cycle.active_run_id = run.id
@@ -182,3 +193,51 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
             ],
         })
     return items
+
+
+def get_code_review(session: Session, *, run_id: UUID, actor_id: UUID) -> dict:
+    run = get_analysis_run(session, run_id=run_id, actor_id=actor_id)
+    binding = session.query(InputSnapshotGit).filter_by(snapshot_id=run.snapshot_id).one_or_none()
+    findings = session.query(CodeReviewFinding).filter_by(analysis_run_id=run.id).order_by(CodeReviewFinding.created_at).all()
+    challenges = session.query(CodeReviewFindingChallenge).filter_by(analysis_run_id=run.id).all()
+    challenge_by_finding = {item.finding_id: item for item in challenges}
+    coverage = (
+        session.query(AnalysisCoverage)
+        .filter_by(analysis_run_id=run.id)
+        .filter(AnalysisCoverage.scope_kind.in_(("GIT_CAPTURE", "CODE_REVIEW", "FINDING_CHALLENGE", "STANDARD_VERIFICATION")))
+        .order_by(AnalysisCoverage.id)
+        .all()
+    )
+    return {
+        "gitSnapshotId": str(binding.git_snapshot_id) if binding else None,
+        "findings": [
+            {
+                "id": str(item.id),
+                "claimId": str(item.claim_id) if item.claim_id else None,
+                "evidenceId": str(item.evidence_id),
+                "severity": item.severity,
+                "findingKind": item.finding_kind,
+                "title": item.title,
+                "problem": item.problem,
+                "triggerScenario": item.trigger_scenario,
+                "recommendation": item.recommendation,
+                "confidence": item.confidence,
+                "requiresHumanConfirmation": item.requires_human_confirmation,
+                "challenge": (
+                    {
+                        "state": "COMPLETED",
+                        "verdict": challenge_by_finding[item.id].verdict,
+                        "reason": challenge_by_finding[item.id].reason,
+                        "evidenceIds": challenge_by_finding[item.id].evidence_ids,
+                    }
+                    if item.id in challenge_by_finding
+                    else {"state": "NOT_STARTED", "verdict": None, "reason": None, "evidenceIds": []}
+                ),
+            }
+            for item in findings
+        ],
+        "coverage": [
+            {"scopeKind": item.scope_kind, "scopeRef": item.scope_ref, "state": item.state, "reasonCode": item.reason_code, "details": item.details}
+            for item in coverage
+        ],
+    }

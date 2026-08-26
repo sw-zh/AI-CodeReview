@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from datetime import UTC, datetime
 from typing import TypedDict
@@ -9,22 +10,26 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.domain.errors import DomainError
-from app.domain.model_contracts import GenerationRequest
+from app.domain.model_contracts import CodeReviewChallengeRequest, CodeReviewRequest, GenerationRequest
+from app.application.services.code_review_service import persist_validated_challenges, persist_validated_findings, plan_code_review, plan_code_review_challenges
 from app.infrastructure.agent_tool_runner import execute_http_query
 from app.infrastructure.generation_model import create_generation_model
-from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.infrastructure.persistence.models import (
     AnalysisCoverage,
     AnalysisRun,
     AnalysisRunManifest,
     AnalysisRunOrchestrationSnapshot,
     AgentToolExecution,
+    ArtifactObject,
     Claim,
     ClaimEvidenceLink,
+    CodeReviewFinding,
+    CodeReviewFindingChallenge,
     EvidenceItem,
     GitRepository,
     GitSnapshot,
     InputSnapshot,
+    InputSnapshotClaim,
     InputSnapshotGit,
     ModelCall,
     NodeAttempt,
@@ -43,6 +48,7 @@ class VerificationGraphState(TypedDict, total=False):
     input_snapshot_id: str
     evidence_ids: list[str]
     git_evidence_ids: list[str]
+    code_change_bundle: dict
     external_evidence_ids: list[str]
     manual_evidence_ids: list[str]
     claim_ids: list[str]
@@ -173,7 +179,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
 
     def load_snapshot(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
-        document_evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="DOCUMENT").all()
+        document_evidence = session.query(EvidenceItem).filter(EvidenceItem.snapshot_id == UUID(state["input_snapshot_id"]), EvidenceItem.source_type.in_(("DOCUMENT", "REQUIREMENT", "PULL_REQUEST"))).all()
         external_evidence = session.query(EvidenceItem).filter(EvidenceItem.snapshot_id == UUID(state["input_snapshot_id"]), EvidenceItem.source_type.in_(("TEST", "BUILD"))).all()
         manual_evidence = session.query(EvidenceItem).filter_by(snapshot_id=UUID(state["input_snapshot_id"]), source_type="MANUAL").all()
         return {
@@ -183,110 +189,241 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         }
 
     def collect_git_evidence(state: VerificationGraphState) -> VerificationGraphState:
+        """Read immutable local artifacts; remote Git is never consulted during analysis."""
         ensure_not_cancelled()
         snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
         binding = session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none() if snapshot else None
         git_snapshot = session.get(GitSnapshot, binding.git_snapshot_id) if binding else None
         cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
         task = session.get(VerificationTask, cycle.task_id) if cycle else None
-        repository = session.get(GitRepository, git_snapshot.repository_id) if git_snapshot else None
-        if not all((snapshot, binding, git_snapshot, task, repository)):
-            return {"node_errors": [*state.get("node_errors", []), "GIT_SNAPSHOT_MISSING"]}
-
-        try:
-            frozen = ReadOnlyGitReader().read_frozen_diff(
-                repository.display_url,
-                base_sha=git_snapshot.base_sha,
-                target_sha=git_snapshot.target_sha,
-                merge_base_sha=git_snapshot.merge_base_sha,
-                diff_mode=git_snapshot.diff_mode,
-                include_paths=git_snapshot.include_paths,
-                exclude_paths=git_snapshot.exclude_paths,
-                expected_diff_hash=binding.diff_hash,
-                credential_ref=repository.credential_ref,
-            )
-        except DomainError as exc:
-            coverage = AnalysisCoverage(
-                analysis_run_id=run_id,
-                scope_kind="GIT",
-                scope_ref="formal-snapshot",
-                state="UNAVAILABLE",
-                reason_code=exc.code,
-            )
+        if not all((snapshot, binding, git_snapshot, task, git_snapshot.diff_artifact_id, git_snapshot.code_change_artifact_id)):
+            coverage = AnalysisCoverage(analysis_run_id=run_id, scope_kind="GIT_CAPTURE", scope_ref="formal-snapshot", state="UNAVAILABLE", reason_code="GIT_ARTIFACT_MISSING", details={})
             session.add(coverage)
-            session.flush()
-            return {"coverage_id": str(coverage.id), "node_errors": [*state.get("node_errors", []), exc.code]}
+            return {"coverage_id": str(coverage.id), "node_errors": [*state.get("node_errors", []), "GIT_ARTIFACT_MISSING"]}
+        diff_artifact = session.get(ArtifactObject, git_snapshot.diff_artifact_id)
+        bundle_artifact = session.get(ArtifactObject, git_snapshot.code_change_artifact_id)
+        try:
+            storage = LocalArtifactStorage(get_settings().artifact_root)
+            diff_bytes = storage.read_bytes(diff_artifact.storage_uri) if diff_artifact else b""
+            bundle_bytes = storage.read_bytes(bundle_artifact.storage_uri) if bundle_artifact else b""
+            if (f"sha256:{hashlib.sha256(diff_bytes).hexdigest()}" != binding.diff_hash or not diff_artifact or diff_artifact.content_hash != binding.diff_hash):
+                raise DomainError("GIT_ARTIFACT_HASH_MISMATCH", "冻结 Git Diff 制品哈希不一致")
+            if not bundle_artifact or f"sha256:{hashlib.sha256(bundle_bytes).hexdigest()}" != bundle_artifact.content_hash:
+                raise DomainError("GIT_ARTIFACT_HASH_MISMATCH", "代码变更制品哈希不一致")
+            bundle = json.loads(bundle_bytes.decode("utf-8"))
+        except (DomainError, OSError, ValueError, json.JSONDecodeError) as exc:
+            code = exc.code if isinstance(exc, DomainError) else "GIT_ARTIFACT_UNAVAILABLE"
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="GIT_CAPTURE", scope_ref="formal-snapshot", state="UNAVAILABLE", reason_code=code, details={}))
+            return {"node_errors": [*state.get("node_errors", []), code]}
 
         evidence_ids: list[str] = []
-        for path, header, line_start, line_end, payload in _parse_hunks(frozen.diff):
-            identity = f"{git_snapshot.target_sha}|{path}|{header}|{payload}"
-            content_hash = f"sha256:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
-            evidence = session.query(EvidenceItem).filter_by(
-                snapshot_id=snapshot.id,
-                source_type="CODE",
-                commit_sha=git_snapshot.target_sha,
-                content_hash=content_hash,
-            ).one_or_none()
-            if evidence is None:
-                evidence = EvidenceItem(
-                    project_id=task.project_id,
-                    snapshot_id=snapshot.id,
-                    source_type="CODE",
-                    evidence_kind="TOOL_FINDING",
-                    commit_sha=git_snapshot.target_sha,
-                    content_hash=content_hash,
-                    excerpt_safe=_safe_excerpt(payload),
-                    locator={
-                        "commitSha": git_snapshot.target_sha,
-                        "path": path,
-                        "hunk": header,
-                        "side": "NEW",
-                        "lineStart": line_start,
-                        "lineEnd": line_end,
-                    },
-                    locator_precision="EXACT" if line_start is not None else "APPROXIMATE",
-                    extractor_version="git-diff-v1",
-                )
-                session.add(evidence)
-                session.flush()
-            evidence_ids.append(str(evidence.id))
-
-        coverage = AnalysisCoverage(
-            analysis_run_id=run_id,
-            scope_kind="GIT",
-            scope_ref="formal-snapshot",
-            state="ANALYZED" if evidence_ids else "PARTIAL",
-            reason_code=None if evidence_ids else "NO_TEXT_HUNKS",
-        )
+        for file in bundle.get("files", []):
+            for hunk in file.get("hunks", []):
+                path, header, payload = str(file.get("path", "")), str(hunk.get("header", "")), str(hunk.get("payload", ""))
+                identity = json.dumps({"artifact": str(diff_artifact.id), "path": path, "header": header, "payload": payload}, ensure_ascii=False, sort_keys=True)
+                content_hash = f"sha256:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+                evidence = session.query(EvidenceItem).filter_by(snapshot_id=snapshot.id, source_type="CODE", content_hash=content_hash).one_or_none()
+                if evidence is None:
+                    evidence = EvidenceItem(project_id=task.project_id, snapshot_id=snapshot.id, source_type="CODE", evidence_kind="GIT_DIFF_HUNK", commit_sha=git_snapshot.target_sha, content_hash=content_hash, excerpt_safe=_safe_excerpt(payload), locator={"artifactId": str(diff_artifact.id), "commitSha": git_snapshot.target_sha, "path": path, "oldPath": file.get("old_path"), "hunk": header, "oldLineStart": hunk.get("old_start"), "oldLineEnd": hunk.get("old_end"), "newLineStart": hunk.get("new_start"), "newLineEnd": hunk.get("new_end")}, locator_precision="EXACT", extractor_version="git-diff-v2")
+                    session.add(evidence)
+                    session.flush()
+                evidence_ids.append(str(evidence.id))
+        details = {"capture": git_snapshot.coverage, "bundle": bundle.get("coverage", {}), "diffArtifactId": str(diff_artifact.id), "codeChangeArtifactId": str(bundle_artifact.id)}
+        coverage = AnalysisCoverage(analysis_run_id=run_id, scope_kind="GIT_CAPTURE", scope_ref="formal-snapshot", state="ANALYZED" if evidence_ids else "PARTIAL", reason_code=None if evidence_ids else "NO_TEXT_HUNKS", details=details)
         session.add(coverage)
         session.flush()
-        return {"git_evidence_ids": evidence_ids, "coverage_id": str(coverage.id)}
+        return {"git_evidence_ids": evidence_ids, "coverage_id": str(coverage.id), "code_change_bundle": bundle}
 
     def create_claims(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
+        snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
+        frozen_claims = (
+            session.query(InputSnapshotClaim).filter_by(snapshot_id=snapshot.id).order_by(InputSnapshotClaim.claim_key).all()
+            if snapshot is not None
+            else []
+        )
+        if not frozen_claims:
+            raise DomainError("CLAIMS_NOT_CONFIRMED", "正式快照缺少已确认的交付主张，不能生成交付核验结论")
         claims: list[str] = []
-        for index, evidence_id in enumerate(state.get("evidence_ids", []), start=1):
-            evidence = session.get(EvidenceItem, UUID(evidence_id))
-            source = session.get(SourceRevision, evidence.source_revision_id) if evidence and evidence.source_revision_id else None
-            if evidence is None:
-                continue
-            claim = session.query(Claim).filter_by(analysis_run_id=run_id, claim_key=f"DOC-{index}").one_or_none()
+        for frozen in frozen_claims:
+            claim = session.query(Claim).filter_by(analysis_run_id=run_id, claim_key=frozen.claim_key).one_or_none()
             if claim is None:
                 claim = Claim(
                     analysis_run_id=run_id,
-                    claim_key=f"DOC-{index}",
-                    claim_type="ACCEPTANCE_CANDIDATE",
-                    text=evidence.excerpt_safe,
-                    authority_level=_claim_authority(source.source_role) if source else 1,
-                    source_revision_id=evidence.source_revision_id,
+                    claim_key=frozen.claim_key,
+                    claim_type="USER_CONFIRMED_DELIVERY",
+                    text=frozen.text,
+                    authority_level=3,
                 )
                 session.add(claim)
                 session.flush()
-            link = session.query(ClaimEvidenceLink).filter_by(claim_id=claim.id, evidence_id=evidence.id, relation="CONTEXT_ONLY").one_or_none()
-            if link is None:
-                session.add(ClaimEvidenceLink(claim_id=claim.id, evidence_id=evidence.id, relation="CONTEXT_ONLY", reason="资料原文定义待核验目标", confidence=1.0, produced_by="DETERMINISTIC"))
             claims.append(str(claim.id))
         return {"claim_ids": claims}
+
+    def review_code(state: VerificationGraphState) -> VerificationGraphState:
+        """Run the DELIVERY core against frozen Hunk evidence; model failures are controlled degradation."""
+        ensure_not_cancelled()
+        bundle = state.get("code_change_bundle")
+        claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
+        claims = [item for item in claims if item is not None]
+        evidence_by_locator: dict[tuple[str, str], str] = {}
+        allowed_evidence_ids: set[UUID] = set()
+        for evidence_id in state.get("git_evidence_ids", []):
+            evidence = session.get(EvidenceItem, UUID(evidence_id))
+            if evidence is None:
+                continue
+            evidence_by_locator[(str(evidence.locator.get("path", "")), str(evidence.locator.get("hunk", "")))] = str(evidence.id)
+            allowed_evidence_ids.add(evidence.id)
+        if not bundle or not allowed_evidence_ids:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CODE_REVIEW", scope_ref="delivery-git-diff", state="PARTIAL", reason_code="NO_CITABLE_CODE_EVIDENCE", details={}))
+            return {}
+        settings = get_settings()
+        changes, coverage_payload = plan_code_review(bundle=bundle, evidence_by_locator=evidence_by_locator, claims=claims, char_budget=settings.code_review_input_char_budget)
+        if not changes:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CODE_REVIEW", scope_ref="delivery-git-diff", state=coverage_payload["state"], reason_code="CODE_REVIEW_BUDGET_EXHAUSTED", details=coverage_payload["details"]))
+            return {}
+        request = CodeReviewRequest(run_id=run_id, prompt_version="code-review-v1", schema_version="code-review-finding-v1", claims=coverage_payload["details"]["claims"], code_changes=changes)
+        try:
+            if settings.generation_provider != "deepseek":
+                raise DomainError("MODEL_NOT_CONFIGURED", "P0 交付代码审查仅允许使用 DeepSeek")
+            generated = create_generation_model(settings).review_code(request)
+            _, rejected = persist_validated_findings(session, run_id=run_id, proposal_batch=generated.findings.findings, allowed_evidence_ids=allowed_evidence_ids, allowed_claim_ids={item.id for item in claims})
+            session.add(ModelCall(run_id=run_id, provider=generated.provider, model=generated.model, operation="CODE_REVIEW", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_evidence_ids), status="SUCCEEDED", latency_ms=generated.latency_ms, attempts=generated.attempts))
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CODE_REVIEW", scope_ref="delivery-git-diff", state=coverage_payload["state"], reason_code="MODEL_FINDING_INVALID" if rejected else None, details={**coverage_payload["details"], "modelFindingCount": len(generated.findings.findings), "rejectedFindingCount": rejected}))
+            session.flush()
+            return {}
+        except DomainError as exc:
+            manifest = session.query(AnalysisRunManifest).filter_by(run_id=run_id).one_or_none()
+            if manifest is not None:
+                manifest.degradation = {**manifest.degradation, "codeReview": {"code": exc.code, "promptVersion": request.prompt_version, "schemaVersion": request.schema_version}}
+            session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation="CODE_REVIEW", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_evidence_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CODE_REVIEW", scope_ref="delivery-git-diff", state="UNAVAILABLE", reason_code=exc.code, details=coverage_payload["details"]))
+            return {"node_errors": [*state.get("node_errors", []), exc.code]}
+
+    def challenge_code_findings(state: VerificationGraphState) -> VerificationGraphState:
+        """Challenge persisted Findings using only their original frozen Hunk evidence."""
+        ensure_not_cancelled()
+        findings = session.query(CodeReviewFinding).filter_by(analysis_run_id=run_id).order_by(CodeReviewFinding.created_at, CodeReviewFinding.id).all()
+        if not findings:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="FINDING_CHALLENGE", scope_ref="delivery-git-diff", state="NOT_APPLICABLE", reason_code="NO_CODE_REVIEW_FINDINGS", details={"eligibleFindingCount": 0}))
+            return {}
+        bundle = state.get("code_change_bundle")
+        allowed_evidence: dict[UUID, EvidenceItem] = {}
+        for evidence_id in state.get("git_evidence_ids", []):
+            evidence = session.get(EvidenceItem, UUID(evidence_id))
+            if evidence is not None and evidence.source_type == "CODE" and evidence.locator_precision == "EXACT":
+                allowed_evidence[evidence.id] = evidence
+        claims = {item.id: item for item in (session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])) if item is not None}
+        settings = get_settings()
+        if not bundle or not allowed_evidence:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="FINDING_CHALLENGE", scope_ref="delivery-git-diff", state="PARTIAL", reason_code="NO_CITABLE_CODE_EVIDENCE", details={"eligibleFindingCount": len(findings)}))
+            return {}
+        selected, changes, claim_payload, coverage_payload = plan_code_review_challenges(
+            bundle=bundle,
+            findings=findings,
+            evidence_by_id=allowed_evidence,
+            claims_by_id=claims,
+            char_budget=settings.code_review_challenge_input_char_budget,
+            max_findings=settings.code_review_challenge_max_findings,
+        )
+        if not selected:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="FINDING_CHALLENGE", scope_ref="delivery-git-diff", state=coverage_payload["state"], reason_code="FINDING_CHALLENGE_BUDGET_EXHAUSTED", details=coverage_payload["details"]))
+            return {}
+        request = CodeReviewChallengeRequest(
+            run_id=run_id,
+            prompt_version="code-review-challenge-v1",
+            schema_version="code-review-challenge-v1",
+            claims=claim_payload,
+            code_changes=changes,
+            findings=selected,
+            timeout_seconds=settings.code_review_challenge_timeout_seconds,
+        )
+        allowed_ids = set(allowed_evidence)
+        try:
+            if settings.generation_provider != "deepseek":
+                raise DomainError("MODEL_NOT_CONFIGURED", "P0 标准核验反证复核仅允许使用 DeepSeek")
+            generated = create_generation_model(settings).challenge_code_findings(request)
+            model_call = ModelCall(
+                run_id=run_id,
+                provider=generated.provider,
+                model=generated.model,
+                operation="CODE_REVIEW_CHALLENGE",
+                prompt_version=request.prompt_version,
+                schema_version=request.schema_version,
+                allowed_evidence_ids=sorted(str(item) for item in allowed_ids),
+                status="SUCCEEDED",
+                latency_ms=generated.latency_ms,
+                attempts=generated.attempts,
+            )
+            session.add(model_call)
+            session.flush()
+            persisted, rejected = persist_validated_challenges(
+                session,
+                run_id=run_id,
+                proposal_batch=generated.challenges.challenges,
+                allowed_findings={item.id: item for item in findings},
+                allowed_evidence_ids=allowed_ids,
+                model_call_id=model_call.id,
+            )
+            reviewed_ids = {item.finding_id for item in persisted}
+            missing = [item["findingId"] for item in selected if UUID(item["findingId"]) not in reviewed_ids]
+            reason_code = "MODEL_CHALLENGE_INVALID" if rejected else ("MODEL_CHALLENGE_INCOMPLETE" if missing else None)
+            session.add(AnalysisCoverage(
+                analysis_run_id=run_id,
+                scope_kind="FINDING_CHALLENGE",
+                scope_ref="delivery-git-diff",
+                state="ANALYZED" if not reason_code and coverage_payload["state"] == "ANALYZED" else "PARTIAL",
+                reason_code=reason_code,
+                details={
+                    **coverage_payload["details"],
+                    "modelChallengeCount": len(generated.challenges.challenges),
+                    "persistedChallengeCount": len(persisted),
+                    "rejectedChallengeCount": rejected,
+                    "missingChallengeFindingIds": missing,
+                },
+            ))
+            session.flush()
+            return {}
+        except DomainError as exc:
+            manifest = session.query(AnalysisRunManifest).filter_by(run_id=run_id).one_or_none()
+            if manifest is not None:
+                manifest.degradation = {**manifest.degradation, "findingChallenge": {"code": exc.code, "promptVersion": request.prompt_version, "schemaVersion": request.schema_version}}
+            session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model_name, operation="CODE_REVIEW_CHALLENGE", prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(str(item) for item in allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="FINDING_CHALLENGE", scope_ref="delivery-git-diff", state="UNAVAILABLE", reason_code=exc.code, details=coverage_payload["details"]))
+            return {"node_errors": [*state.get("node_errors", []), exc.code]}
+
+    def summarize_code_coverage(state: VerificationGraphState) -> VerificationGraphState:
+        """Summarize fixed standard-verification scope without asking a model for a completion verdict."""
+        ensure_not_cancelled()
+        bundle = state.get("code_change_bundle") or {}
+        files = bundle.get("files", [])
+        review = session.query(AnalysisCoverage).filter_by(analysis_run_id=run_id, scope_kind="CODE_REVIEW").order_by(AnalysisCoverage.id.desc()).first()
+        challenge = session.query(AnalysisCoverage).filter_by(analysis_run_id=run_id, scope_kind="FINDING_CHALLENGE").order_by(AnalysisCoverage.id.desc()).first()
+        challenges = session.query(CodeReviewFindingChallenge).filter_by(analysis_run_id=run_id).all()
+        verdict_counts = {key: 0 for key in ("SUPPORTED", "UNSUPPORTED", "NEEDS_HUMAN")}
+        for item in challenges:
+            verdict_counts[item.verdict] = verdict_counts.get(item.verdict, 0) + 1
+        reviewed_hunks = int((review.details or {}).get("analysedHunks", 0)) if review else 0
+        reasons = [item.reason_code for item in (review, challenge) if item is not None and item.reason_code]
+        state_name = "ANALYZED" if review and review.state == "ANALYZED" and challenge and challenge.state in {"ANALYZED", "NOT_APPLICABLE"} else "PARTIAL"
+        session.add(AnalysisCoverage(
+            analysis_run_id=run_id,
+            scope_kind="STANDARD_VERIFICATION",
+            scope_ref="delivery-git-diff",
+            state=state_name,
+            reason_code=reasons[0] if reasons else None,
+            details={
+                "totalFiles": len(files),
+                "binaryFiles": sum(1 for item in files if item.get("binary")),
+                "totalHunks": sum(len(item.get("hunks", [])) for item in files),
+                "reviewedHunks": reviewed_hunks,
+                "findingCount": session.query(CodeReviewFinding).filter_by(analysis_run_id=run_id).count(),
+                "challengeVerdicts": verdict_counts,
+                "uncoveredReasonCodes": reasons,
+            },
+        ))
+        session.flush()
+        return {}
 
     def link_deterministic(state: VerificationGraphState) -> VerificationGraphState:
         ensure_not_cancelled()
@@ -656,6 +793,9 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     graph.add_node("load_snapshot", observed("load_snapshot", load_snapshot))
     graph.add_node("collect_git_evidence", observed("collect_git_evidence", collect_git_evidence))
     graph.add_node("create_claims", observed("create_claims", create_claims))
+    graph.add_node("review_code", observed("review_code", review_code))
+    graph.add_node("challenge_code_findings", observed("challenge_code_findings", challenge_code_findings))
+    graph.add_node("summarize_code_coverage", observed("summarize_code_coverage", summarize_code_coverage))
     graph.add_node("link_deterministic", observed("link_deterministic", link_deterministic))
     graph.add_node("propose_model_links", observed("propose_model_links", propose_model_links))
     graph.add_node("run_custom_agents", observed("run_custom_agents", run_custom_agents))
@@ -663,7 +803,10 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     graph.add_edge(START, "load_snapshot")
     graph.add_edge("load_snapshot", "collect_git_evidence")
     graph.add_edge("collect_git_evidence", "create_claims")
-    graph.add_edge("create_claims", "link_deterministic")
+    graph.add_edge("create_claims", "review_code")
+    graph.add_edge("review_code", "challenge_code_findings")
+    graph.add_edge("challenge_code_findings", "summarize_code_coverage")
+    graph.add_edge("summarize_code_coverage", "link_deterministic")
     graph.add_edge("link_deterministic", "propose_model_links")
     graph.add_edge("propose_model_links", "run_custom_agents")
     graph.add_edge("run_custom_agents", "reconcile")
@@ -671,6 +814,6 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     return graph.compile().invoke({
         "analysis_run_id": str(run_id),
         "input_snapshot_id": str(snapshot_id),
-        "workflow_schema_version": "v1",
+        "workflow_schema_version": "standard-verification-v1",
         "node_errors": [],
     })
