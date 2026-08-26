@@ -21,6 +21,7 @@ from app.infrastructure.persistence.models import (
     InputSnapshotGit,
     Claim,
     EvidenceItem,
+    HumanVerificationDecision,
     RiskFinding,
     VerificationResult,
     VerificationCycle,
@@ -30,6 +31,41 @@ from app.application.services.orchestration_service import freeze_run_orchestrat
 
 
 _DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
+
+_HUMAN_DECISIONS_BY_STATUS = {
+    "INFERENCE_REQUIRES_CONFIRMATION": ("CONFIRM_PARTIAL", "CONFIRM_INSUFFICIENT"),
+    "PARTIALLY_SUPPORTED": ("CONFIRM_SUPPORT", "CONFIRM_PARTIAL", "CONFIRM_INSUFFICIENT"),
+    "INSUFFICIENT_EVIDENCE": ("CONFIRM_INSUFFICIENT", "RETURN_FOR_EVIDENCE"),
+    "CONFLICTING": ("RETURN_FOR_EVIDENCE",),
+    "CONFLICT": ("RETURN_FOR_EVIDENCE",),
+}
+
+
+def _latest_human_decisions(session: Session, *, result_ids: list[UUID]) -> dict[UUID, HumanVerificationDecision]:
+    if not result_ids:
+        return {}
+    rows = (
+        session.query(HumanVerificationDecision)
+        .filter(HumanVerificationDecision.result_id.in_(result_ids))
+        .order_by(HumanVerificationDecision.result_id, HumanVerificationDecision.created_at.desc(), HumanVerificationDecision.id.desc())
+        .all()
+    )
+    latest: dict[UUID, HumanVerificationDecision] = {}
+    for item in rows:
+        latest.setdefault(item.result_id, item)
+    return latest
+
+
+def _human_decision_projection(item: HumanVerificationDecision | None) -> dict | None:
+    if item is None:
+        return None
+    return {
+        "id": str(item.id),
+        "decision": item.decision,
+        "note": item.note,
+        "actorId": str(item.actor_id),
+        "createdAt": item.created_at.isoformat() if item.created_at else None,
+    }
 
 
 def start_analysis_run(
@@ -147,6 +183,7 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
         .order_by(Claim.claim_key)
         .all()
     )
+    decisions = _latest_human_decisions(session, result_ids=[result.id for result, _ in results])
     items: list[dict] = []
     for result, claim in results:
         evidence_ids = [UUID(item) for item in result.evidence_ids]
@@ -171,6 +208,8 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
             "status": result.status,
             "reason": result.reason,
             "requires_human_confirmation": result.requires_human_confirmation,
+            "human_decision": _human_decision_projection(decisions.get(result.id)),
+            "allowed_human_decisions": list(_HUMAN_DECISIONS_BY_STATUS.get(result.status, ())),
             "evidence": [
                 {
                     "id": str(item.id),
@@ -193,6 +232,61 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
             ],
         })
     return items
+
+
+def record_human_verification_decision(
+    session: Session,
+    *,
+    run_id: UUID,
+    result_id: UUID,
+    decision: str,
+    note: str,
+    actor_id: UUID,
+    correlation_id: str,
+) -> dict:
+    """Append a human adjudication without mutating the system-generated result."""
+    run = get_analysis_run(session, run_id=run_id, actor_id=actor_id)
+    snapshot = session.get(InputSnapshot, run.snapshot_id)
+    cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+    task = session.get(VerificationTask, cycle.task_id) if cycle else None
+    result = session.query(VerificationResult).filter_by(id=result_id, analysis_run_id=run.id).one_or_none()
+    if task is None or result is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "核验结论不存在或不属于当前运行")
+    require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    if run.run_status not in {"SUCCEEDED", "PARTIALLY_COMPLETED"}:
+        raise DomainError("STATE_CONFLICT", "仅已结束的分析运行可以进行人工裁决")
+    if cycle.business_status in {"PUBLISHED", "PENDING_REVIEW", "APPROVED"}:
+        raise DomainError("STATE_CONFLICT", "报告已进入审核或发布阶段，不能修改本轮人工裁决")
+    allowed = _HUMAN_DECISIONS_BY_STATUS.get(result.status, ())
+    if decision not in allowed:
+        raise DomainError("INPUT_INVALID", "该系统结论不允许采用此人工裁决")
+    clean_note = note.strip()
+    if decision == "RETURN_FOR_EVIDENCE" and not clean_note:
+        raise DomainError("INPUT_INVALID", "退回补证时必须说明需要补充的内容")
+    previous = _latest_human_decisions(session, result_ids=[result.id]).get(result.id)
+    recorded = HumanVerificationDecision(
+        result_id=result.id,
+        decision=decision,
+        note=clean_note,
+        actor_id=actor_id,
+        supersedes_decision_id=previous.id if previous else None,
+    )
+    session.add(recorded)
+    session.flush()
+    from app.application.services.report_service import refresh_draft_human_decisions
+
+    refresh_draft_human_decisions(session, run_id=run.id)
+    append_audit_event(
+        session,
+        project_id=task.project_id,
+        actor_id=actor_id,
+        aggregate_type="HumanVerificationDecision",
+        aggregate_id=recorded.id,
+        action="HUMAN_VERIFICATION_DECIDED",
+        correlation_id=correlation_id,
+        payload={"runId": str(run.id), "resultId": str(result.id), "decision": decision},
+    )
+    return _human_decision_projection(recorded) or {}
 
 
 def get_code_review(session: Session, *, run_id: UUID, actor_id: UUID) -> dict:

@@ -266,6 +266,13 @@ class AnalysisResultResponse(BaseModel):
     requires_human_confirmation: bool
     evidence: list[dict]
     risks: list[dict] = Field(default_factory=list)
+    human_decision: dict | None = None
+    allowed_human_decisions: list[str] = Field(default_factory=list)
+
+
+class HumanVerificationDecisionRequest(BaseModel):
+    decision: str
+    note: str = Field(default="", max_length=2000)
 
 
 class CodeReviewResponse(BaseModel):
@@ -306,6 +313,12 @@ class ProjectReportResponse(BaseModel):
     latest_approval_action: str | None
     latest_approval_reason: str | None
     latest_approval_at: datetime | None
+
+
+class ReportContentResponse(ProjectReportResponse):
+    """Replayable report draft body for the task-level Notebook."""
+
+    items: list[dict] = Field(default_factory=list)
 
 
 class PublishedRecordResponse(BaseModel):

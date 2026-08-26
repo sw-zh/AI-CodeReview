@@ -8,7 +8,7 @@ from app.application.services.common import append_audit_event, require_project_
 from app.application.services.citation_resolver import resolve_citation
 from app.domain.enums import AssessmentProfile, ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, DeliveryItem, EvidenceItem, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, User, VerificationCycle, VerificationResult, VerificationTask
+from app.infrastructure.persistence.models import ApprovalAction, AnalysisRun, Claim, DeliveryItem, EvidenceItem, HumanVerificationDecision, InputSnapshot, PublishedRecord, ReportItem, ReportVersion, User, VerificationCycle, VerificationResult, VerificationTask
 from app.infrastructure.report_renderer import CanonicalJsonReportRenderer
 
 
@@ -39,12 +39,102 @@ def _assert_delivery_report_run(*, run: AnalysisRun, snapshot: InputSnapshot) ->
         raise DomainError("ASSESSMENT_PROFILE_NOT_ENABLED", "当前仅交付核验运行支持报告草稿、审批和正式记录")
 
 
-def _content_hash(*, results: list[VerificationResult], editorial_note: str, dispositions: dict[str, str | None]) -> str:
+def _content_hash(
+    *,
+    results: list[VerificationResult],
+    editorial_note: str,
+    dispositions: dict[str, str | None],
+    human_decisions: dict[str, dict] | None = None,
+) -> str:
     return CanonicalJsonReportRenderer().render(
-        results=[{"id": str(item.id), "status": item.status, "evidence": item.evidence_ids} for item in results],
+        results=[
+            {
+                "id": str(item.id),
+                "status": item.status,
+                "evidence": item.evidence_ids,
+                "humanDecision": (human_decisions or {}).get(str(item.id)),
+            }
+            for item in results
+        ],
         editorial_note=editorial_note,
         dispositions=dispositions,
     ).content_hash
+
+
+def _latest_human_decisions(session: Session, *, result_ids: list[UUID]) -> dict[UUID, HumanVerificationDecision]:
+    if not result_ids:
+        return {}
+    rows = (
+        session.query(HumanVerificationDecision)
+        .filter(HumanVerificationDecision.result_id.in_(result_ids))
+        .order_by(HumanVerificationDecision.result_id, HumanVerificationDecision.created_at.desc(), HumanVerificationDecision.id.desc())
+        .all()
+    )
+    latest: dict[UUID, HumanVerificationDecision] = {}
+    for item in rows:
+        latest.setdefault(item.result_id, item)
+    return latest
+
+
+def _decision_snapshot(item: HumanVerificationDecision | None) -> dict | None:
+    if item is None:
+        return None
+    return {
+        "id": str(item.id),
+        "decision": item.decision,
+        "note": item.note,
+        "actorId": str(item.actor_id),
+        "createdAt": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+def _result_snapshot(result: VerificationResult, decision: HumanVerificationDecision | None) -> dict:
+    return {
+        "status": result.status,
+        "reason": result.reason,
+        "humanDecision": _decision_snapshot(decision),
+    }
+
+
+def _assert_all_required_decisions(session: Session, *, run_id: UUID) -> None:
+    results = session.query(VerificationResult).filter_by(analysis_run_id=run_id).all()
+    pending = [item.id for item in results if item.requires_human_confirmation]
+    latest = _latest_human_decisions(session, result_ids=pending)
+    unresolved = [str(result_id) for result_id in pending if result_id not in latest]
+    if unresolved:
+        raise DomainError("HUMAN_DECISIONS_REQUIRED", "仍有待人工确认的交付结论；请逐项完成裁决后再提交报告")
+
+
+def refresh_draft_human_decisions(session: Session, *, run_id: UUID) -> None:
+    """Refresh mutable draft snapshots after a new append-only human decision."""
+    reports = session.query(ReportVersion).filter_by(run_id=run_id, status="DRAFT").all()
+    if not reports:
+        return
+    results = session.query(VerificationResult).filter_by(analysis_run_id=run_id).all()
+    decisions = _latest_human_decisions(session, result_ids=[item.id for item in results])
+    decision_payloads = {str(result_id): _decision_snapshot(item) for result_id, item in decisions.items()}
+    by_id = {item.id: item for item in results}
+    for report in reports:
+        items = session.query(ReportItem).filter_by(report_version_id=report.id).all()
+        for item in items:
+            result = by_id.get(item.result_id)
+            if result is not None:
+                item.result_snapshot = _result_snapshot(result, decisions.get(result.id))
+        report.content_hash = _content_hash(
+            results=results,
+            editorial_note=report.editorial_note,
+            dispositions={str(item.id): item.disposition for item in items},
+            human_decisions=decision_payloads,
+        )
+        report.version += 1
+
+
+def _decision_payloads_from_items(items: list[ReportItem]) -> dict[str, dict]:
+    return {
+        str(item.result_id): item.result_snapshot["humanDecision"]
+        for item in items
+        if item.result_snapshot.get("humanDecision")
+    }
 
 
 def _draft_cycle_status(results: list[VerificationResult]) -> str:
@@ -87,7 +177,15 @@ def _formal_citation_ids(session: Session, *, snapshot_id: UUID, evidence_ids: l
 
 
 def _delivery_item_verification_status(session: Session, *, report: ReportVersion) -> str:
-    statuses = [item.result_snapshot.get("status") for item in session.query(ReportItem).filter_by(report_version_id=report.id).all()]
+    statuses = []
+    for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
+        decision = (item.result_snapshot.get("humanDecision") or {}).get("decision")
+        statuses.append(
+            "CONFIRMED" if decision == "CONFIRM_SUPPORT"
+            else "PARTIALLY_SUPPORTED" if decision == "CONFIRM_PARTIAL"
+            else "INSUFFICIENT_EVIDENCE" if decision in {"CONFIRM_INSUFFICIENT", "RETURN_FOR_EVIDENCE"}
+            else item.result_snapshot.get("status")
+        )
     if statuses and all(status == "CONFIRMED" for status in statuses):
         return "CONFIRMED"
     if any(status in {"CONFLICT", "CONFLICTING"} for status in statuses):
@@ -162,6 +260,51 @@ def get_project_report(session: Session, *, project_id: UUID, report_id: UUID, a
         raise DomainError("RESOURCE_NOT_FOUND", "核验报告不存在或不属于当前项目")
     report, cycle, task = row
     return _report_projection(session, report=report, cycle=cycle, task=task)
+
+
+def get_report_content(session: Session, *, project_id: UUID, report_id: UUID, actor_id: UUID) -> dict:
+    """Return the stored draft body rather than recomputing a view from live results."""
+    projection = get_project_report(session, project_id=project_id, report_id=report_id, actor_id=actor_id)
+    report = session.get(ReportVersion, report_id)
+    run = session.get(AnalysisRun, report.run_id) if report else None
+    snapshot = session.get(InputSnapshot, run.snapshot_id) if run else None
+    if report is None or snapshot is None:
+        raise DomainError("INPUT_STALE", "报告绑定的正式输入快照不存在")
+    rows = (
+        session.query(ReportItem, Claim)
+        .join(VerificationResult, VerificationResult.id == ReportItem.result_id)
+        .join(Claim, Claim.id == VerificationResult.claim_id)
+        .filter(ReportItem.report_version_id == report.id)
+        .order_by(ReportItem.display_order)
+        .all()
+    )
+    evidence_ids = [UUID(str(evidence_id)) for item, _ in rows for evidence_id in item.citation_snapshot.get("evidenceIds", [])]
+    evidence_by_id = {
+        str(item.id): item
+        for item in session.query(EvidenceItem)
+        .filter(EvidenceItem.id.in_(evidence_ids), EvidenceItem.snapshot_id == snapshot.id)
+        .all()
+    } if evidence_ids else {}
+    projection["items"] = [
+        {
+            "id": str(item.id),
+            "claimText": claim.text,
+            "result": item.result_snapshot,
+            "disposition": item.disposition,
+            "citations": [
+                {
+                    "id": str(evidence_id),
+                    "sourceType": evidence_by_id[str(evidence_id)].source_type,
+                    "excerpt": evidence_by_id[str(evidence_id)].excerpt_safe,
+                    "locator": evidence_by_id[str(evidence_id)].locator,
+                }
+                for evidence_id in item.citation_snapshot.get("evidenceIds", [])
+                if str(evidence_id) in evidence_by_id
+            ],
+        }
+        for item, claim in rows
+    ]
+    return projection
 
 
 def _published_record_projection(
@@ -244,12 +387,19 @@ def create_draft(session: Session, *, cycle_id: UUID, run_id: UUID, actor_id: UU
         raise DomainError("INPUT_STALE", "报告草稿必须绑定当前轮次的正式输入快照")
     _assert_delivery_report_run(run=run, snapshot=snapshot)
     results = session.query(VerificationResult).filter_by(analysis_run_id=run.id).all()
-    content_hash = _content_hash(results=results, editorial_note="", dispositions={})
+    decisions = _latest_human_decisions(session, result_ids=[item.id for item in results])
+    decision_payloads = {str(result_id): _decision_snapshot(item) for result_id, item in decisions.items()}
+    content_hash = _content_hash(results=results, editorial_note="", dispositions={}, human_decisions=decision_payloads)
     next_no = session.query(func.coalesce(func.max(ReportVersion.sequence_no), 0)).filter_by(cycle_id=cycle.id).scalar() + 1
     report = ReportVersion(cycle_id=cycle.id, sequence_no=next_no, status="DRAFT", record_type=run.assessment_profile, content_hash=content_hash, snapshot_hash=snapshot.snapshot_hash, run_id=run.id)
     session.add(report); session.flush()
     for order, result in enumerate(results, start=1):
         session.add(ReportItem(report_version_id=report.id, result_id=result.id, display_order=order, result_snapshot={"status": result.status, "reason": result.reason}, citation_snapshot={"evidenceIds": _formal_citation_ids(session, snapshot_id=snapshot.id, evidence_ids=result.evidence_ids)}))
+    for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
+        item.result_snapshot = _result_snapshot(
+            next(result for result in results if result.id == item.result_id),
+            decisions.get(item.result_id),
+        )
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_DRAFT_CREATED", correlation_id=correlation_id)
     return report
 
@@ -270,7 +420,9 @@ def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: st
     if existing is not None:
         return existing
     results = session.query(VerificationResult).filter_by(analysis_run_id=run.id).all()
-    content_hash = _content_hash(results=results, editorial_note="", dispositions={})
+    decisions = _latest_human_decisions(session, result_ids=[item.id for item in results])
+    decision_payloads = {str(result_id): _decision_snapshot(item) for result_id, item in decisions.items()}
+    content_hash = _content_hash(results=results, editorial_note="", dispositions={}, human_decisions=decision_payloads)
     next_no = session.query(func.coalesce(func.max(ReportVersion.sequence_no), 0)).filter_by(cycle_id=cycle.id).scalar() + 1
     report = ReportVersion(
         cycle_id=cycle.id,
@@ -291,6 +443,11 @@ def create_automatic_draft(session: Session, *, run_id: UUID, correlation_id: st
             result_snapshot={"status": result.status, "reason": result.reason},
             citation_snapshot={"evidenceIds": _formal_citation_ids(session, snapshot_id=snapshot.id, evidence_ids=result.evidence_ids)},
         ))
+    for item in session.query(ReportItem).filter_by(report_version_id=report.id).all():
+        item.result_snapshot = _result_snapshot(
+            next(result for result in results if result.id == item.result_id),
+            decisions.get(item.result_id),
+        )
     append_audit_event(
         session,
         project_id=task.project_id,
@@ -335,6 +492,7 @@ def update_draft(
         results=results,
         editorial_note=editorial_note,
         dispositions={str(item.id): item.disposition for item in items},
+        human_decisions=_decision_payloads_from_items(items),
     )
     report.version += 1
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_DRAFT_UPDATED", correlation_id=correlation_id, payload={"version": report.version})
@@ -346,6 +504,7 @@ def submit_for_review(session: Session, *, report_id: UUID, actor_id: UUID, corr
     if task is None or report.status != "DRAFT": raise DomainError("STATE_CONFLICT", "仅草稿可提交审核")
     _assert_cycle_open_for_report_write(cycle)
     require_project_role(session, task.project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    _assert_all_required_decisions(session, run_id=report.run_id)
     report.status = "SUBMITTED"; report.submitted_by = actor_id; report.submitted_at = datetime.now(UTC)
     cycle.business_status = "PENDING_REVIEW"
     append_audit_event(session, project_id=task.project_id, actor_id=actor_id, aggregate_type="ReportVersion", aggregate_id=report.id, action="REPORT_SUBMITTED", correlation_id=correlation_id)

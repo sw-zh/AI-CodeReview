@@ -39,4 +39,13 @@ export interface VerificationConclusion {
   needsHumanDecision: boolean;
   risk: RiskLevel | null;
   evidenceIds: string[];
+  systemStatus?: string;
+  humanDecision?: {
+    id: string;
+    decision: string;
+    note: string;
+    actorId: string;
+    createdAt: string | null;
+  } | null;
+  allowedHumanDecisions?: string[];
 }

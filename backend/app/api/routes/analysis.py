@@ -3,8 +3,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import AnalysisResultResponse, AnalysisRunResponse, CodeReviewResponse
-from app.application.services.analysis_service import get_analysis_results, get_analysis_run, get_code_review, get_latest_task_analysis_run, request_cancel, start_analysis_run
+from app.api.schemas import AnalysisResultResponse, AnalysisRunResponse, CodeReviewResponse, HumanVerificationDecisionRequest
+from app.application.services.analysis_service import get_analysis_results, get_analysis_run, get_code_review, get_latest_task_analysis_run, record_human_verification_decision, request_cancel, start_analysis_run
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import RunEvent
 
@@ -88,6 +88,36 @@ def results(run_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[Ana
         return [AnalysisResultResponse(**item) for item in get_analysis_results(session, run_id=run_id, actor_id=user.id)]
     except DomainError as exc:
         raise HTTPException(status_code=404 if exc.code == "RESOURCE_NOT_FOUND" else 403, detail={"code": exc.code, "message": exc.message})
+
+
+@run_router.post("/{run_id}/results/{result_id}/human-decisions")
+def decide_result(
+    run_id: UUID,
+    result_id: UUID,
+    payload: HumanVerificationDecisionRequest,
+    request: Request,
+    session: SessionDep,
+    user: CurrentUserDep,
+    _: str = Depends(idempotency_key),
+) -> dict:
+    try:
+        decision = record_human_verification_decision(
+            session,
+            run_id=run_id,
+            result_id=result_id,
+            decision=payload.decision,
+            note=payload.note,
+            actor_id=user.id,
+            correlation_id=correlation_id(request),
+        )
+        session.commit()
+        return decision
+    except DomainError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=404 if exc.code == "RESOURCE_NOT_FOUND" else 409,
+            detail={"code": exc.code, "message": exc.message},
+        )
 
 
 @run_router.get("/{run_id}/code-review", response_model=CodeReviewResponse)

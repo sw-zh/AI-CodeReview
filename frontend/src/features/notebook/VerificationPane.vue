@@ -142,7 +142,9 @@ function diffLines(header: string, payload: string): DiffLine[] {
                 item.risk
               }}</span
               >{{
-                item.needsHumanDecision
+                item.humanDecision
+                  ? "已完成人工裁决"
+                  : item.needsHumanDecision
                   ? "需要人工确认"
                   : item.status === "证据不足"
                     ? "需要补充证据"

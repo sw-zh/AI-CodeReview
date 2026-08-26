@@ -622,6 +622,24 @@ class VerificationResult(Base):
     produced_by: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class HumanVerificationDecision(Base):
+    """Append-only human adjudications for an immutable system verification result."""
+
+    __tablename__ = "human_verification_decisions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    result_id: Mapped[UUID] = mapped_column(
+        ForeignKey("verification_results.id", ondelete="CASCADE"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(48), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    actor_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    supersedes_decision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("human_verification_decisions.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class NodeAttempt(Base):
     __tablename__ = "node_attempts"
     __table_args__ = (UniqueConstraint("analysis_run_id", "node_id", "attempt_no", name="uq_node_attempt"),)

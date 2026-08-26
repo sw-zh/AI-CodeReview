@@ -85,6 +85,31 @@ type ProjectReport = {
   version: number;
   content_hash: string;
 };
+type ReportPreview = ProjectReport & {
+  snapshot_hash: string;
+  task_title: string;
+  requirement_key: string;
+  items: Array<{
+    id: string;
+    claimText: string;
+    result: {
+      status: string;
+      reason: string;
+      humanDecision: {
+        decision: string;
+        note: string;
+        createdAt: string | null;
+      } | null;
+    };
+    disposition: string | null;
+    citations: Array<{
+      id: string;
+      sourceType: string;
+      excerpt: string;
+      locator: Record<string, unknown>;
+    }>;
+  }>;
+};
 type RunOrchestration = {
   contentHash: string;
   template: { name: string; version: number };
@@ -112,6 +137,14 @@ type AnalysisResult = {
   requires_human_confirmation: boolean;
   evidence: ResultEvidence[];
   risks: Array<{ severity: string }>;
+  human_decision: {
+    id: string;
+    decision: string;
+    note: string;
+    actorId: string;
+    createdAt: string | null;
+  } | null;
+  allowed_human_decisions: string[];
 };
 type DeliveryClaim = {
   id: string;
@@ -191,7 +224,10 @@ const liveCodeReview = ref<CodeReview>({
 const liveGitDiff = ref<GitDiff | null>(null);
 const toolExecutions = ref<ToolExecution[]>([]);
 const report = ref<ProjectReport | null>(null);
+const reportPreview = ref<ReportPreview | null>(null);
 const reportNote = ref("");
+const decisionNote = ref("");
+const decisionMessage = ref("");
 const busy = ref(false);
 const runLogOpen = ref(false);
 const centerView = ref<"conclusions" | "diff">("conclusions");
@@ -317,6 +353,27 @@ function mapStatus(status: string): VerificationConclusion["status"] {
   if (status === "CONFLICTING") return "存在冲突";
   return "待人工确认";
 }
+function effectiveConclusionStatus(item: AnalysisResult): VerificationConclusion["status"] {
+  if (item.human_decision?.decision === "CONFIRM_SUPPORT") return "已确认";
+  if (item.human_decision?.decision === "CONFIRM_PARTIAL") return "部分支持";
+  if (
+    item.human_decision?.decision === "CONFIRM_INSUFFICIENT" ||
+    item.human_decision?.decision === "RETURN_FOR_EVIDENCE"
+  )
+    return "证据不足";
+  return mapStatus(item.status);
+}
+function reportConclusionStatus(item: ReportPreview["items"][number]) {
+  const decision = item.result.humanDecision?.decision;
+  if (decision === "CONFIRM_SUPPORT") return "已确认";
+  if (decision === "CONFIRM_PARTIAL") return "部分支持";
+  if (
+    decision === "CONFIRM_INSUFFICIENT" ||
+    decision === "RETURN_FOR_EVIDENCE"
+  )
+    return "证据不足";
+  return mapStatus(item.result.status);
+}
 function mapEvidenceKind(sourceType: string): EvidenceReference["kind"] {
   if (sourceType === "CODE") return "代码";
   if (sourceType === "TEST" || sourceType === "BUILD") return "测试";
@@ -356,15 +413,20 @@ const liveConclusions = computed<VerificationConclusion[]>(() =>
   liveResults.value.map((item) => ({
     id: item.id,
     requirement: item.claim_text,
-    status: mapStatus(item.status),
-    summary: item.reason,
-    needsHumanDecision: item.requires_human_confirmation,
+    status: effectiveConclusionStatus(item),
+    summary: item.human_decision
+      ? `${item.reason} 人工裁决：${decisionLabel(item.human_decision.decision)}。`
+      : item.reason,
+    needsHumanDecision: item.requires_human_confirmation && !item.human_decision,
     risk: item.risks.some((risk) => risk.severity === "HIGH")
       ? "P0"
       : item.risks.length
         ? "P1"
         : null,
     evidenceIds: item.evidence.map((evidence) => evidence.id),
+    systemStatus: item.status,
+    humanDecision: item.human_decision,
+    allowedHumanDecisions: item.allowed_human_decisions,
   })),
 );
 const displayedConclusions = computed<VerificationConclusion[]>(() =>
@@ -388,6 +450,12 @@ const selectedConclusion = computed(
   () =>
     displayedConclusions.value.find((item) => item.id === selectedId.value) ??
     displayedConclusions.value[0],
+);
+const unresolvedDecisionCount = computed(
+  () =>
+    liveResults.value.filter(
+      (item) => item.requires_human_confirmation && !item.human_decision,
+    ).length,
 );
 
 async function loadRun(run: AnalysisRun) {
@@ -447,6 +515,7 @@ async function loadRun(run: AnalysisRun) {
 async function loadReport(projectId: string, cycleId: string | null) {
   if (!cycleId) {
     report.value = null;
+    reportPreview.value = null;
     return;
   }
   const reports = await apiRequest<ProjectReport[]>(
@@ -455,6 +524,22 @@ async function loadReport(projectId: string, cycleId: string | null) {
   );
   report.value = reports.find((item) => item.cycle_id === cycleId) ?? null;
   reportNote.value = report.value?.editorial_note ?? "";
+  if (!report.value) {
+    reportPreview.value = null;
+    return;
+  }
+  try {
+    reportPreview.value = await apiRequest<ReportPreview>(
+      `/projects/${projectId}/report-versions/${report.value.id}/content`,
+      { headers: projectHeaders() },
+    );
+  } catch (error) {
+    reportPreview.value = null;
+    reportMessage.value =
+      error instanceof Error
+        ? `报告已保存，但内容回看暂时不可用：${error.message}`
+        : "报告已保存，但内容回看暂时不可用。";
+  }
 }
 
 function applyClaims(claims: DeliveryClaim[]) {
@@ -602,6 +687,7 @@ async function loadWorkspace() {
   liveLoadError.value = "";
   task.value = null;
   report.value = null;
+  reportPreview.value = null;
   claimEdits.value = [];
   claimProposalAttempted.value = false;
   centerView.value = "conclusions";
@@ -816,7 +902,10 @@ async function saveReport(): Promise<boolean> {
       },
     );
     report.value = updated;
-    reportMessage.value = "报告草稿已保存，哈希已随当前提交说明更新。";
+    if (selectedProjectId.value && task.value?.cycle_id)
+      await loadReport(selectedProjectId.value, task.value.cycle_id);
+    if (reportPreview.value)
+      reportMessage.value = "报告草稿已保存，可在下方回看本版本内容。";
     return true;
   } catch (error) {
     reportMessage.value =
@@ -829,6 +918,10 @@ async function saveReport(): Promise<boolean> {
 
 async function submitReport() {
   if (!report.value || report.value.status !== "DRAFT") return;
+  if (unresolvedDecisionCount.value) {
+    reportMessage.value = `还有 ${unresolvedDecisionCount.value} 条交付结论等待人工裁决。请在右侧“人工裁决”中逐项处理后再提交。`;
+    return;
+  }
   busy.value = true;
   try {
     if (
@@ -841,11 +934,55 @@ async function submitReport() {
       `/report-versions/${report.value.id}/submit`,
       { method: "POST", headers: projectHeaders(true) },
     );
+    if (selectedProjectId.value && task.value?.cycle_id)
+      await loadReport(selectedProjectId.value, task.value.cycle_id);
     reportMessage.value =
       "报告已提交审批。不同成员的审核者可在待审批队列作出决定。";
   } catch (error) {
     reportMessage.value =
       error instanceof Error ? error.message : "报告提交失败";
+  } finally {
+    busy.value = false;
+  }
+}
+
+function decisionLabel(decision: string) {
+  return ({
+    CONFIRM_SUPPORT: "确认交付支持",
+    CONFIRM_PARTIAL: "确认部分支持",
+    CONFIRM_INSUFFICIENT: "确认当前证据不足",
+    RETURN_FOR_EVIDENCE: "退回补充证据",
+  } as Record<string, string>)[decision] ?? decision;
+}
+
+async function decideConclusion(decision: string) {
+  const currentRun = liveRun.value;
+  const runId = currentRun?.id;
+  const resultId = selectedConclusion.value?.id;
+  if (!currentRun || !runId || !resultId || resultId.startsWith("pending-")) return;
+  if (
+    decision === "RETURN_FOR_EVIDENCE" &&
+    !decisionNote.value.trim()
+  ) {
+    decisionMessage.value = "请说明还需要补充哪些证据。";
+    return;
+  }
+  busy.value = true;
+  decisionMessage.value = "正在保存人工裁决…";
+  try {
+    await apiRequest(`/analysis-runs/${runId}/results/${resultId}/human-decisions`, {
+      method: "POST",
+      headers: projectHeaders(true),
+      body: JSON.stringify({ decision, note: decisionNote.value.trim() }),
+    });
+    decisionNote.value = "";
+    decisionMessage.value = `已${decisionLabel(decision)}，原始系统结论和本次人工裁决都会保留。`;
+    await loadRun(currentRun);
+    if (selectedProjectId.value && task.value?.cycle_id)
+      await loadReport(selectedProjectId.value, task.value.cycle_id);
+  } catch (error) {
+    decisionMessage.value =
+      error instanceof Error ? error.message : "人工裁决保存失败";
   } finally {
     busy.value = false;
   }
@@ -1250,6 +1387,30 @@ onBeforeUnmount(stopPolling);
         :run-status="liveRun?.run_status"
         :run-snapshot-id="liveRun?.snapshot_id"
         :has-report="Boolean(report)"
+        :can-decide="Boolean(selectedConclusion?.allowedHumanDecisions?.length && !selectedConclusion?.humanDecision)"
+        ><template #decision
+          ><div class="human-decision-panel">
+            <div class="surface-heading">
+              <div>
+                <h2>人工裁决</h2>
+                <p>系统结论保持原样；此处只记录你是否采纳当前证据。</p>
+              </div>
+            </div>
+            <template v-if="selectedConclusion?.humanDecision">
+              <p class="decision-state">已完成：{{ decisionLabel(selectedConclusion.humanDecision.decision) }}</p>
+              <p v-if="selectedConclusion.humanDecision.note" class="quiet-note">{{ selectedConclusion.humanDecision.note }}</p>
+              <small>裁决时间：{{ selectedConclusion.humanDecision.createdAt ? formatDate(selectedConclusion.humanDecision.createdAt) : '—' }}</small>
+            </template>
+            <template v-else-if="selectedConclusion?.allowedHumanDecisions?.length">
+              <p class="quiet-note">请先阅读“引用”和“代码变更”。只有模型关联时，不能直接确认交付支持。</p>
+              <label>裁决说明（退回补证时必填）<textarea v-model="decisionNote" :disabled="busy" placeholder="记录采纳理由、当前缺口或需要补充的证据。" /></label>
+              <div class="action-buttons decision-actions">
+                <button v-for="decision in selectedConclusion.allowedHumanDecisions" :key="decision" type="button" :class="{ 'primary-button': decision === 'CONFIRM_SUPPORT' }" :disabled="busy" @click="decideConclusion(decision)">{{ decisionLabel(decision) }}</button>
+              </div>
+            </template>
+            <p v-else class="quiet-note">当前系统结论不需要人工裁决，或本轮尚未生成可裁决结果。</p>
+            <p v-if="decisionMessage" class="claim-feedback">{{ decisionMessage }}</p>
+          </div></template
         ><template #report
           ><div v-if="report" class="report-submit-panel detail-report">
             <div class="surface-heading">
@@ -1262,8 +1423,36 @@ onBeforeUnmount(stopPolling);
               <span class="status-mark attention">{{ report.status }}</span>
             </div>
             <p class="association-note">{{ reportMessage }}</p>
+            <section v-if="reportPreview" class="report-preview" aria-label="已保存的交付报告内容">
+              <div class="report-preview-meta">
+                <strong>已保存的报告内容</strong>
+                <span>v{{ reportPreview.version }} · 输入快照 {{ reportPreview.snapshot_hash.slice(0, 12) }}</span>
+              </div>
+              <p class="report-preview-note">以下内容来自本报告版本；重新进入该核验任务时仍可在这里回看，不会按当前页面数据重新生成。</p>
+              <article v-for="item in reportPreview.items" :key="item.id" class="report-preview-item">
+                <div class="report-preview-item-heading">
+                  <strong>{{ item.claimText }}</strong>
+                  <span class="status-mark">{{ reportConclusionStatus(item) }}</span>
+                </div>
+                <p v-if="item.result.reason">{{ item.result.reason }}</p>
+                <p v-if="item.result.humanDecision" class="report-human-decision">
+                  人工裁决：{{ decisionLabel(item.result.humanDecision.decision) }}
+                  <template v-if="item.result.humanDecision.note"> · {{ item.result.humanDecision.note }}</template>
+                  <template v-if="item.result.humanDecision.createdAt"> · {{ formatDate(item.result.humanDecision.createdAt) }}</template>
+                </p>
+                <details v-if="item.citations.length" class="report-citations">
+                  <summary>冻结引用（{{ item.citations.length }}）</summary>
+                  <div v-for="citation in item.citations" :key="citation.id" class="report-citation">
+                    <span>{{ citation.sourceType }}</span><p>{{ citation.excerpt }}</p>
+                  </div>
+                </details>
+              </article>
+              <p v-if="!reportPreview.items.length" class="quiet-note">该报告版本没有可展示的交付主张。</p>
+              <p v-if="reportPreview.editorial_note" class="report-editorial-note"><strong>提交说明</strong>{{ reportPreview.editorial_note }}</p>
+            </section>
+            <p v-else class="quiet-note">正在读取已保存的报告内容；如读取失败，请刷新后重试。</p>
             <template v-if="report.status === 'DRAFT'"
-              ><label
+              ><p v-if="unresolvedDecisionCount" class="report-gate-note">还有 {{ unresolvedDecisionCount }} 条结论等待人工裁决；请先在右侧“人工裁决”中完成处理。</p><label
                 >提交说明<textarea
                   v-model="reportNote"
                   :disabled="busy"
@@ -1276,7 +1465,7 @@ onBeforeUnmount(stopPolling);
                 ><button
                   class="primary-button"
                   type="button"
-                  :disabled="busy"
+                  :disabled="busy || Boolean(unresolvedDecisionCount)"
                   @click="submitReport"
                 >
                   提交审批

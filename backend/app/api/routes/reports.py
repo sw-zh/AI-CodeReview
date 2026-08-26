@@ -3,8 +3,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import ApprovalRequest, ProjectReportResponse, PublishedRecordResponse, ReportDraftUpdateRequest, ReportResponse
-from app.application.services.report_service import approve, create_draft, get_project_report, get_published_record, list_project_reports, list_published_records, publish, reject, request_changes, submit_for_review, update_draft
+from app.api.schemas import ApprovalRequest, ProjectReportResponse, PublishedRecordResponse, ReportContentResponse, ReportDraftUpdateRequest, ReportResponse
+from app.application.services.report_service import approve, create_draft, get_project_report, get_published_record, get_report_content, list_project_reports, list_published_records, publish, reject, request_changes, submit_for_review, update_draft
 from app.domain.errors import DomainError
 
 cycle_router = APIRouter(prefix="/cycles/{cycle_id}/reports")
@@ -38,6 +38,14 @@ def get_project_reports(project_id: UUID, session: SessionDep, user: CurrentUser
 def get_report(project_id: UUID, report_id: UUID, session: SessionDep, user: CurrentUserDep) -> ProjectReportResponse:
     try:
         return ProjectReportResponse(**get_project_report(session, project_id=project_id, report_id=report_id, actor_id=user.id))
+    except DomainError as exc:
+        raise _failure(exc)
+
+
+@project_router.get("/report-versions/{report_id}/content", response_model=ReportContentResponse)
+def get_report_content_view(project_id: UUID, report_id: UUID, session: SessionDep, user: CurrentUserDep) -> ReportContentResponse:
+    try:
+        return ReportContentResponse(**get_report_content(session, project_id=project_id, report_id=report_id, actor_id=user.id))
     except DomainError as exc:
         raise _failure(exc)
 
