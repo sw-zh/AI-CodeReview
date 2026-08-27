@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Runtime configuration; secrets are injected instead of committed."""
+    """运行时配置；密钥采用注入方式，而非提交入库。"""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -34,10 +34,15 @@ class Settings(BaseSettings):
     github_sync_timeout_seconds: int = Field(default=15, ge=1, le=30)
     github_sync_response_limit_bytes: int = Field(default=2_097_152, ge=65_536, le=8_388_608)
     source_max_bytes: int = Field(default=100 * 1024 * 1024, ge=1_048_576, le=524_288_000)
-    source_pdf_max_pages: int = Field(default=500, ge=1, le=2_000)
-    source_ocr_min_average_confidence: float = Field(default=85.0, ge=0.0, le=100.0)
-    source_ocr_min_page_confidence: float = Field(default=60.0, ge=0.0, le=100.0)
-    source_ingestion_timeout_seconds: int = Field(default=180, ge=30, le=900)
+    # MinerU 在线解析。
+    mineru_api_base_url: str = "https://mineru.net"
+    mineru_api_token: str | None = None
+    mineru_model_version: str = "pipeline"  # 模型版本：pipeline | vlm | MinerU-HTML
+    mineru_force_ocr: bool = True  # 是否强制 OCR（is_ocr）
+    mineru_language: str = "ch"
+    mineru_timeout_seconds: int = Field(default=300, ge=60, le=1800)
+    mineru_poll_interval_seconds: int = Field(default=5, ge=1, le=60)
+    mineru_result_max_bytes: int = Field(default=32 * 1024 * 1024, ge=1_048_576, le=128 * 1024 * 1024)
     code_review_context_max_file_bytes: int = Field(default=262_144, ge=4_096, le=2_097_152)
     code_review_context_max_total_bytes: int = Field(default=1_048_576, ge=65_536, le=8_388_608)
     code_review_input_char_budget: int = Field(default=96_000, ge=8_000, le=400_000)
