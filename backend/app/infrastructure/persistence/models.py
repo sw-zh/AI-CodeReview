@@ -399,6 +399,20 @@ class VerificationCycle(TimestampedEntity, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
+class KnowledgeFolder(TimestampedEntity, Base):
+    """A project-scoped folder grouping knowledge sources into a hierarchy."""
+
+    __tablename__ = "knowledge_folders"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_folder_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_folders.id", ondelete="CASCADE"), index=True
+    )
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+
+
 class SourceRevision(TimestampedEntity, Base):
     __tablename__ = "source_revisions"
     __table_args__ = (
@@ -424,6 +438,8 @@ class SourceRevision(TimestampedEntity, Base):
     processing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="UPLOADED")
     parser_version: Mapped[str | None] = mapped_column(String(64))
     failure_code: Mapped[str | None] = mapped_column(String(64))
+    folder_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_folders.id", ondelete="SET NULL"), index=True)
+    force_ocr: Mapped[bool] = mapped_column(default=False, nullable=False)
 
 
 class SourceIngestionJob(TimestampedEntity, Base):

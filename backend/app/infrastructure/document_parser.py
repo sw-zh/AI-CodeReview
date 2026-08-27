@@ -110,7 +110,7 @@ def detect_media_type(*, filename: str, claimed_media_type: str | None, content:
     return media_type
 
 
-def extract_document(*, content: bytes, filename: str, media_type: str) -> ExtractedDocument:
+def extract_document(*, content: bytes, filename: str, media_type: str, force_ocr: bool = False) -> ExtractedDocument:
     """Parse an uploaded source into locatable chunks.
 
     Plain and structured text are parsed locally (deterministic, low-cost).
@@ -125,7 +125,7 @@ def extract_document(*, content: bytes, filename: str, media_type: str) -> Extra
     if media_type == "application/pdf" or media_type in _IMAGE_TYPES or extension in _LEGACY_OFFICE or extension in {".docx", ".xlsx", ".pptx"}:
         from app.infrastructure.mineru_client import parse_document_via_mineru
 
-        return parse_document_via_mineru(content=content, filename=filename, settings=get_settings())
+        return parse_document_via_mineru(content=content, filename=filename, settings=get_settings(), force_ocr=force_ocr)
     raise DocumentExtractionError("SOURCE_MEDIA_UNSUPPORTED", "该文件格式暂不支持导入项目知识库")
 
 
