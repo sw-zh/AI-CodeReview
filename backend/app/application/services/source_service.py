@@ -110,21 +110,12 @@ def process_source_ingestion(session: Session, *, job: SourceIngestionJob, corre
             content=storage.read_bytes(source.artifact_uri),
             filename=source.original_filename,
             media_type=source.media_type,
-            pdf_max_pages=settings.source_pdf_max_pages,
-            timeout_seconds=settings.source_ingestion_timeout_seconds,
         )
-        ocr_confidence = extraction.metadata.get("ocrConfidence")
-        if ocr_confidence is not None:
-            source.processing_status = SourceProcessingStatus.OCR_CHECKING
-            page_confidences = [item.get("confidence", 0.0) for item in extraction.metadata.get("ocrPages", [])]
-            if ocr_confidence < settings.source_ocr_min_average_confidence or any(value < settings.source_ocr_min_page_confidence for value in page_confidences):
-                raise DocumentExtractionError("SOURCE_OCR_LOW_CONFIDENCE", "OCR 置信度不足，请上传可编辑原件或补充人工证据")
         if not extraction.chunks:
             raise DocumentExtractionError("SOURCE_EMPTY", "资料未能解析出可索引内容")
-        # Every extractor produces the same normalized-text chunk contract, so
-        # a project can safely mix Word, PDF, spreadsheet and image sources.
+        # MinerU does not return a confidence score; the field stays None.
+        source.ocr_confidence = None
         source.parser_version = _CANONICAL_PARSER_VERSION
-        source.ocr_confidence = ocr_confidence
         source.extraction_metadata = {**extraction.metadata, "extractorVersion": extraction.parser_version}
         source.extracted_artifact_uri = storage.write_bytes([str(source.project_id), str(source.id)], "extracted.txt", extraction.normalized_text.encode("utf-8"))
         source.processing_status = SourceProcessingStatus.CHUNKING

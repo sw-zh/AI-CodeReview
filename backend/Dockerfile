@@ -10,8 +10,7 @@ WORKDIR /app
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
     sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null || true; \
     apt-get update && apt-get install --no-install-recommends -y \
-    git libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
-    poppler-utils tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
+    git \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY alembic.ini ./
