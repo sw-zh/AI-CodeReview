@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import {
   apiRequest,
   projectHeaders,
@@ -39,6 +41,57 @@ const loading = ref(false)
 const error = ref('')
 const selectedFolderId = ref<string | null>(null)
 const selectedDocId = ref<string | null>(null)
+
+interface ChunkItem {
+  id: string
+  chunk_index: number
+  content: string
+  locator: Record<string, unknown>
+  index_version: string
+}
+
+const viewerTab = ref<'content' | 'chunks'>('content')
+const docContent = ref('')
+const docChunks = ref<ChunkItem[]>([])
+const viewerLoading = ref(false)
+const viewerError = ref('')
+
+/** full Markdown, rendered to safe HTML once (marked + DOMPurify) */
+const renderedContent = computed(() =>
+  DOMPurify.sanitize(marked.parse(docContent.value ?? '') as string),
+)
+
+function locatorText(locator: Record<string, unknown>) {
+  const entries = Object.entries(locator)
+  if (!entries.length) return ''
+  const [key, value] = entries[0]
+  const label = ({ paragraph: '段落', line: '行', charStart: '字符', section: '小节' } as Record<string, string>)[key] ?? key
+  return `${label} ${value}`
+}
+
+async function loadDoc(docId: string) {
+  viewerTab.value = 'content'
+  viewerLoading.value = true
+  viewerError.value = ''
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  try {
+    const [content, chunks] = await Promise.all([
+      apiRequest<{ content: string }>(`/projects/${projectId}/sources/${docId}`, { headers: projectHeaders() }),
+      apiRequest<ChunkItem[]>(`/projects/${projectId}/sources/${docId}/chunks`, { headers: projectHeaders() }),
+    ])
+    docContent.value = content.content
+    docChunks.value = chunks
+  } catch (err) {
+    viewerError.value = err instanceof Error ? err.message : '文档内容加载失败'
+  } finally {
+    viewerLoading.value = false
+  }
+}
+
+function closeViewer() {
+  selectedDocId.value = null
+}
 
 const expandedFolders = ref<Set<string>>(new Set())
 
@@ -97,6 +150,7 @@ function selectFolder(id: string) {
 function selectDoc(id: string) {
   selectedDocId.value = id
   selectedFolderId.value = null
+  loadDoc(id)
 }
 
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === selectedFolderId.value) ?? null)
@@ -324,8 +378,39 @@ onMounted(loadKnowledgeBase)
           </div>
         </div>
 
+        <!-- 选中文档：查看器（全文 / 分段） -->
+        <template v-if="activeDoc">
+          <div class="kb-viewer">
+            <header class="kb-viewer-header">
+              <div class="kb-viewer-title">
+                <strong :title="activeDoc.logical_name">{{ activeDoc.logical_name }}</strong>
+                <small>{{ activeDoc.parser_version || '—' }} · {{ activeDoc.force_ocr ? 'OCR' : '文本' }} · {{ statusText(activeDoc.processing_status) }}</small>
+              </div>
+              <button class="kb-viewer-close" type="button" aria-label="关闭" @click="closeViewer">×</button>
+            </header>
+            <nav class="kb-viewer-tabs">
+              <button type="button" :class="{ active: viewerTab === 'content' }" @click="viewerTab = 'content'">全文</button>
+              <button type="button" :class="{ active: viewerTab === 'chunks' }" @click="viewerTab = 'chunks'">分段 ({{ docChunks.length }})</button>
+            </nav>
+            <div class="kb-viewer-body">
+              <p v-if="viewerLoading" class="kb-viewer-state">加载中…</p>
+              <p v-else-if="viewerError" class="kb-viewer-error">{{ viewerError }}</p>
+              <article v-else-if="viewerTab === 'content'" class="kb-md" v-html="renderedContent"></article>
+              <ol v-else class="kb-chunk-list">
+                <li v-for="c in docChunks" :key="c.id" class="kb-chunk">
+                  <div class="kb-chunk-meta">
+                    <span class="kb-chunk-idx">#{{ c.chunk_index }}</span>
+                    <span v-if="locatorText(c.locator)" class="kb-chunk-loc">{{ locatorText(c.locator) }}</span>
+                  </div>
+                  <p>{{ c.content }}</p>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </template>
+
         <!-- 选中文件夹：文档卡片 -->
-        <template v-if="selectedFolderId && activeFolder">
+        <template v-else-if="selectedFolderId && activeFolder">
           <div class="kb-section-head"><h2>{{ activeFolder.name }}</h2></div>
           <div v-if="docsInFolder(activeFolder.id).length" class="kb-card-grid">
             <div v-for="doc in docsInFolder(activeFolder.id)" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
@@ -528,6 +613,95 @@ onMounted(loadKnowledgeBase)
 .kb-main {
   min-width: 0;
 }
+
+/* 文档查看器 */
+.kb-viewer {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.kb-viewer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.kb-viewer-title { min-width: 0; }
+.kb-viewer-title strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-viewer-title small { display: block; margin-top: 4px; color: var(--muted); font-size: 0.7rem; }
+.kb-viewer-close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.kb-viewer-close:hover { background: #f4f0ec; color: var(--ink); }
+.kb-viewer-tabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--line-soft); }
+.kb-viewer-tabs button {
+  border: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.kb-viewer-tabs button.active { background: var(--brand-soft); color: var(--brand); }
+.kb-viewer-body {
+  padding: 18px 22px;
+  max-height: calc(100vh - 320px);
+  min-height: 160px;
+  overflow: auto;
+}
+.kb-viewer-state,
+.kb-viewer-error { margin: 0; color: var(--muted); font-size: 0.82rem; }
+.kb-viewer-error { color: #a33; }
+
+/* Markdown 全文（v-html 注入的内容不带 scoped 属性，需 :deep 命中内层） */
+.kb-md :deep(p) { margin: 0 0 12px; color: #403a35; font-size: 0.84rem; line-height: 1.75; }
+.kb-md :deep(h1) { margin: 22px 0 12px; color: var(--ink); font-size: 1.28rem; letter-spacing: -0.02em; }
+.kb-md :deep(h2) { margin: 20px 0 10px; color: var(--ink); font-size: 1.06rem; }
+.kb-md :deep(h3) { margin: 18px 0 8px; color: var(--ink); font-size: 0.95rem; }
+.kb-md :deep(h4) { margin: 16px 0 8px; color: var(--ink); font-size: 0.86rem; }
+.kb-md :deep(ul),
+.kb-md :deep(ol) { margin: 0 0 12px; padding-left: 22px; }
+.kb-md :deep(li) { margin: 3px 0; color: #403a35; font-size: 0.84rem; line-height: 1.7; }
+.kb-md :deep(code) { border-radius: 4px; background: #f4f0ec; color: #933; padding: 1px 5px; font: 0.78rem ui-monospace, Consolas, monospace; }
+.kb-md :deep(pre) { overflow: auto; margin: 0 0 12px; border-radius: 8px; background: #2b2723; color: #f4eee9; padding: 12px 14px; font: 0.76rem/1.6 Consolas, monospace; }
+.kb-md :deep(pre code) { background: transparent; color: inherit; padding: 0; }
+.kb-md :deep(blockquote) { margin: 0 0 12px; border-left: 3px solid var(--line); padding: 4px 14px; color: var(--muted); }
+.kb-md :deep(table) { width: 100%; margin: 0 0 14px; border-collapse: collapse; font-size: 0.8rem; }
+.kb-md :deep(th) { border-bottom: 2px solid var(--line); padding: 7px 10px; text-align: left; color: var(--ink); font-weight: 750; }
+.kb-md :deep(td) { border-bottom: 1px solid var(--line-soft); padding: 7px 10px; }
+.kb-md :deep(a) { color: var(--brand); }
+.kb-md :deep(hr) { margin: 18px 0; border: 0; border-top: 1px solid var(--line-soft); }
+
+/* 分段列表 */
+.kb-chunk-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.kb-chunk { border: 1px solid var(--line-soft); border-radius: 9px; background: #fcfaf8; padding: 12px 14px; }
+.kb-chunk-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.kb-chunk-idx { border-radius: 5px; background: var(--brand-soft); color: var(--brand); padding: 1px 7px; font-size: 0.68rem; font-weight: 800; }
+.kb-chunk-loc { color: var(--muted); font-size: 0.7rem; }
+.kb-chunk p { margin: 0; color: #403a35; font-size: 0.82rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 .kb-toolbar {
   display: flex;
   align-items: center;
