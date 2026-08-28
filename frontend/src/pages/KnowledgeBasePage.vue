@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import {
@@ -121,6 +121,7 @@ async function loadKnowledgeBase() {
     error.value = err instanceof Error ? err.message : '知识库加载失败'
   } finally {
     loading.value = false
+    reconcilePolling()
   }
 }
 
@@ -286,6 +287,35 @@ async function deleteFolder(folder: Folder) {
     error.value = err instanceof Error ? err.message : '删除失败'
   }
 }
+
+// 智能轮询:只要存在「处理中」的文档就每隔几秒自动刷新,全部到达终态后自动停止。
+const POLL_INTERVAL_MS = 4000
+const PENDING_STATUSES = new Set(['UPLOADED', 'PARSING', 'OCR_CHECKING', 'CHUNKING', 'INDEXING'])
+let pollTimer: number | null = null
+
+function hasPendingDocument(): boolean {
+  return sources.value.some((source) => PENDING_STATUSES.has(source.processing_status))
+}
+
+function reconcilePolling() {
+  if (hasPendingDocument()) {
+    if (pollTimer === null) {
+      pollTimer = window.setInterval(async () => {
+        await loadKnowledgeBase()
+      }, POLL_INTERVAL_MS)
+    }
+  } else if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onBeforeUnmount(() => {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 
 onMounted(loadKnowledgeBase)
 </script>
