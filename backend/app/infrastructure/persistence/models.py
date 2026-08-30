@@ -85,6 +85,7 @@ class SourceSyncRun(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     connection_id: Mapped[UUID] = mapped_column(ForeignKey("external_connections.id", ondelete="CASCADE"), nullable=False)
+    requested_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -94,6 +95,15 @@ class SourceSyncRun(Base):
     continuation_cursor: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
+    # Durable worker lease fields so a background lane can consume this run.
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class ExternalResource(TimestampedEntity, Base):

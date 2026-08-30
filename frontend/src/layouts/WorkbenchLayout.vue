@@ -1,10 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { apiRequest, createProject, loadProjects, projectContextLoading, projects, selectProject, selectedProject, selectedProjectId } from '../features/projects/project-context'
-
-interface ExternalConnection { id: string }
-interface SyncRun { status: string; changed_count: number; error_code: string | null; error_message: string | null }
+import { loadProjects, projectContextLoading, projects, selectProject, selectedProject, selectedProjectId, createProject } from '../features/projects/project-context'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,13 +15,10 @@ const navigationItems = [
 ]
 const title = computed(() => String(route.meta.title ?? 'AI-CodeReview'))
 const showProjectOnboarding = ref(false)
-const onboardingForm = ref({ name: '', description: '', repositoryUrl: '', credentialRef: '' })
+const onboardingForm = ref({ name: '', description: '', repositoryUrl: '' })
 const onboardingBusy = ref(false)
 const onboardingStep = ref('')
 const onboardingMessage = ref('')
-const onboardingProjectId = ref<string | null>(null)
-const onboardingConnectionId = ref<string | null>(null)
-const onboardingRepositoryRegistered = ref(false)
 const requiresProjectContext = computed(() => route.path !== '/workbench' && !projectContextLoading.value && !selectedProject.value)
 
 function logout() {
@@ -37,12 +31,9 @@ function changeProject(event: Event) {
 }
 
 function resetOnboarding() {
-  onboardingForm.value = { name: '', description: '', repositoryUrl: '', credentialRef: '' }
+  onboardingForm.value = { name: '', description: '', repositoryUrl: '' }
   onboardingMessage.value = ''
   onboardingStep.value = ''
-  onboardingProjectId.value = null
-  onboardingConnectionId.value = null
-  onboardingRepositoryRegistered.value = false
 }
 
 function openProjectCreate() {
@@ -56,64 +47,29 @@ function closeProjectCreate() {
   resetOnboarding()
 }
 
-function normalizeGitHubRepository(value: string) {
-  const trimmed = value.trim().replace(/\/+$/, '').replace(/\.git$/, '')
-  const slug = trimmed.replace(/^https?:\/\/github\.com\//i, '')
-  if (!/^[^/\s]+\/[^/\s]+$/.test(slug)) throw new Error('请填写 GitHub 仓库地址，例如 https://github.com/owner/repository。')
-  return { slug, displayUrl: `https://github.com/${slug}.git` }
-}
-
 provide('openProjectCreate', openProjectCreate)
 
 async function submitProjectOnboarding() {
   const name = onboardingForm.value.name.trim()
   if (!name) return
-  let repository: { slug: string; displayUrl: string }
-  try { repository = normalizeGitHubRepository(onboardingForm.value.repositoryUrl) } catch (error) { onboardingMessage.value = error instanceof Error ? error.message : '仓库地址无效'; return }
+  const repositoryUrl = onboardingForm.value.repositoryUrl.trim()
+  if (!repositoryUrl) {
+    onboardingMessage.value = '请填写 GitHub 仓库地址。'
+    return
+  }
 
   onboardingBusy.value = true
   onboardingMessage.value = ''
+  onboardingStep.value = '正在创建项目'
   try {
-    if (!onboardingProjectId.value) {
-      onboardingStep.value = '正在创建项目'
-      const project = await createProject(name, onboardingForm.value.description.trim())
-      onboardingProjectId.value = project.id
-    }
-    const projectId = onboardingProjectId.value
-    if (!projectId) throw new Error('项目创建结果无效，请重新开始。')
-
-    if (!onboardingConnectionId.value) {
-      onboardingStep.value = '正在接入 GitHub'
-      const connection = await apiRequest<ExternalConnection>(`/projects/${projectId}/external-connections`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${sessionStorage.getItem('accessToken') ?? ''}`, 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ provider: 'GITHUB', name: repository.slug, repository_slug: repository.slug, secret_ref: onboardingForm.value.credentialRef.trim() || null }),
-      })
-      onboardingConnectionId.value = connection.id
-    }
-
-    if (!onboardingRepositoryRegistered.value) {
-      onboardingStep.value = '正在登记只读代码仓库'
-      await apiRequest(`/projects/${projectId}/git-repositories`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${sessionStorage.getItem('accessToken') ?? ''}`, 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ display_url: repository.displayUrl, credential_ref: onboardingForm.value.credentialRef.trim() || null }),
-      })
-      onboardingRepositoryRegistered.value = true
-    }
-
-    onboardingStep.value = '正在同步 GitHub PR'
-    const run = await apiRequest<SyncRun>(`/projects/${projectId}/external-connections/${onboardingConnectionId.value}/sync`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${sessionStorage.getItem('accessToken') ?? ''}`, 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-    })
-    if (run.status !== 'SUCCEEDED') throw new Error(`${run.error_code ?? 'SOURCE_SYNC_FAILED'}：${run.error_message ?? 'GitHub 同步未完成'}`)
-
+    // One request creates the project and registers + queues a GitHub source
+    // sync in a single transaction; the actual PR sync runs in the background.
+    await createProject(name, onboardingForm.value.description.trim(), repositoryUrl)
     showProjectOnboarding.value = false
     resetOnboarding()
     await router.push('/tasks')
   } catch (error) {
-    onboardingMessage.value = `项目已创建，但${onboardingStep.value || '接入'}失败：${error instanceof Error ? error.message : '未知错误'}。请修正后在此重试。`
+    onboardingMessage.value = `创建项目失败：${error instanceof Error ? error.message : '未知错误'}。请修正后重试。`
   } finally {
     onboardingBusy.value = false
   }
@@ -140,14 +96,13 @@ onMounted(() => { void loadProjects() })
       <div v-if="showProjectOnboarding" class="project-onboarding-overlay" @click.self="closeProjectCreate">
         <section class="project-onboarding" aria-label="创建并接入项目" role="dialog" aria-modal="true">
           <form class="project-onboarding-form" @submit.prevent="submitProjectOnboarding">
-            <div class="project-onboarding-copy"><h2>创建并接入项目</h2><p>填写一次 GitHub 仓库地址，系统会登记只读代码源并同步 Pull Request；完成后即可选择一次代码交付开始审查。</p></div>
+            <div class="project-onboarding-copy"><h2>创建并接入项目</h2><p>填写一次 GitHub 仓库地址，系统会登记只读代码源并在后台同步 Pull Request；完成后即可选择一次代码交付开始审查。</p></div>
             <label>项目名称<input v-model="onboardingForm.name" maxlength="200" required autofocus placeholder="例如：支付平台重构" /></label>
             <label>项目说明（可选）<input v-model="onboardingForm.description" maxlength="4000" placeholder="用来区分这次开发工作的范围" /></label>
             <label class="project-onboarding-repository">GitHub 仓库地址<input v-model="onboardingForm.repositoryUrl" required placeholder="https://github.com/owner/repository" /></label>
-            <label>私有仓库凭据引用（可选）<input v-model="onboardingForm.credentialRef" maxlength="160" placeholder="例如：GITHUB_SOURCE_TOKEN" /></label>
-            <div class="project-onboarding-actions"><button class="primary-button" type="submit" :disabled="onboardingBusy || !onboardingForm.name.trim() || !onboardingForm.repositoryUrl.trim()">{{ onboardingBusy ? onboardingStep : '创建并同步 PR' }}</button><button type="button" :disabled="onboardingBusy" @click="closeProjectCreate">取消</button></div>
+            <div class="project-onboarding-actions"><button class="primary-button" type="submit" :disabled="onboardingBusy || !onboardingForm.name.trim() || !onboardingForm.repositoryUrl.trim()">{{ onboardingBusy ? onboardingStep : '创建项目' }}</button><button type="button" :disabled="onboardingBusy" @click="closeProjectCreate">取消</button></div>
           </form>
-          <p class="project-onboarding-note">公开仓库无需 Token。当前只支持 GitHub；不会写入仓库、执行代码或运行构建。</p>
+          <p class="project-onboarding-note">当前只支持 GitHub；不会写入仓库、执行代码或运行构建。Pull Request 将在后台同步。</p>
           <p v-if="onboardingMessage" class="project-create-error" role="alert">{{ onboardingMessage }}</p>
         </section>
       </div>

@@ -33,6 +33,9 @@ from app.infrastructure.persistence.models import (
 
 
 _GITHUB_API_BASE_URL = "https://api.github.com"
+# Fixed environment-variable name backing GitHub private-repo access.  The UI
+# no longer collects a credential name; clients fall back to this convention.
+_DEFAULT_SECRET_REF = "GITHUB_SOURCE_TOKEN"
 _GITHUB_REPOSITORY_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -117,7 +120,9 @@ def create_connection(
     if not normalized_name:
         raise DomainError("INPUT_INVALID", "来源连接名称不能为空")
     slug = _normalize_repository_slug(repository_slug)
-    normalized_secret_ref = normalize_secret_ref(secret_ref)
+    # The token lives in the server environment under a fixed convention; the
+    # UI no longer asks the user for a credential name.  Fall back to that name.
+    normalized_secret_ref = normalize_secret_ref(secret_ref) or _DEFAULT_SECRET_REF
     existing = session.query(ExternalConnection).filter_by(
         project_id=project_id,
         provider=provider,
@@ -276,11 +281,40 @@ def sync_connection(
     actor_id: UUID,
     correlation_id: str,
 ) -> SourceSyncRun:
+    """Enqueue a background synchronization run and return it immediately.
+
+    The actual GitHub pull + upsert happens asynchronously in the worker lane;
+    returning a RUNNING run here means the request is accepted, not that data
+    has been fetched yet.
+    """
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     connection = _connection_for_project(session, project_id=project_id, connection_id=connection_id)
-    sync = SourceSyncRun(connection_id=connection.id, status=SourceSyncStatus.RUNNING.value)
+    sync = SourceSyncRun(connection_id=connection.id, status=SourceSyncStatus.RUNNING.value, requested_by=actor_id)
     session.add(sync)
     session.flush()
+    append_audit_event(
+        session,
+        project_id=project_id,
+        actor_id=actor_id,
+        aggregate_type="SourceSyncRun",
+        aggregate_id=sync.id,
+        action="SOURCE_SYNC_QUEUED",
+        correlation_id=correlation_id,
+        payload={"connectionId": str(connection.id)},
+    )
+    return sync
+
+
+def execute_source_sync(session: Session, *, sync: SourceSyncRun, actor_id: UUID, correlation_id: str) -> None:
+    """Run a previously enqueued SourceSyncRun to completion (worker lane body)."""
+    connection = session.get(ExternalConnection, sync.connection_id)
+    if connection is None or not connection.is_active:
+        sync.status = SourceSyncStatus.FAILED.value
+        sync.error_code = "RESOURCE_NOT_FOUND"
+        sync.error_message = "外部来源连接不存在或已停用"
+        sync.finished_at = datetime.now(UTC)
+        return
+    project_id = connection.project_id
     try:
         payload = GitHubSourceClient(
             repository_slug=connection.repository_slug,
@@ -320,7 +354,12 @@ def sync_connection(
                 )
             )
         for source in payload.milestones:
-            _, _, changed = _upsert_resource(session, connection=connection, source=source, resource_type=ExternalResourceType.MILESTONE.value)
+            _, _, changed = _upsert_resource(
+                session,
+                connection=connection,
+                source=source,
+                resource_type=ExternalResourceType.MILESTONE.value,
+            )
             fetched_count += 1
             changed_count += int(changed)
         sync.status = SourceSyncStatus.PARTIALLY_SUCCEEDED.value if payload.truncated else SourceSyncStatus.SUCCEEDED.value
@@ -346,7 +385,6 @@ def sync_connection(
         correlation_id=correlation_id,
         payload={"connectionId": str(connection.id), "status": sync.status, "fetchedCount": sync.fetched_count, "changedCount": sync.changed_count, "errorCode": sync.error_code},
     )
-    return sync
 
 
 def list_sync_runs(session: Session, *, project_id: UUID, actor_id: UUID, limit: int = 50) -> list[SourceSyncRun]:

@@ -7,6 +7,12 @@ from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import Project, ProjectMember, User
 from app.application.services.orchestration_service import ensure_default_orchestration
+from app.application.services.external_source_service import (
+    create_connection,
+    sync_connection,
+)
+from app.application.services.git_service import register_repository
+from app.infrastructure.persistence.models import SourceSyncRun
 
 
 def create_project(
@@ -28,6 +34,61 @@ def create_project(
         after_version=project.version,
     )
     return project
+
+
+def create_project_with_source(
+    session: Session,
+    *,
+    name: str,
+    description: str | None,
+    repository_url: str,
+    actor_id: UUID,
+    correlation_id: str,
+) -> tuple[Project, SourceSyncRun]:
+    """Create a project and register + queue its GitHub source in one transaction.
+
+    This keeps the create-project flow to a single request so a GitHub source
+    connection never leaves the UI in a half-created state: either the whole
+    project+connection+repository lands, or the request rolls back.
+    """
+    slug = _repository_slug(repository_url)
+    project = create_project(
+        session, name=name, description=description, actor_id=actor_id, correlation_id=correlation_id
+    )
+    connection = create_connection(
+        session,
+        project_id=project.id,
+        actor_id=actor_id,
+        correlation_id=correlation_id,
+        provider="GITHUB",
+        name=slug,
+        repository_slug=slug,
+        secret_ref=None,
+    )
+    register_repository(
+        session,
+        project_id=project.id,
+        display_url=f"https://github.com/{slug}.git",
+        credential_ref=None,
+        actor_id=actor_id,
+        correlation_id=correlation_id,
+    )
+    sync = sync_connection(
+        session,
+        project_id=project.id,
+        connection_id=connection.id,
+        actor_id=actor_id,
+        correlation_id=correlation_id,
+    )
+    return project, sync
+
+
+def _repository_slug(value: str) -> str:
+    """Normalize a GitHub repository URL or bare owner/repo slug."""
+    trimmed = value.strip().rstrip("/").replace(".git", "").replace("https://github.com/", "").replace("http://github.com/", "")
+    if not trimmed or "/" not in trimmed or trimmed.count("/") > 1:
+        raise DomainError("INPUT_INVALID", "GitHub 仓库地址无效，例如 https://github.com/owner/repository")
+    return trimmed
 
 
 def list_projects(session: Session, *, actor_id: UUID) -> list[Project]:

@@ -17,6 +17,9 @@ class TokenResponse(BaseModel):
 class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
+    # Optional: when present, the project is created and its GitHub source is
+    # registered + a background sync queued in one step.
+    repository_url: str | None = Field(default=None, max_length=2048)
 
 
 class ProjectResponse(BaseModel):

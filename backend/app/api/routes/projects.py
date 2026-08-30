@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
 from app.api.schemas import ProjectCreateRequest, ProjectMemberCreateRequest, ProjectResponse
-from app.application.services.project_service import add_member, add_member_by_email, create_project, list_projects
+from app.application.services.project_service import add_member, add_member_by_email, create_project, create_project_with_source, list_projects
 from app.domain.errors import DomainError
 from app.infrastructure.persistence.models import Project, ProjectMember
 
@@ -20,13 +20,23 @@ def create(
     _: str = Depends(idempotency_key),
 ) -> Project:
     try:
-        project = create_project(
-            session,
-            name=payload.name,
-            description=payload.description,
-            actor_id=user.id,
-            correlation_id=correlation_id(request),
-        )
+        if payload.repository_url:
+            project, _sync = create_project_with_source(
+                session,
+                name=payload.name,
+                description=payload.description,
+                repository_url=payload.repository_url,
+                actor_id=user.id,
+                correlation_id=correlation_id(request),
+            )
+        else:
+            project = create_project(
+                session,
+                name=payload.name,
+                description=payload.description,
+                actor_id=user.id,
+                correlation_id=correlation_id(request),
+            )
         session.commit()
         session.refresh(project)
         return project
