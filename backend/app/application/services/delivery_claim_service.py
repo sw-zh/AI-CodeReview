@@ -21,6 +21,7 @@ from app.infrastructure.persistence.models import (
     VerificationCycle,
     VerificationTask,
     ModelCall,
+    ProjectKnowledgeBase,
 )
 
 
@@ -109,14 +110,28 @@ def propose_delivery_claims(
     if len(source_revision_ids) != len(set(source_revision_ids)):
         raise DomainError("INPUT_INVALID", "资料版本不能重复选择")
     item, revision = _latest_pr_revision(session, task=task)
-    sources = (
-        session.query(SourceRevision)
-        .filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == project_id)
+    kb_ids = [
+        row[0]
+        for row in session.query(ProjectKnowledgeBase.knowledge_base_id)
+        .filter(ProjectKnowledgeBase.project_id == project_id)
         .all()
+    ]
+    visible = (
+        {
+            row[0]
+            for row in session.query(SourceRevision.id)
+            .filter(SourceRevision.knowledge_base_id.in_(kb_ids))
+            .all()
+        }
+        if kb_ids
+        else set()
+    )
+    sources = (
+        session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids)).all()
         if source_revision_ids else []
     )
-    if len(sources) != len(source_revision_ids) or any(source.processing_status != "READY" for source in sources):
-        raise DomainError("SOURCE_NOT_READY", "候选主张只能引用当前项目中已就绪的资料版本")
+    if len(sources) != len(source_revision_ids) or any(source.id not in visible or source.processing_status != "READY" for source in sources):
+        raise DomainError("SOURCE_NOT_READY", "候选主张只能引用当前项目可用的知识库中已就绪的资料版本")
     storage = LocalArtifactStorage(get_settings().artifact_root)
     documents = []
     for source in sources:

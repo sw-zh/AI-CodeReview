@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import CurrentUserDep, SessionDep, correlation_id, idempotency_key
-from app.api.schemas import ChunkItemResponse, KnowledgeFolderCreateRequest, KnowledgeFolderResponse, SourceContentResponse, SourceDetailResponse, SourceResponse
-from app.application.services.source_service import create_knowledge_folder, create_source_revision, delete_knowledge_folder, delete_source, list_knowledge_folders, list_project_sources, list_source_chunks, read_source_content, read_source_download
+from app.api.schemas import ChunkItemResponse, KnowledgeBaseCreateRequest, KnowledgeBaseMountRequest, KnowledgeBaseResponse, SourceContentResponse, SourceDetailResponse, SourceResponse
+from app.application.services.source_service import create_knowledge_base, create_source_revision, delete_source, list_all_knowledge_bases, list_project_knowledge_bases, list_project_sources, list_source_chunks, mount_knowledge_base, read_source_content, read_source_download, unmount_knowledge_base
 from app.domain.errors import DomainError
 
 
@@ -22,7 +22,23 @@ def _failure(exc: DomainError) -> HTTPException:
 
 
 sources_router = APIRouter(prefix="/projects/{project_id}/sources")
-folders_router = APIRouter(prefix="/projects/{project_id}/knowledge-folders")
+knowledge_bases_router = APIRouter(prefix="/projects/{project_id}/knowledge-bases")
+all_knowledge_bases_router = APIRouter(prefix="/knowledge-bases")
+
+
+@all_knowledge_bases_router.get("", response_model=list[KnowledgeBaseResponse])
+def get_all_knowledge_bases(session: SessionDep, user: CurrentUserDep) -> list[KnowledgeBaseResponse]:
+    try:
+        items = list_all_knowledge_bases(session, actor_id=user.id)
+        return [
+            KnowledgeBaseResponse(
+                id=item.id, project_id=item.project_id, name=item.name,
+                created_at=item.created_at, updated_at=item.updated_at,
+            )
+            for item in items
+        ]
+    except DomainError as exc:
+        raise _failure(exc)
 
 
 @sources_router.get("", response_model=list[SourceDetailResponse])
@@ -67,7 +83,7 @@ async def upload(
     file: UploadFile = File(...),
     source_role: str = Form(..., max_length=64),
     logical_name: str = Form(..., max_length=255),
-    folder_id: UUID | None = Form(None),
+    knowledge_base_id: UUID | None = Form(None),
     force_ocr: bool = Form(False),
     _: str = Depends(idempotency_key),
 ) -> SourceResponse:
@@ -82,7 +98,7 @@ async def upload(
             content=await file.read(),
             actor_id=user.id,
             correlation_id=correlation_id(request),
-            folder_id=folder_id,
+            knowledge_base_id=knowledge_base_id,
             force_ocr=force_ocr,
         )
         session.commit()
@@ -95,7 +111,7 @@ async def upload(
             processing_status=source.processing_status,
             parser_version=source.parser_version,
             ingestion_job_id=job.id,
-            folder_id=source.folder_id,
+            knowledge_base_id=source.knowledge_base_id,
             force_ocr=source.force_ocr,
         )
     except DomainError as exc:
@@ -113,54 +129,77 @@ def delete_source_endpoint(project_id: UUID, source_id: UUID, session: SessionDe
         raise _failure(exc)
 
 
-@folders_router.get("", response_model=list[KnowledgeFolderResponse])
-def get_folders(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[KnowledgeFolderResponse]:
+@knowledge_bases_router.get("", response_model=list[KnowledgeBaseResponse])
+def get_knowledge_bases(project_id: UUID, session: SessionDep, user: CurrentUserDep) -> list[KnowledgeBaseResponse]:
     try:
-        folders = list_knowledge_folders(session, project_id=project_id, actor_id=user.id)
+        items = list_project_knowledge_bases(session, project_id=project_id, actor_id=user.id)
         return [
-            KnowledgeFolderResponse(
-                id=folder.id, project_id=folder.project_id, name=folder.name,
-                parent_folder_id=folder.parent_folder_id,
-                created_at=folder.created_at, updated_at=folder.updated_at,
+            KnowledgeBaseResponse(
+                id=item.id, project_id=item.project_id, name=item.name,
+                created_at=item.created_at, updated_at=item.updated_at,
             )
-            for folder in folders
+            for item in items
         ]
     except DomainError as exc:
         raise _failure(exc)
 
 
-@folders_router.post("", response_model=KnowledgeFolderResponse, status_code=status.HTTP_201_CREATED)
-def create_folder(
+@knowledge_bases_router.post("", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED)
+def create_knowledge_base_endpoint(
     project_id: UUID,
-    payload: KnowledgeFolderCreateRequest,
+    payload: KnowledgeBaseCreateRequest,
     request: Request,
     session: SessionDep,
     user: CurrentUserDep,
     _: str = Depends(idempotency_key),
-) -> KnowledgeFolderResponse:
+) -> KnowledgeBaseResponse:
     try:
-        folder = create_knowledge_folder(
+        item = create_knowledge_base(
             session,
             project_id=project_id,
             name=payload.name,
-            parent_folder_id=payload.parent_folder_id,
             actor_id=user.id,
         )
         session.commit()
-        return KnowledgeFolderResponse(
-            id=folder.id, project_id=folder.project_id, name=folder.name,
-            parent_folder_id=folder.parent_folder_id,
-            created_at=folder.created_at, updated_at=folder.updated_at,
+        return KnowledgeBaseResponse(
+            id=item.id, project_id=item.project_id, name=item.name,
+            created_at=item.created_at, updated_at=item.updated_at,
         )
     except DomainError as exc:
         session.rollback()
         raise _failure(exc)
 
 
-@folders_router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_folder(project_id: UUID, folder_id: UUID, session: SessionDep, user: CurrentUserDep) -> None:
+@knowledge_bases_router.post("/mount", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED)
+def mount_knowledge_base_endpoint(
+    project_id: UUID,
+    payload: KnowledgeBaseMountRequest,
+    request: Request,
+    session: SessionDep,
+    user: CurrentUserDep,
+    _: str = Depends(idempotency_key),
+) -> KnowledgeBaseResponse:
     try:
-        delete_knowledge_folder(session, project_id=project_id, folder_id=folder_id, actor_id=user.id)
+        item = mount_knowledge_base(
+            session,
+            project_id=project_id,
+            knowledge_base_id=payload.knowledge_base_id,
+            actor_id=user.id,
+        )
+        session.commit()
+        return KnowledgeBaseResponse(
+            id=item.id, project_id=item.project_id, name=item.name,
+            created_at=item.created_at, updated_at=item.updated_at,
+        )
+    except DomainError as exc:
+        session.rollback()
+        raise _failure(exc)
+
+
+@knowledge_bases_router.delete("/{knowledge_base_id}", status_code=status.HTTP_204_NO_CONTENT)
+def unmount_knowledge_base_endpoint(project_id: UUID, knowledge_base_id: UUID, session: SessionDep, user: CurrentUserDep) -> None:
+    try:
+        unmount_knowledge_base(session, project_id=project_id, knowledge_base_id=knowledge_base_id, actor_id=user.id)
         session.commit()
     except DomainError as exc:
         session.rollback()

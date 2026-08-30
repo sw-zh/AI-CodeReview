@@ -409,17 +409,28 @@ class VerificationCycle(TimestampedEntity, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
-class KnowledgeFolder(TimestampedEntity, Base):
-    """A project-scoped folder grouping knowledge sources into a hierarchy."""
+class KnowledgeBase(TimestampedEntity, Base):
+    """A standalone knowledge library that projects can mount (share)."""
 
-    __tablename__ = "knowledge_folders"
+    __tablename__ = "knowledge_bases"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    parent_folder_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("knowledge_folders.id", ondelete="CASCADE"), index=True
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+
+
+class ProjectKnowledgeBase(TimestampedEntity, Base):
+    """Mount relation: a project can use a knowledge base shared by another project."""
+
+    __tablename__ = "project_knowledge_bases"
+    __table_args__ = (
+        UniqueConstraint("project_id", "knowledge_base_id", name="uq_project_knowledge_base"),
     )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
 
 
@@ -448,7 +459,7 @@ class SourceRevision(TimestampedEntity, Base):
     processing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="UPLOADED")
     parser_version: Mapped[str | None] = mapped_column(String(64))
     failure_code: Mapped[str | None] = mapped_column(String(64))
-    folder_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_folders.id", ondelete="SET NULL"), index=True)
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="SET NULL"), index=True)
     force_ocr: Mapped[bool] = mapped_column(default=False, nullable=False)
 
 

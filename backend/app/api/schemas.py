@@ -20,6 +20,8 @@ class ProjectCreateRequest(BaseModel):
     # Optional: when present, the project is created and its GitHub source is
     # registered + a background sync queued in one step.
     repository_url: str | None = Field(default=None, max_length=2048)
+    # Optional knowledge bases to mount to the new project.
+    knowledge_base_ids: list[UUID] = Field(default_factory=list)
 
 
 class ProjectResponse(BaseModel):
@@ -102,7 +104,7 @@ class SourceResponse(BaseModel):
     processing_status: str
     parser_version: str | None
     ingestion_job_id: UUID
-    folder_id: UUID | None = None
+    knowledge_base_id: UUID | None = None
     force_ocr: bool = False
 
 
@@ -122,24 +124,26 @@ class SourceDetailResponse(BaseModel):
     extraction_metadata: dict
     ingestion_job_status: str | None
     in_snapshot: bool
-    folder_id: UUID | None = None
+    knowledge_base_id: UUID | None = None
     force_ocr: bool = False
     created_at: datetime
     updated_at: datetime
 
 
-class KnowledgeFolderCreateRequest(BaseModel):
+class KnowledgeBaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    parent_folder_id: UUID | None = None
 
 
-class KnowledgeFolderResponse(BaseModel):
+class KnowledgeBaseResponse(BaseModel):
     id: UUID
     project_id: UUID
     name: str
-    parent_folder_id: UUID | None
     created_at: datetime
     updated_at: datetime
+
+
+class KnowledgeBaseMountRequest(BaseModel):
+    knowledge_base_id: UUID
 
 
 class SourceContentResponse(BaseModel):

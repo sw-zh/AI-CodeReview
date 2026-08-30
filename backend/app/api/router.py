@@ -20,7 +20,7 @@ from app.api.routes.retrieval import router as retrieval_router
 from app.api.routes.retrieval_indexes import router as retrieval_indexes_router
 from app.api.routes.reports import cycle_router as report_cycle_router, project_router as project_report_router, report_router
 from app.api.routes.snapshots import router as snapshots_router
-from app.api.routes.sources import folders_router, sources_router
+from app.api.routes.sources import all_knowledge_bases_router, knowledge_bases_router, sources_router
 from app.api.routes.tasks import router as tasks_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -53,5 +53,6 @@ api_router.include_router(report_router, tags=["reports"])
 api_router.include_router(project_report_router, tags=["reports"])
 api_router.include_router(tasks_router, tags=["verification-tasks"])
 api_router.include_router(sources_router, tags=["sources"])
-api_router.include_router(folders_router, tags=["sources"])
+api_router.include_router(knowledge_bases_router, tags=["sources"])
+api_router.include_router(all_knowledge_bases_router, tags=["sources"])
 api_router.include_router(snapshots_router, tags=["snapshots"])

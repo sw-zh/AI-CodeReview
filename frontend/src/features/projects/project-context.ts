@@ -59,11 +59,11 @@ export async function loadProjects() {
   }
 }
 
-export async function createProject(name: string, description = '', repositoryUrl = ''): Promise<ProjectContextItem> {
+export async function createProject(name: string, description = '', repositoryUrl = '', knowledgeBaseIds: string[] = []): Promise<ProjectContextItem> {
   const project = await apiRequest<ProjectContextItem>('/projects', {
     method: 'POST',
     headers: projectHeaders(true),
-    body: JSON.stringify({ name, description: description || null, repository_url: repositoryUrl || null }),
+    body: JSON.stringify({ name, description: description || null, repository_url: repositoryUrl || null, knowledge_base_ids: knowledgeBaseIds }),
   })
   projects.value = [project, ...projects.value]
   selectProject(project.id)

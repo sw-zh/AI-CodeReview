@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { loadProjects, projectContextLoading, projects, selectProject, selectedProject, selectedProjectId, createProject } from '../features/projects/project-context'
+import { loadProjects, projectContextLoading, projects, selectProject, selectedProject, selectedProjectId, createProject, apiRequest, projectHeaders } from '../features/projects/project-context'
+
+interface KnowledgeBaseOption { id: string; name: string; project_id: string }
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +22,10 @@ const onboardingBusy = ref(false)
 const onboardingStep = ref('')
 const onboardingMessage = ref('')
 const requiresProjectContext = computed(() => route.path !== '/workbench' && !projectContextLoading.value && !selectedProject.value)
+const kbPickerOpen = ref(false)
+const kbOptions = ref<KnowledgeBaseOption[]>([])
+const selectedKbIds = ref<string[]>([])
+const kbPickerLoading = ref(false)
 
 function logout() {
   sessionStorage.removeItem('accessToken')
@@ -34,6 +40,7 @@ function resetOnboarding() {
   onboardingForm.value = { name: '', description: '', repositoryUrl: '' }
   onboardingMessage.value = ''
   onboardingStep.value = ''
+  selectedKbIds.value = []
 }
 
 function openProjectCreate() {
@@ -45,6 +52,24 @@ function closeProjectCreate() {
   if (onboardingBusy.value) return
   showProjectOnboarding.value = false
   resetOnboarding()
+}
+
+async function openKbPicker() {
+  kbPickerLoading.value = true
+  try {
+    kbOptions.value = await apiRequest<KnowledgeBaseOption[]>('/knowledge-bases', { headers: projectHeaders() })
+  } catch (e) {
+    onboardingMessage.value = e instanceof Error ? e.message : '知识库列表加载失败'
+  } finally {
+    kbPickerLoading.value = false
+  }
+  kbPickerOpen.value = true
+}
+
+function toggleKb(id: string) {
+  selectedKbIds.value = selectedKbIds.value.includes(id)
+    ? selectedKbIds.value.filter((item) => item !== id)
+    : [...selectedKbIds.value, id]
 }
 
 provide('openProjectCreate', openProjectCreate)
@@ -64,7 +89,7 @@ async function submitProjectOnboarding() {
   try {
     // One request creates the project and registers + queues a GitHub source
     // sync in a single transaction; the actual PR sync runs in the background.
-    await createProject(name, onboardingForm.value.description.trim(), repositoryUrl)
+    await createProject(name, onboardingForm.value.description.trim(), repositoryUrl, selectedKbIds.value)
     showProjectOnboarding.value = false
     resetOnboarding()
     await router.push('/tasks')
@@ -100,8 +125,38 @@ onMounted(() => { void loadProjects() })
             <label>项目名称<input v-model="onboardingForm.name" maxlength="200" required autofocus placeholder="例如：支付平台重构" /></label>
             <label>项目说明（可选）<input v-model="onboardingForm.description" maxlength="4000" placeholder="用来区分这次开发工作的范围" /></label>
             <label class="project-onboarding-repository">GitHub 仓库地址<input v-model="onboardingForm.repositoryUrl" required placeholder="https://github.com/owner/repository" /></label>
+            <div class="project-onboarding-kb">
+              <span>关联知识库（可选）</span>
+              <button type="button" class="kb-pick-button" @click="openKbPicker">＋ 选择知识库</button>
+            </div>
+            <div v-if="selectedKbIds.length" class="project-onboarding-kb-list">
+              <span v-for="id in selectedKbIds" :key="id" class="project-onboarding-kb-chip">
+                {{ kbOptions.find((o) => o.id === id)?.name ?? '知识库' }}
+                <button type="button" aria-label="移除" @click="toggleKb(id)">×</button>
+              </span>
+            </div>
             <div class="project-onboarding-actions"><button class="primary-button" type="submit" :disabled="onboardingBusy || !onboardingForm.name.trim() || !onboardingForm.repositoryUrl.trim()">{{ onboardingBusy ? onboardingStep : '创建项目' }}</button><button type="button" :disabled="onboardingBusy" @click="closeProjectCreate">取消</button></div>
           </form>
+
+          <!-- 知识库选择子弹窗 -->
+          <div v-if="kbPickerOpen" class="project-onboarding-overlay" @click.self="kbPickerOpen = false">
+            <section class="project-onboarding project-kb-picker" role="dialog" aria-modal="true">
+              <div class="project-onboarding-copy"><h2>选择知识库</h2><p>勾选要挂载到该项目的知识库。</p></div>
+              <div v-if="kbPickerLoading" class="project-onboarding-note">加载中…</div>
+              <div v-else-if="!kbOptions.length" class="project-onboarding-note">暂无可用知识库，可先去知识库页创建。</div>
+              <ul v-else class="project-kb-list">
+                <li v-for="kb in kbOptions" :key="kb.id">
+                  <label>
+                    <input type="checkbox" :checked="selectedKbIds.includes(kb.id)" @change="toggleKb(kb.id)" />
+                    <span>{{ kb.name }}</span>
+                  </label>
+                </li>
+              </ul>
+              <div class="project-onboarding-actions">
+                <button type="button" class="primary-button" @click="kbPickerOpen = false">完成</button>
+              </div>
+            </section>
+          </div>
           <p class="project-onboarding-note">当前只支持 GitHub；不会写入仓库、执行代码或运行构建。Pull Request 将在后台同步。</p>
           <p v-if="onboardingMessage" class="project-create-error" role="alert">{{ onboardingMessage }}</p>
         </section>

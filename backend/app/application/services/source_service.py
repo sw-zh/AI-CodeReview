@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.application.services.common import append_audit_event, require_project_role
@@ -18,7 +18,7 @@ from app.domain.model_contracts import EmbeddingRequest
 from app.infrastructure.artifact_storage import LocalArtifactStorage
 from app.infrastructure.document_parser import DocumentExtractionError, detect_media_type, extract_document, supported_extensions
 from app.infrastructure.embedding_model import create_embedding_model, embedding_index_version
-from app.infrastructure.persistence.models import DocumentChunk, InputSnapshotSource, KnowledgeFolder, SourceIngestionJob, SourceRevision
+from app.infrastructure.persistence.models import DocumentChunk, InputSnapshotSource, KnowledgeBase, ProjectKnowledgeBase, ProjectMember, SourceIngestionJob, SourceRevision
 
 
 _CANONICAL_PARSER_VERSION = "knowledge-extraction-v1"
@@ -49,7 +49,7 @@ def create_source_revision(
     content: bytes,
     actor_id: UUID,
     correlation_id: str,
-    folder_id: UUID | None = None,
+    knowledge_base_id: UUID | None = None,
     force_ocr: bool = False,
 ) -> tuple[SourceRevision, SourceIngestionJob]:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
@@ -61,8 +61,8 @@ def create_source_revision(
         media_type = detect_media_type(filename=original_filename, claimed_media_type=claimed_media_type, content=content)
     except DocumentExtractionError as exc:
         raise DomainError(exc.code, exc.message) from exc
-    if folder_id is not None:
-        _require_folder(session, project_id=project_id, folder_id=folder_id, actor_id=actor_id)
+    if knowledge_base_id is not None:
+        _require_knowledge_base(session, project_id=project_id, knowledge_base_id=knowledge_base_id, actor_id=actor_id)
     revision_no = (
         session.query(func.coalesce(func.max(SourceRevision.revision_no), 0))
         .filter(SourceRevision.project_id == project_id, SourceRevision.logical_name == logical_name)
@@ -80,7 +80,7 @@ def create_source_revision(
         original_filename=Path(original_filename).name,
         media_type=media_type,
         processing_status=SourceProcessingStatus.UPLOADED,
-        folder_id=folder_id,
+        knowledge_base_id=knowledge_base_id,
         force_ocr=force_ocr,
     )
     session.add(source)
@@ -194,7 +194,21 @@ def process_source_ingestion(session: Session, *, job: SourceIngestionJob, corre
 
 def list_project_sources(session: Session, *, project_id: UUID, actor_id: UUID) -> list[dict]:
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
-    sources = session.query(SourceRevision).filter_by(project_id=project_id).order_by(SourceRevision.created_at.desc()).all()
+    # Sources visible to a project are those inside any knowledge base it has
+    # mounted (including knowledge bases it created, which are auto-mounted).
+    kb_ids = [
+        row[0]
+        for row in session.query(ProjectKnowledgeBase.knowledge_base_id)
+        .filter(ProjectKnowledgeBase.project_id == project_id)
+        .all()
+    ]
+    query = session.query(SourceRevision).order_by(SourceRevision.created_at.desc())
+    if kb_ids:
+        query = query.filter(SourceRevision.knowledge_base_id.in_(kb_ids))
+    else:
+        # Fall back to the project's own sources (legacy project-scoped uploads).
+        query = query.filter(SourceRevision.project_id == project_id)
+    sources = query.all()
     frozen = set()
     if sources:
         frozen = {row[0] for row in session.query(InputSnapshotSource.source_revision_id).filter(InputSnapshotSource.source_revision_id.in_([s.id for s in sources])).distinct().all()}
@@ -202,67 +216,106 @@ def list_project_sources(session: Session, *, project_id: UUID, actor_id: UUID) 
     return [_source_projection(source, in_snapshot=source.id in frozen, job=jobs.get(source.id)) for source in sources]
 
 
-def create_knowledge_folder(
-    session: Session, *, project_id: UUID, name: str, parent_folder_id: UUID | None, actor_id: UUID
-) -> KnowledgeFolder:
+def create_knowledge_base(
+    session: Session, *, project_id: UUID, name: str, actor_id: UUID
+) -> KnowledgeBase:
+    """Create a knowledge base belonging to a project, auto-mounted to that project."""
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
     trimmed = name.strip()
     if not trimmed:
-        raise DomainError("INPUT_INVALID", "文件夹名称不能为空")
-    if parent_folder_id is not None:
-        _require_folder(session, project_id=project_id, folder_id=parent_folder_id, actor_id=actor_id)
-    folder = KnowledgeFolder(
+        raise DomainError("INPUT_INVALID", "知识库名称不能为空")
+    knowledge_base = KnowledgeBase(
         project_id=project_id,
         name=trimmed,
-        parent_folder_id=parent_folder_id,
         created_by=actor_id,
     )
-    session.add(folder)
+    session.add(knowledge_base)
     session.flush()
-    return folder
+    mount = ProjectKnowledgeBase(
+        project_id=project_id,
+        knowledge_base_id=knowledge_base.id,
+        created_by=actor_id,
+    )
+    session.add(mount)
+    session.flush()
+    return knowledge_base
 
 
-def list_knowledge_folders(session: Session, *, project_id: UUID, actor_id: UUID) -> list[KnowledgeFolder]:
+def list_project_knowledge_bases(session: Session, *, project_id: UUID, actor_id: UUID) -> list[KnowledgeBase]:
+    """List the knowledge bases a project has (its own plus mounted/shared ones)."""
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
     return (
-        session.query(KnowledgeFolder)
-        .filter_by(project_id=project_id)
-        .order_by(KnowledgeFolder.created_at.asc())
+        session.query(KnowledgeBase)
+        .join(ProjectKnowledgeBase, ProjectKnowledgeBase.knowledge_base_id == KnowledgeBase.id)
+        .filter(ProjectKnowledgeBase.project_id == project_id)
+        .order_by(KnowledgeBase.created_at.asc())
         .all()
     )
 
 
-def delete_knowledge_folder(session: Session, *, project_id: UUID, folder_id: UUID, actor_id: UUID) -> None:
-    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
-    folder = _require_folder(session, project_id=project_id, folder_id=folder_id, actor_id=actor_id)
-    storage = LocalArtifactStorage(get_settings().artifact_root)
-    # Collect every source across the folder tree (self + descendants).
-    source_ids = _collect_folder_source_ids(session, root_id=folder.id)
-    sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_ids)).all() if source_ids else []
-    for source_item in sources:
-        _assert_source_not_frozen(session, source_item)
-        _delete_source_artifacts(storage, source_item)
-    # Delete the folder rows and the nested sources within the tree.
-    if sources:
-        for source_item in sources:
-            session.delete(source_item)
-    _delete_folder_tree(session, root_id=folder.id)
-    session.flush()
+def list_all_knowledge_bases(session: Session, *, actor_id: UUID) -> list[KnowledgeBase]:
+    """List every knowledge base the current user may mount.
 
-
-def _delete_folder_tree(session: Session, *, root_id: UUID) -> None:
-    """Recursively delete every descendant folder; children first so FK CASCADE is safe."""
-    children = [
+    A knowledge base is visible if it belongs to a project where the user is a
+    member (its "home" project), or if any project the user belongs to has
+    already mounted it. This keeps cross-project sharing to projects the user
+    can actually see.
+    """
+    member_project_ids = [
         row[0]
-        for row in session.query(KnowledgeFolder.id)
-        .filter(KnowledgeFolder.parent_folder_id == root_id)
+        for row in session.query(ProjectMember.project_id)
+        .filter(ProjectMember.user_id == actor_id)
+        .distinct()
         .all()
     ]
-    for child_id in children:
-        _delete_folder_tree(session, root_id=child_id)
-    folder = session.get(KnowledgeFolder, root_id)
-    if folder is not None:
-        session.delete(folder)
+    if not member_project_ids:
+        return []
+    return (
+        session.query(KnowledgeBase)
+        .filter(
+            or_(
+                KnowledgeBase.project_id.in_(member_project_ids),
+                KnowledgeBase.id.in_(
+                    session.query(ProjectKnowledgeBase.knowledge_base_id).filter(
+                        ProjectKnowledgeBase.project_id.in_(member_project_ids)
+                    )
+                ),
+            )
+        )
+        .order_by(KnowledgeBase.created_at.asc())
+        .all()
+    )
+
+
+def mount_knowledge_base(session: Session, *, project_id: UUID, knowledge_base_id: UUID, actor_id: UUID) -> KnowledgeBase:
+    """Mount an existing knowledge base (shared) to a project."""
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    knowledge_base = _require_knowledge_base_access(session, knowledge_base_id=knowledge_base_id, actor_id=actor_id)
+    existing = session.query(ProjectKnowledgeBase).filter_by(
+        project_id=project_id, knowledge_base_id=knowledge_base_id
+    ).one_or_none()
+    if existing is not None:
+        return knowledge_base
+    mount = ProjectKnowledgeBase(
+        project_id=project_id,
+        knowledge_base_id=knowledge_base_id,
+        created_by=actor_id,
+    )
+    session.add(mount)
+    session.flush()
+    return knowledge_base
+
+
+def unmount_knowledge_base(session: Session, *, project_id: UUID, knowledge_base_id: UUID, actor_id: UUID) -> None:
+    """Remove a mount relation (does not delete the knowledge base itself)."""
+    require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.ADMIN})
+    mount = session.query(ProjectKnowledgeBase).filter_by(
+        project_id=project_id, knowledge_base_id=knowledge_base_id
+    ).one_or_none()
+    if mount is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "项目未挂载该知识库")
+    session.delete(mount)
+    session.flush()
 
 
 def delete_source(session: Session, *, project_id: UUID, source_id: UUID, actor_id: UUID) -> None:
@@ -273,24 +326,6 @@ def delete_source(session: Session, *, project_id: UUID, source_id: UUID, actor_
     _delete_source_artifacts(storage, source)
     session.delete(source)
     session.flush()
-
-
-def _collect_folder_source_ids(session: Session, *, root_id: UUID) -> list[UUID]:
-    """Return every source revision id nested under root (folder + its descendants)."""
-    folder_ids = [root_id]
-    index = 0
-    while index < len(folder_ids):
-        children = [
-            row[0]
-            for row in session.query(KnowledgeFolder.id)
-            .filter(KnowledgeFolder.parent_folder_id == folder_ids[index])
-            .all()
-        ]
-        folder_ids.extend(children)
-        index += 1
-    if not folder_ids:
-        return []
-    return [row[0] for row in session.query(SourceRevision.id).filter(SourceRevision.folder_id.in_(folder_ids)).all()]
 
 
 def _delete_source_artifacts(storage: LocalArtifactStorage, source: SourceRevision) -> None:
@@ -311,12 +346,28 @@ def _assert_source_not_frozen(session: Session, source: SourceRevision) -> None:
         raise DomainError("SOURCE_FROZEN_IN_SNAPSHOT", "该资料已冻结到核验快照，无法删除")
 
 
-def _require_folder(session: Session, *, project_id: UUID, folder_id: UUID, actor_id: UUID) -> KnowledgeFolder:
+def _require_knowledge_base(session: Session, *, project_id: UUID, knowledge_base_id: UUID, actor_id: UUID) -> KnowledgeBase:
+    """Require that a project can use a knowledge base: it owns it or has mounted it."""
     require_project_role(session, project_id, actor_id, {ProjectRole.SUBMITTER, ProjectRole.REVIEWER, ProjectRole.ADMIN})
-    folder = session.get(KnowledgeFolder, folder_id)
-    if folder is None or folder.project_id != project_id:
-        raise DomainError("RESOURCE_NOT_FOUND", "文件夹不存在")
-    return folder
+    knowledge_base = session.get(KnowledgeBase, knowledge_base_id)
+    if knowledge_base is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "知识库不存在")
+    if knowledge_base.project_id == project_id:
+        return knowledge_base
+    mount = session.query(ProjectKnowledgeBase).filter_by(
+        project_id=project_id, knowledge_base_id=knowledge_base_id
+    ).one_or_none()
+    if mount is None:
+        raise DomainError("AUTH_FORBIDDEN", "当前项目未挂载该知识库")
+    return knowledge_base
+
+
+def _require_knowledge_base_access(session: Session, *, knowledge_base_id: UUID, actor_id: UUID) -> KnowledgeBase:
+    """Require the caller can access a knowledge base (owner/creator or a project they belong to)."""
+    knowledge_base = session.get(KnowledgeBase, knowledge_base_id)
+    if knowledge_base is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "知识库不存在")
+    return knowledge_base
 
 
 def _source_projection(source: SourceRevision, *, in_snapshot: bool, job: SourceIngestionJob | None) -> dict:
@@ -326,7 +377,7 @@ def _source_projection(source: SourceRevision, *, in_snapshot: bool, job: Source
         "original_filename": source.original_filename, "processing_status": source.processing_status, "parser_version": source.parser_version,
         "failure_code": source.failure_code, "ocr_confidence": source.ocr_confidence, "extraction_metadata": source.extraction_metadata or {},
         "ingestion_job_status": job.job_status if job else None, "in_snapshot": in_snapshot,
-        "folder_id": source.folder_id, "force_ocr": source.force_ocr,
+        "knowledge_base_id": source.knowledge_base_id, "force_ocr": source.force_ocr,
         "created_at": source.created_at, "updated_at": source.updated_at,
     }
 
@@ -357,4 +408,4 @@ def _require_source(session: Session, *, project_id: UUID, source_id: UUID, acto
     return source
 
 
-__all__ = ["create_source_revision", "list_project_sources", "list_source_chunks", "process_source_ingestion", "read_source_content", "read_source_download", "supported_extensions", "create_knowledge_folder", "list_knowledge_folders", "delete_knowledge_folder", "delete_source"]
+__all__ = ["create_source_revision", "list_project_sources", "list_source_chunks", "process_source_ingestion", "read_source_content", "read_source_download", "supported_extensions", "create_knowledge_base", "list_project_knowledge_bases", "list_all_knowledge_bases", "mount_knowledge_base", "unmount_knowledge_base", "delete_source"]

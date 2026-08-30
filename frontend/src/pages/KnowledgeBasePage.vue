@@ -8,11 +8,10 @@ import {
   selectedProjectId,
 } from '../features/projects/project-context'
 
-interface Folder {
+interface KnowledgeBase {
   id: string
   project_id: string
   name: string
-  parent_folder_id: string | null
   created_at: string
   updated_at: string
 }
@@ -29,17 +28,17 @@ interface SourceDoc {
   parser_version: string | null
   failure_code: string | null
   ingestion_job_status: string | null
-  folder_id: string | null
+  knowledge_base_id: string | null
   force_ocr: boolean
   created_at: string
   updated_at: string
 }
 
-const folders = ref<Folder[]>([])
+const knowledgeBases = ref<KnowledgeBase[]>([])
 const sources = ref<SourceDoc[]>([])
 const loading = ref(false)
 const error = ref('')
-const selectedFolderId = ref<string | null>(null)
+const selectedKbId = ref<string | null>(null)
 const selectedDocId = ref<string | null>(null)
 
 interface ChunkItem {
@@ -93,13 +92,15 @@ function closeViewer() {
   selectedDocId.value = null
 }
 
-const expandedFolders = ref<Set<string>>(new Set())
+const expandedKbs = ref<Set<string>>(new Set())
 
 const uploadModal = ref<{ file: File } | null>(null)
-const uploadTargetFolderId = ref<string | null>(null)
+const uploadTargetKbId = ref<string | null>(null)
 const uploadForceOcr = ref(true)
-const createFolderModal = ref(false)
-const createFolderName = ref('')
+const createKbModal = ref(false)
+const createKbName = ref('')
+const mountKbModal = ref(false)
+const mountKbId = ref('')
 const uploading = ref(false)
 
 async function loadKnowledgeBase() {
@@ -111,11 +112,11 @@ async function loadKnowledgeBase() {
   loading.value = true
   error.value = ''
   try {
-    const [folderList, sourceList] = await Promise.all([
-      apiRequest<Folder[]>(`/projects/${projectId}/knowledge-folders`, { headers: projectHeaders() }),
+    const [kbList, sourceList] = await Promise.all([
+      apiRequest<KnowledgeBase[]>(`/projects/${projectId}/knowledge-bases`, { headers: projectHeaders() }),
       apiRequest<SourceDoc[]>(`/projects/${projectId}/sources`, { headers: projectHeaders() }),
     ])
-    folders.value = folderList
+    knowledgeBases.value = kbList
     sources.value = sourceList
   } catch (err) {
     error.value = err instanceof Error ? err.message : '知识库加载失败'
@@ -125,50 +126,29 @@ async function loadKnowledgeBase() {
   }
 }
 
-function rootFolders(): Folder[] {
-  return folders.value.filter((folder) => folder.parent_folder_id === null)
+function docsInKb(kbId: string | null): SourceDoc[] {
+  return sources.value.filter((source) => source.knowledge_base_id === kbId)
 }
 
-function childFolders(parentId: string | null): Folder[] {
-  return folders.value.filter((folder) => folder.parent_folder_id === parentId)
+/** 判断一个知识库是否展开 */
+function isExpanded(kbId: string) {
+  return expandedKbs.value.has(kbId)
 }
 
-function docsInFolder(folderId: string | null): SourceDoc[] {
-  return sources.value.filter((source) => source.folder_id === folderId)
-}
-
-/** 判断一个文件夹是否应默认展开（有子内容且未被收起） */
-function isExpanded(folderId: string) {
-  return expandedFolders.value.has(folderId)
-}
-
-function selectFolder(id: string) {
-  selectedFolderId.value = id
+function selectKb(id: string) {
+  selectedKbId.value = id
   selectedDocId.value = null
-  expandedFolders.value.add(id)
+  expandedKbs.value.add(id)
 }
 
 function selectDoc(id: string) {
   selectedDocId.value = id
-  selectedFolderId.value = null
+  selectedKbId.value = null
   loadDoc(id)
 }
 
-const activeFolder = computed(() => folders.value.find((folder) => folder.id === selectedFolderId.value) ?? null)
+const activeKb = computed(() => knowledgeBases.value.find((kb) => kb.id === selectedKbId.value) ?? null)
 const activeDoc = computed(() => sources.value.find((source) => source.id === selectedDocId.value) ?? null)
-
-const folderPath = computed(() => {
-  if (!activeFolder.value) return []
-  const path: Folder[] = []
-  let current: Folder | undefined = activeFolder.value
-  let guard = 0
-  while (current && guard < 50) {
-    path.unshift(current)
-    current = folders.value.find((folder) => folder.id === current?.parent_folder_id)
-    guard += 1
-  }
-  return path.map((folder) => folder.name)
-})
 
 function extOf(name: string) {
   const match = name.match(/\.(\w+)$/)
@@ -195,7 +175,7 @@ function openUploadDialog() {
   input.onchange = () => {
     const file = input.files?.[0]
     if (file) {
-      uploadTargetFolderId.value = selectedFolderId.value
+      uploadTargetKbId.value = selectedKbId.value
       uploadForceOcr.value = true
       uploadModal.value = { file }
     }
@@ -215,7 +195,7 @@ async function confirmUpload() {
     formData.append('file', file)
     formData.append('source_role', '知识库')
     formData.append('logical_name', file.name)
-    if (uploadTargetFolderId.value) formData.append('folder_id', uploadTargetFolderId.value)
+    if (uploadTargetKbId.value) formData.append('knowledge_base_id', uploadTargetKbId.value)
     formData.append('force_ocr', uploadForceOcr.value ? 'true' : 'false')
     await apiRequest(`/projects/${projectId}/sources`, {
       method: 'POST',
@@ -234,25 +214,41 @@ async function confirmUpload() {
   }
 }
 
-async function confirmCreateFolder() {
+async function confirmCreateKb() {
   const projectId = selectedProjectId.value
   if (!projectId) return
-  const name = createFolderName.value.trim()
+  const name = createKbName.value.trim()
   if (!name) return
   try {
-    await apiRequest(`/projects/${projectId}/knowledge-folders`, {
+    await apiRequest(`/projects/${projectId}/knowledge-bases`, {
       method: 'POST',
       headers: projectHeaders(true),
-      body: JSON.stringify({
-        name,
-        parent_folder_id: selectedFolderId.value,
-      }),
+      body: JSON.stringify({ name }),
     })
-    createFolderName.value = ''
-    createFolderModal.value = false
+    createKbName.value = ''
+    createKbModal.value = false
     await loadKnowledgeBase()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '新建文件夹失败'
+    error.value = err instanceof Error ? err.message : '创建知识库失败'
+  }
+}
+
+async function confirmMountKb() {
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  const knowledgeBaseId = mountKbId.value.trim()
+  if (!knowledgeBaseId) return
+  try {
+    await apiRequest(`/projects/${projectId}/knowledge-bases/mount`, {
+      method: 'POST',
+      headers: projectHeaders(true),
+      body: JSON.stringify({ knowledge_base_id: knowledgeBaseId }),
+    })
+    mountKbId.value = ''
+    mountKbModal.value = false
+    await loadKnowledgeBase()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '挂载知识库失败'
   }
 }
 
@@ -272,19 +268,20 @@ async function deleteDoc(doc: SourceDoc) {
   }
 }
 
-async function deleteFolder(folder: Folder) {
+async function unmountKb(kb: KnowledgeBase) {
   const projectId = selectedProjectId.value
   if (!projectId) return
-  if (!confirm(`确定删除文件夹「${folder.name}」及其全部内容？`)) return
+  const isOwn = kb.project_id === projectId
+  if (!confirm(`确定${isOwn ? '删除知识库' : '解除挂载知识库'}「${kb.name}」？${isOwn ? '该知识库下的文档也会删除。' : '仅解除与本项目的挂载，不影响知识库本身。'}`)) return
   try {
-    await apiRequest(`/projects/${projectId}/knowledge-folders/${folder.id}`, {
+    await apiRequest(`/projects/${projectId}/knowledge-bases/${kb.id}`, {
       method: 'DELETE',
       headers: projectHeaders(true),
     })
-    selectedFolderId.value = null
+    if (selectedKbId.value === kb.id) selectedKbId.value = null
     await loadKnowledgeBase()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '删除失败'
+    error.value = err instanceof Error ? err.message : '操作失败'
   }
 }
 
@@ -323,49 +320,31 @@ onMounted(loadKnowledgeBase)
 <template>
   <section class="page page-knowledge">
     <header class="page-heading">
-      <div><h1>项目知识库</h1><p>上传资料、按文件夹组织知识文档，MinerU 解析并建立可核验索引。</p></div>
+      <div><h1>项目知识库</h1><p>按知识库组织文档，跨项目共享资料，MinerU 解析并建立可核验索引。</p></div>
       <button v-if="error" class="kb-retry" type="button" @click="loadKnowledgeBase">重试</button>
     </header>
 
     <div v-if="error && !loading" class="kb-error">{{ error }}</div>
 
     <div class="kb-layout">
-      <!-- 左侧：文件夹树 -->
+      <!-- 左侧：知识库列表 -->
       <aside class="kb-sidebar">
-        <button class="kb-create" type="button" @click="createFolderModal = true">＋ 新建文件夹</button>
-        <div class="kb-tree-label">文件夹</div>
+        <div class="kb-sidebar-actions">
+          <button class="kb-create" type="button" @click="createKbModal = true">＋ 创建知识库</button>
+          <button class="kb-mount" type="button" @click="mountKbModal = true">挂载知识库</button>
+        </div>
+        <div class="kb-tree-label">已挂载知识库</div>
         <nav class="kb-tree">
-          <div v-for="folder in rootFolders()" :key="folder.id" class="kb-node">
-            <button class="kb-node-row" :class="{ active: selectedFolderId === folder.id && !selectedDocId }" type="button" @click="selectFolder(folder.id)">
-              <span :class="['kb-caret', !isExpanded(folder.id) ? 'collapsed' : '']">▾</span>
+          <div v-for="kb in knowledgeBases" :key="kb.id" class="kb-node">
+            <button class="kb-node-row" :class="{ active: selectedKbId === kb.id && !selectedDocId }" type="button" @click="selectKb(kb.id)">
+              <span :class="['kb-caret', !isExpanded(kb.id) ? 'collapsed' : '']">▾</span>
               <i class="kb-folder-ico plain">▤</i>
-              <span class="kb-node-name">{{ folder.name }}</span>
-              <button class="kb-del-mini" type="button" @click.stop="deleteFolder(folder)">×</button>
+              <span class="kb-node-name">{{ kb.name }}</span>
+              <button class="kb-del-mini" type="button" @click.stop="unmountKb(kb)">×</button>
             </button>
-            <div v-if="isExpanded(folder.id)" class="kb-node-children">
-              <div v-for="child in childFolders(folder.id)" :key="child.id" class="kb-node">
-                <button class="kb-node-row" :class="{ active: selectedFolderId === child.id && !selectedDocId }" type="button" @click="selectFolder(child.id)">
-                  <span :class="['kb-caret', !isExpanded(child.id) ? 'collapsed' : '']">▾</span>
-                  <i class="kb-folder-ico plain">▤</i>
-                  <span class="kb-node-name">{{ child.name }}</span>
-                  <button class="kb-del-mini" type="button" @click.stop="deleteFolder(child)">×</button>
-                </button>
-                <div v-if="isExpanded(child.id)" class="kb-node-children">
-                  <button
-                    v-for="doc in docsInFolder(child.id)"
-                    :key="doc.id"
-                    class="kb-node-row kb-node-doc"
-                    :class="{ active: selectedDocId === doc.id }"
-                    type="button"
-                    @click="selectDoc(doc.id)"
-                  >
-                    <i class="kb-doc-dot">{{ extOf(doc.logical_name) }}</i>
-                    <span class="kb-node-name">{{ doc.logical_name }}</span>
-                  </button>
-                </div>
-              </div>
+            <div v-if="isExpanded(kb.id)" class="kb-node-children">
               <button
-                v-for="doc in docsInFolder(folder.id)"
+                v-for="doc in docsInKb(kb.id)"
                 :key="doc.id"
                 class="kb-node-row kb-node-doc"
                 :class="{ active: selectedDocId === doc.id }"
@@ -377,11 +356,10 @@ onMounted(loadKnowledgeBase)
               </button>
             </div>
           </div>
-          <!-- 未分组（根级）文档 -->
-          <div v-if="docsInFolder(null).length && !rootFolders().length" class="kb-tree-label">未分组文档</div>
+          <!-- 未分组（未挂到任何知识库）文档 -->
+          <div v-if="docsInKb(null).length" class="kb-tree-label">未分组文档</div>
           <button
-            v-for="doc in docsInFolder(null)"
-            v-show="rootFolders().length === 0"
+            v-for="doc in docsInKb(null)"
             :key="doc.id"
             class="kb-node-row kb-node-doc"
             :class="{ active: selectedDocId === doc.id }"
@@ -398,12 +376,12 @@ onMounted(loadKnowledgeBase)
       <section class="kb-main">
         <div class="kb-toolbar">
           <nav class="kb-crumbs">
-            <template v-for="(crumb, index) in folderPath" :key="index">
-              <i v-if="index > 0" class="kb-crumb-sep">/</i>{{ crumb }}
-            </template>
+            <template v-if="activeKb">{{ activeKb.name }}</template>
+            <template v-else>当前项目</template>
           </nav>
           <div class="kb-toolbar-actions">
-            <button class="kb-btn" type="button" @click="createFolderModal = true">＋ 新建文件夹</button>
+            <button class="kb-btn" type="button" @click="createKbModal = true">＋ 创建知识库</button>
+            <button class="kb-btn" type="button" @click="mountKbModal = true">挂载知识库</button>
             <button class="kb-btn kb-btn-primary" type="button" @click="openUploadDialog">＋ 上传文档</button>
           </div>
         </div>
@@ -439,11 +417,11 @@ onMounted(loadKnowledgeBase)
           </div>
         </template>
 
-        <!-- 选中文件夹：文档卡片 -->
-        <template v-else-if="selectedFolderId && activeFolder">
-          <div class="kb-section-head"><h2>{{ activeFolder.name }}</h2></div>
-          <div v-if="docsInFolder(activeFolder.id).length" class="kb-card-grid">
-            <div v-for="doc in docsInFolder(activeFolder.id)" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
+        <!-- 选中知识库：文档卡片 -->
+        <template v-else-if="selectedKbId && activeKb">
+          <div class="kb-section-head"><h2>{{ activeKb.name }}</h2><span>{{ docsInKb(activeKb.id).length }} 篇文档</span></div>
+          <div v-if="docsInKb(activeKb.id).length" class="kb-card-grid">
+            <div v-for="doc in docsInKb(activeKb.id)" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
               <i class="kb-file-ico">{{ extOf(doc.logical_name) }}</i>
               <span class="kb-card-doc-name">{{ doc.logical_name }}</span>
               <span class="kb-card-doc-excerpt">{{ doc.media_type }}</span>
@@ -454,14 +432,14 @@ onMounted(loadKnowledgeBase)
               </span>
             </div>
           </div>
-          <div v-else class="kb-empty">该文件夹为空，点击右上「上传文档」添加。</div>
+          <div v-else class="kb-empty">该知识库为空，点击右上「上传文档」添加。</div>
         </template>
 
-        <!-- 未选中文件夹：根级文档 -->
+        <!-- 未选中知识库：全部挂载文档 -->
         <template v-else>
           <div class="kb-section-head"><h2>当前项目</h2></div>
-          <div v-if="docsInFolder(null).length" class="kb-card-grid">
-            <div v-for="doc in docsInFolder(null)" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
+          <div v-if="sources.length" class="kb-card-grid">
+            <div v-for="doc in sources" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
               <i class="kb-file-ico">{{ extOf(doc.logical_name) }}</i>
               <span class="kb-card-doc-name">{{ doc.logical_name }}</span>
               <span class="kb-card-doc-excerpt">{{ doc.media_type }}</span>
@@ -482,7 +460,7 @@ onMounted(loadKnowledgeBase)
       <div class="kb-modal" role="dialog" aria-label="上传文档">
         <h3>上传文档</h3>
         <p class="kb-modal-file">{{ uploadModal.file.name }}</p>
-        <p class="kb-modal-target">目标文件夹：{{ activeFolder?.name ?? '项目根级' }}</p>
+        <p class="kb-modal-target">目标知识库：{{ activeKb?.name ?? '未分组' }}</p>
         <label class="kb-upload-option">
           <input v-model="uploadForceOcr" type="checkbox" />
           <span>OCR 识别（扫描件/图片 PDF 建议开启）</span>
@@ -494,14 +472,27 @@ onMounted(loadKnowledgeBase)
       </div>
     </div>
 
-    <!-- 新建文件夹弹窗 -->
-    <div v-if="createFolderModal" class="kb-modal-overlay" @click.self="createFolderModal = false">
-      <div class="kb-modal" role="dialog" aria-label="新建文件夹">
-        <h3>新建文件夹</h3>
-        <input v-model="createFolderName" placeholder="输入文件夹名称" @keyup.enter="confirmCreateFolder" />
+    <!-- 创建知识库弹窗 -->
+    <div v-if="createKbModal" class="kb-modal-overlay" @click.self="createKbModal = false">
+      <div class="kb-modal" role="dialog" aria-label="创建知识库">
+        <h3>创建知识库</h3>
+        <input v-model="createKbName" placeholder="输入知识库名称" @keyup.enter="confirmCreateKb" />
         <div class="kb-modal-actions">
-          <button class="kb-btn" type="button" @click="createFolderModal = false">取消</button>
-          <button class="kb-btn kb-btn-primary" type="button" :disabled="!createFolderName.trim()" @click="confirmCreateFolder">创建</button>
+          <button class="kb-btn" type="button" @click="createKbModal = false">取消</button>
+          <button class="kb-btn kb-btn-primary" type="button" :disabled="!createKbName.trim()" @click="confirmCreateKb">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 挂载知识库弹窗 -->
+    <div v-if="mountKbModal" class="kb-modal-overlay" @click.self="mountKbModal = false">
+      <div class="kb-modal" role="dialog" aria-label="挂载知识库">
+        <h3>挂载知识库</h3>
+        <p class="kb-modal-note">填写要挂载的知识库 ID（其他项目创建的）。挂载后本项目可只读使用其资料。</p>
+        <input v-model="mountKbId" placeholder="知识库 ID" @keyup.enter="confirmMountKb" />
+        <div class="kb-modal-actions">
+          <button class="kb-btn" type="button" @click="mountKbModal = false">取消</button>
+          <button class="kb-btn kb-btn-primary" type="button" :disabled="!mountKbId.trim()" @click="confirmMountKb">挂载</button>
         </div>
       </div>
     </div>
@@ -537,6 +528,33 @@ onMounted(loadKnowledgeBase)
 }
 .kb-create:hover {
   background: rgb(31 93 142 / 0.16);
+}
+.kb-sidebar-actions {
+  display: grid;
+  gap: 6px;
+}
+.kb-mount {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.kb-mount:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.kb-modal-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
 }
 .kb-tree-label {
   padding: 14px 6px 8px;

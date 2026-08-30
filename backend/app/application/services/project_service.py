@@ -12,6 +12,7 @@ from app.application.services.external_source_service import (
     sync_connection,
 )
 from app.application.services.git_service import register_repository
+from app.application.services.source_service import mount_knowledge_base
 from app.infrastructure.persistence.models import SourceSyncRun
 
 
@@ -44,6 +45,7 @@ def create_project_with_source(
     repository_url: str,
     actor_id: UUID,
     correlation_id: str,
+    knowledge_base_ids: list[UUID] | None = None,
 ) -> tuple[Project, SourceSyncRun]:
     """Create a project and register + queue its GitHub source in one transaction.
 
@@ -73,6 +75,13 @@ def create_project_with_source(
         actor_id=actor_id,
         correlation_id=correlation_id,
     )
+    for knowledge_base_id in knowledge_base_ids or []:
+        mount_knowledge_base(
+            session,
+            project_id=project.id,
+            knowledge_base_id=knowledge_base_id,
+            actor_id=actor_id,
+        )
     sync = sync_connection(
         session,
         project_id=project.id,
