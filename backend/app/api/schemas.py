@@ -439,6 +439,7 @@ class ManualEvidenceResponse(BaseModel):
 class SnapshotSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=5, ge=1, le=20)
+    preferred_source_roles: list[str] = Field(default_factory=list, max_length=8)
 
 
 class SnapshotSearchResponse(BaseModel):
