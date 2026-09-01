@@ -1,399 +1,498 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import {
+  apiRequest,
+  projectHeaders,
+  selectedProjectId,
+} from '../features/projects/project-context'
 
-interface KbDoc {
+interface KnowledgeBase {
   id: string
+  project_id: string
   name: string
-  ext: string
-  size: string
-  status: '已完成' | '处理中' | '待处理'
-  updatedAt: string
-  author: string
-  version: string
-  excerpt: string
+  created_at: string
+  updated_at: string
 }
 
-interface KbFolder {
+interface SourceDoc {
   id: string
-  name: string
-  updatedAt: string
-  docs: KbDoc[]
+  project_id: string
+  logical_name: string
+  source_role: string
+  revision_no: number
+  media_type: string
+  original_filename: string
+  processing_status: string
+  parser_version: string | null
+  failure_code: string | null
+  ingestion_job_status: string | null
+  knowledge_base_id: string | null
+  force_ocr: boolean
+  created_at: string
+  updated_at: string
 }
 
-interface KbLibrary {
+const knowledgeBases = ref<KnowledgeBase[]>([])
+const sources = ref<SourceDoc[]>([])
+const loading = ref(false)
+const error = ref('')
+const selectedKbId = ref<string | null>(null)
+const selectedDocId = ref<string | null>(null)
+
+interface ChunkItem {
   id: string
-  name: string
-  description: string
-  tone: string
-  updatedAt: string
-  folders: KbFolder[]
-  docs: KbDoc[]
+  chunk_index: number
+  content: string
+  locator: Record<string, unknown>
+  index_version: string
 }
 
-const libraries = ref<KbLibrary[]>([
-  {
-    id: 'kb1',
-    name: '支付系统交付资料',
-    description: '一期交付所需的全部输入依据',
-    tone: 'linear-gradient(135deg, #1f5d8e, #5b93c0)',
-    updatedAt: '05-20',
-    folders: [
-      {
-        id: 'f1',
-        name: '需求文档',
-        updatedAt: '05-20',
-        docs: [
-          { id: 'd1', name: '需求规格说明书.pdf', ext: 'PDF', size: '2.4 MB', status: '已完成', updatedAt: '2025-05-20 14:32', author: '张伟', version: 'v1.2', excerpt: '覆盖支付、退款与对账三块核心流程的完整需求规格说明，已评审冻结为本次交付的验收依据。' },
-          { id: 'd2', name: '需求变更记录.docx', ext: 'DOC', size: '820 KB', status: '已完成', updatedAt: '2025-05-18 09:15', author: '张伟', version: 'v1.3', excerpt: '记录 5 月 15 日批次需求变更：新增对账报表导出字段，调整超时重试策略。' },
-        ],
-      },
-      {
-        id: 'f2',
-        name: '验收材料',
-        updatedAt: '05-16',
-        docs: [
-          { id: 'd3', name: '验收标准.docx', ext: 'DOC', size: '1.1 MB', status: '已完成', updatedAt: '2025-05-16 10:22', author: '王芳', version: 'v3.0', excerpt: '明确功能、性能与安全三类验收标准及通过条件，作为人工裁决依据。' },
-          { id: 'd4', name: '验收用例集.xlsx', ext: 'XLS', size: '640 KB', status: '处理中', updatedAt: '2025-05-12 15:08', author: '王芳', version: 'v2.4', excerpt: '覆盖主流程与异常路径的验收用例集合，待补充回归结果。' },
-        ],
-      },
-    ],
-    docs: [{ id: 'd5', name: '项目说明.md', ext: 'MD', size: '12 KB', status: '已完成', updatedAt: '2025-05-14 11:05', author: '李倩', version: 'v1.0', excerpt: '项目背景、目标与交付范围说明。' }],
-  },
-  {
-    id: 'kb2',
-    name: '项目协作记录',
-    description: '会议纪要、决策与任务记录',
-    tone: 'linear-gradient(135deg, #98661a, #c99a4a)',
-    updatedAt: '05-19',
-    folders: [
-      {
-        id: 'f3',
-        name: '会议纪要',
-        updatedAt: '05-19',
-        docs: [
-          { id: 'd6', name: '交付评审纪要.docx', ext: 'DOC', size: '360 KB', status: '已完成', updatedAt: '2025-05-19 17:30', author: '赵磊', version: 'v1.0', excerpt: '本次交付评审结论与遗留问题清单，含 2 项待补证风险项。' },
-          { id: 'd7', name: '周会纪要.docx', ext: 'DOC', size: '280 KB', status: '待处理', updatedAt: '2025-05-12 09:00', author: '赵磊', version: 'v1.0', excerpt: '本周例会讨论事项与待办。' },
-        ],
-      },
-    ],
-    docs: [{ id: 'd8', name: '任务清单.md', ext: 'MD', size: '8 KB', status: '已完成', updatedAt: '2025-05-10 16:40', author: '测试组', version: 'v1.0', excerpt: '团队任务清单与责任人分工。' }],
-  },
-  {
-    id: 'kb3',
-    name: '对外合同',
-    description: '合同文件与补充证明材料',
-    tone: 'linear-gradient(135deg, #6b6f7a, #9aa0ad)',
-    updatedAt: '05-21',
-    folders: [
-      {
-        id: 'f4',
-        name: '合同',
-        updatedAt: '05-21',
-        docs: [{ id: 'd9', name: '合同扫描件.pdf', ext: 'PDF', size: '4.8 MB', status: '处理中', updatedAt: '2025-05-21 09:41', author: '张伟', version: 'v1.0', excerpt: '双方签署的正式合同扫描件，扫描版待 OCR 核验。' }],
-      },
-      {
-        id: 'f5',
-        name: '补充材料',
-        updatedAt: '05-17',
-        docs: [{ id: 'd10', name: '补证材料.pdf', ext: 'PDF', size: '1.9 MB', status: '已完成', updatedAt: '2025-05-17 09:10', author: '张伟', version: 'v1.0', excerpt: '针对高并发限流风险项的补充压测报告，已核验确认。' }],
-      },
-    ],
-    docs: [],
-  },
-])
+const viewerTab = ref<'content' | 'chunks'>('content')
+const docContent = ref('')
+const docChunks = ref<ChunkItem[]>([])
+const viewerLoading = ref(false)
+const viewerError = ref('')
 
-type NodeKind = 'kb' | 'folder' | 'doc'
+/** full Markdown, rendered to safe HTML once (marked + DOMPurify) */
+const renderedContent = computed(() =>
+  DOMPurify.sanitize(marked.parse(docContent.value ?? '') as string),
+)
 
-interface SelectedNode {
-  kind: NodeKind
-  id: string
+function locatorText(locator: Record<string, unknown>) {
+  const entries = Object.entries(locator)
+  if (!entries.length) return ''
+  const [key, value] = entries[0]
+  const label = ({ paragraph: '段落', line: '行', charStart: '字符', section: '小节' } as Record<string, string>)[key] ?? key
+  return `${label} ${value}`
 }
 
-const expandedKbs = ref<Set<string>>(new Set(libraries.value.map((lib) => lib.id)))
-const expandedFolders = ref<Set<string>>(new Set(['f1']))
-const selected = ref<SelectedNode>({ kind: 'kb', id: 'kb1' })
-
-const createModal = ref<{ kind: NodeKind; title: string; placeholder: string } | null>(null)
-const createName = ref('')
-const createDesc = ref('')
-const searchQuery = ref('')
-
-function findKb(kbId: string) {
-  return libraries.value.find((lib) => lib.id === kbId) ?? null
-}
-
-const selectedKb = computed(() => selected.value.kind === 'kb' ? findKb(selected.value.id) : null)
-const selectedFolder = computed(() => {
-  if (selected.value.kind !== 'folder') return null
-  for (const lib of libraries.value) {
-    const folder = lib.folders.find((folder) => folder.id === selected.value.id)
-    if (folder) return folder
+async function loadDoc(docId: string) {
+  viewerTab.value = 'content'
+  viewerLoading.value = true
+  viewerError.value = ''
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  try {
+    const [content, chunks] = await Promise.all([
+      apiRequest<{ content: string }>(`/projects/${projectId}/sources/${docId}`, { headers: projectHeaders() }),
+      apiRequest<ChunkItem[]>(`/projects/${projectId}/sources/${docId}/chunks`, { headers: projectHeaders() }),
+    ])
+    docContent.value = content.content
+    docChunks.value = chunks
+  } catch (err) {
+    viewerError.value = err instanceof Error ? err.message : '文档内容加载失败'
+  } finally {
+    viewerLoading.value = false
   }
-  return null
-})
-const selectedDoc = computed(() => {
-  if (selected.value.kind !== 'doc') return null
-  for (const lib of libraries.value) {
-    for (const folder of lib.folders) {
-      const doc = folder.docs.find((doc) => doc.id === selected.value.id)
-      if (doc) return { doc, kb: lib, folder }
+}
+
+function closeViewer() {
+  selectedDocId.value = null
+}
+
+const expandedKbs = ref<Set<string>>(new Set())
+
+const uploadModal = ref<{ file: File } | null>(null)
+const uploadTargetKbId = ref<string | null>(null)
+const uploadForceOcr = ref(true)
+const createKbModal = ref(false)
+const createKbName = ref('')
+const mountKbModal = ref(false)
+const mountKbId = ref('')
+const uploading = ref(false)
+
+async function loadKnowledgeBase() {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
+    error.value = '请先在顶部选择项目'
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    const [kbList, sourceList] = await Promise.all([
+      apiRequest<KnowledgeBase[]>(`/projects/${projectId}/knowledge-bases`, { headers: projectHeaders() }),
+      apiRequest<SourceDoc[]>(`/projects/${projectId}/sources`, { headers: projectHeaders() }),
+    ])
+    knowledgeBases.value = kbList
+    sources.value = sourceList
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '知识库加载失败'
+  } finally {
+    loading.value = false
+    reconcilePolling()
+  }
+}
+
+function docsInKb(kbId: string | null): SourceDoc[] {
+  return sources.value.filter((source) => source.knowledge_base_id === kbId)
+}
+
+/** 判断一个知识库是否展开 */
+function isExpanded(kbId: string) {
+  return expandedKbs.value.has(kbId)
+}
+
+function selectKb(id: string) {
+  selectedKbId.value = id
+  selectedDocId.value = null
+  expandedKbs.value.add(id)
+}
+
+function selectDoc(id: string) {
+  selectedDocId.value = id
+  selectedKbId.value = null
+  loadDoc(id)
+}
+
+const activeKb = computed(() => knowledgeBases.value.find((kb) => kb.id === selectedKbId.value) ?? null)
+const activeDoc = computed(() => sources.value.find((source) => source.id === selectedDocId.value) ?? null)
+
+function extOf(name: string) {
+  const match = name.match(/\.(\w+)$/)
+  return (match?.[1] ?? 'PDF').toUpperCase()
+}
+
+const statusBadge: Record<string, string> = {
+  UPLOADED: '待处理',
+  PARSING: '处理中',
+  OCR_CHECKING: '处理中',
+  CHUNKING: '处理中',
+  INDEXING: '处理中',
+  READY: '已完成',
+  FAILED: '失败',
+}
+
+function statusText(status: string) {
+  return statusBadge[status] ?? status
+}
+
+function openUploadDialog() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.onchange = () => {
+    const file = input.files?.[0]
+    if (file) {
+      uploadTargetKbId.value = selectedKbId.value
+      uploadForceOcr.value = true
+      uploadModal.value = { file }
     }
-    const doc = lib.docs.find((doc) => doc.id === selected.value.id)
-    if (doc) return { doc, kb: lib, folder: null }
   }
-  return null
-})
+  input.click()
+}
 
-/** 当前选中的知识库对象（含父链定位） */
-const activeKb = computed(() => {
-  if (selected.value.kind === 'kb') return findKb(selected.value.id)
-  if (selected.value.kind === 'folder') {
-    for (const lib of libraries.value) if (lib.folders.some((folder) => folder.id === selected.value.id)) return lib
+async function confirmUpload() {
+  if (!uploadModal.value || uploading.value) return
+  const file = uploadModal.value.file
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  uploading.value = true
+  error.value = ''
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('source_role', '知识库')
+    formData.append('logical_name', file.name)
+    if (uploadTargetKbId.value) formData.append('knowledge_base_id', uploadTargetKbId.value)
+    formData.append('force_ocr', uploadForceOcr.value ? 'true' : 'false')
+    await apiRequest(`/projects/${projectId}/sources`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${sessionStorage.getItem('accessToken') ?? ''}`,
+        'Idempotency-Key': crypto.randomUUID(),
+      },
+      body: formData,
+    })
+    await loadKnowledgeBase()
+    uploadModal.value = null
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : `上传失败 (${file.name})`
+  } finally {
+    uploading.value = false
   }
-  if (selected.value.kind === 'doc') return selectedDoc.value?.kb ?? null
-  return null
-})
-
-/** 选中知识库根级直接文档 */
-const rootDocs = computed(() => {
-  if (selected.value.kind !== 'kb') return []
-  return findKb(selected.value.id)?.docs ?? []
-})
-
-/** 选中文件夹下的文档 */
-const folderDocs = computed(() => {
-  if (selected.value.kind !== 'folder') return []
-  return selectedFolder.value?.docs ?? []
-})
-
-const breadcrumb = computed(() => {
-  if (selected.value.kind === 'kb') return [activeKb.value?.name ?? '']
-  if (selected.value.kind === 'folder') return [activeKb.value?.name ?? '', selectedFolder.value?.name ?? '']
-  const ctx = selectedDoc.value
-  return [ctx?.kb.name ?? '', ctx?.folder?.name ?? '', ctx?.doc.name ?? ''].filter(Boolean)
-})
-
-function toggleKb(kbId: string) {
-  const next = new Set(expandedKbs.value)
-  if (next.has(kbId)) next.delete(kbId)
-  else next.add(kbId)
-  expandedKbs.value = next
 }
 
-function toggleFolder(folderId: string) {
-  const next = new Set(expandedFolders.value)
-  if (next.has(folderId)) next.delete(folderId)
-  else next.add(folderId)
-  expandedFolders.value = next
+async function confirmCreateKb() {
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  const name = createKbName.value.trim()
+  if (!name) return
+  try {
+    await apiRequest(`/projects/${projectId}/knowledge-bases`, {
+      method: 'POST',
+      headers: projectHeaders(true),
+      body: JSON.stringify({ name }),
+    })
+    createKbName.value = ''
+    createKbModal.value = false
+    await loadKnowledgeBase()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '创建知识库失败'
+  }
 }
 
-function select(kind: NodeKind, id: string) {
-  selected.value = { kind, id }
+async function confirmMountKb() {
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  const knowledgeBaseId = mountKbId.value.trim()
+  if (!knowledgeBaseId) return
+  try {
+    await apiRequest(`/projects/${projectId}/knowledge-bases/mount`, {
+      method: 'POST',
+      headers: projectHeaders(true),
+      body: JSON.stringify({ knowledge_base_id: knowledgeBaseId }),
+    })
+    mountKbId.value = ''
+    mountKbModal.value = false
+    await loadKnowledgeBase()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '挂载知识库失败'
+  }
 }
 
-/** 点击知识库/文件夹行：选中 + 展开/收起 */
-function clickKb(lib: KbLibrary) {
-  select('kb', lib.id)
-  toggleKb(lib.id)
+async function deleteDoc(doc: SourceDoc) {
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  if (!confirm(`确定删除「${doc.logical_name}」？`)) return
+  try {
+    await apiRequest(`/projects/${projectId}/sources/${doc.id}`, {
+      method: 'DELETE',
+      headers: projectHeaders(true),
+    })
+    if (selectedDocId.value === doc.id) selectedDocId.value = null
+    await loadKnowledgeBase()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '删除失败'
+  }
 }
 
-function clickFolder(folder: KbFolder) {
-  select('folder', folder.id)
-  toggleFolder(folder.id)
+async function unmountKb(kb: KnowledgeBase) {
+  const projectId = selectedProjectId.value
+  if (!projectId) return
+  const isOwn = kb.project_id === projectId
+  if (!confirm(`确定${isOwn ? '删除知识库' : '解除挂载知识库'}「${kb.name}」？${isOwn ? '该知识库下的文档也会删除。' : '仅解除与本项目的挂载，不影响知识库本身。'}`)) return
+  try {
+    await apiRequest(`/projects/${projectId}/knowledge-bases/${kb.id}`, {
+      method: 'DELETE',
+      headers: projectHeaders(true),
+    })
+    if (selectedKbId.value === kb.id) selectedKbId.value = null
+    await loadKnowledgeBase()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '操作失败'
+  }
 }
 
-function openCreate(kind: NodeKind) {
-  createName.value = ''
-  createDesc.value = ''
-  const titles: Record<NodeKind, string> = { kb: '新建知识库', folder: '新建文件夹', doc: '新建文档' }
-  const placeholders: Record<NodeKind, string> = { kb: '输入知识库名称', folder: '输入文件夹名称', doc: '输入文档名称（含扩展名，如 report.pdf）' }
-  createModal.value = { kind, title: titles[kind], placeholder: placeholders[kind] }
+// 智能轮询:只要存在「处理中」的文档就每隔几秒自动刷新,全部到达终态后自动停止。
+const POLL_INTERVAL_MS = 4000
+const PENDING_STATUSES = new Set(['UPLOADED', 'PARSING', 'OCR_CHECKING', 'CHUNKING', 'INDEXING'])
+let pollTimer: number | null = null
+
+function hasPendingDocument(): boolean {
+  return sources.value.some((source) => PENDING_STATUSES.has(source.processing_status))
 }
 
-function confirmCreate() {
-  if (!createModal.value || !createName.value.trim()) return
-  const kind = createModal.value.kind
-  const name = createName.value.trim()
-  if (kind === 'kb') {
-    const kb: KbLibrary = { id: `kb${Date.now()}`, name, description: createDesc.value.trim() || '新建知识库', tone: 'linear-gradient(135deg, #5b4a8e, #8f7fc4)', updatedAt: '刚刚', folders: [], docs: [] }
-    libraries.value = [kb, ...libraries.value]
-    expandedKbs.value.add(kb.id)
-    selected.value = { kind: 'kb', id: kb.id }
-  } else if (kind === 'folder') {
-    const kb = activeKb.value
-    if (!kb) return
-    const folder: KbFolder = { id: `f${Date.now()}`, name, updatedAt: '刚刚', docs: [] }
-    kb.folders = [...kb.folders, folder]
-    expandedFolders.value.add(folder.id)
-    selected.value = { kind: 'folder', id: folder.id }
-  } else {
-    const kb = activeKb.value
-    if (!kb) return
-    const match = name.match(/\.(\w+)$/)
-    const doc: KbDoc = { id: `d${Date.now()}`, name, ext: (match?.[1] ?? 'PDF').toUpperCase(), size: '—', status: '待处理', updatedAt: '刚刚', excerpt: '新建文档，待补充内容。' }
-    if (selected.value.kind === 'folder' && selectedFolder.value) {
-      selectedFolder.value.docs = [...selectedFolder.value.docs, doc]
-    } else {
-      kb.docs = [...kb.docs, doc]
+function reconcilePolling() {
+  if (hasPendingDocument()) {
+    if (pollTimer === null) {
+      pollTimer = window.setInterval(async () => {
+        await loadKnowledgeBase()
+      }, POLL_INTERVAL_MS)
     }
-    selected.value = { kind: 'doc', id: doc.id }
+  } else if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
   }
-  createModal.value = null
 }
 
-const extTone: Record<string, string> = {
-  PDF: 'rgb(162 68 53 / 0.14)',
-  DOC: 'rgb(31 93 142 / 0.14)',
-  XLS: 'rgb(82 115 96 / 0.14)',
-  MD: 'rgb(118 110 104 / 0.16)',
-  PNG: 'rgb(91 74 142 / 0.14)',
-  JPG: 'rgb(91 74 142 / 0.14)',
-}
+onBeforeUnmount(() => {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 
-function toneOf(ext: string) {
-  return extTone[ext] ?? 'rgb(118 110 104 / 0.14)'
-}
+onMounted(loadKnowledgeBase)
 </script>
 
 <template>
   <section class="page page-knowledge">
     <header class="page-heading">
-      <div><h1>项目知识库</h1><p>按文件夹分级组织知识库与文档，左侧选择层级，右侧卡片展示。</p></div>
+      <div><h1>项目知识库</h1><p>按知识库组织文档，跨项目共享资料，MinerU 解析并建立可核验索引。</p></div>
+      <button v-if="error" class="kb-retry" type="button" @click="loadKnowledgeBase">重试</button>
     </header>
 
+    <div v-if="error && !loading" class="kb-error">{{ error }}</div>
+
     <div class="kb-layout">
-      <!-- 左侧：文件夹模式分级树 -->
+      <!-- 左侧：知识库列表 -->
       <aside class="kb-sidebar">
-        <button class="kb-create" type="button" @click="openCreate('kb')">＋ 新建知识库</button>
-        <div class="kb-tree-label">我的知识库</div>
+        <div class="kb-sidebar-actions">
+          <button class="kb-create" type="button" @click="createKbModal = true">＋ 创建知识库</button>
+          <button class="kb-mount" type="button" @click="mountKbModal = true">挂载知识库</button>
+        </div>
+        <div class="kb-tree-label">已挂载知识库</div>
         <nav class="kb-tree">
-          <div v-for="lib in libraries" :key="lib.id" class="kb-node kb-node-kb">
-            <button class="kb-node-row" :class="{ active: selected.kind === 'kb' && selected.id === lib.id }" type="button" @click="clickKb(lib)">
-              <span :class="['kb-caret', !expandedKbs.has(lib.id) ? 'collapsed' : '']">▾</span>
-              <i class="kb-folder-ico"><svg class="kb-folder-svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="#f2b636" d="M3 6a2 2 0 0 1 2-2h4.2c.3 0 .58.13.76.36L11.5 6H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"></path><path fill="#d99a2b" d="M3 8V6a2 2 0 0 1 2-2h4.2c.3 0 .58.13.76.36L11.5 6H19a2 2 0 0 1 2 2V8H3z"></path></svg></i>
-              <span class="kb-node-name">{{ lib.name }}</span>
+          <div v-for="kb in knowledgeBases" :key="kb.id" class="kb-node">
+            <button class="kb-node-row" :class="{ active: selectedKbId === kb.id && !selectedDocId }" type="button" @click="selectKb(kb.id)">
+              <span :class="['kb-caret', !isExpanded(kb.id) ? 'collapsed' : '']">▾</span>
+              <i class="kb-folder-ico plain">▤</i>
+              <span class="kb-node-name">{{ kb.name }}</span>
+              <button class="kb-del-mini" type="button" @click.stop="unmountKb(kb)">×</button>
             </button>
-            <div v-if="expandedKbs.has(lib.id)" class="kb-node-children">
-              <div v-for="folder in lib.folders" :key="folder.id" class="kb-node kb-node-folder">
-                <button class="kb-node-row" :class="{ active: selected.kind === 'folder' && selected.id === folder.id }" type="button" @click="clickFolder(folder)">
-                  <span :class="['kb-caret', !expandedFolders.has(folder.id) ? 'collapsed' : '']">▾</span>
-                  <i class="kb-folder-ico plain">▤</i>
-                  <span class="kb-node-name">{{ folder.name }}</span>
-                </button>
-                <div v-if="expandedFolders.has(folder.id)" class="kb-node-children">
-                  <button
-                    v-for="doc in folder.docs"
-                    :key="doc.id"
-                    class="kb-node-row kb-node-doc"
-                    :class="{ active: selected.kind === 'doc' && selected.id === doc.id }"
-                    type="button"
-                    @click="select('doc', doc.id)"
-                  >
-                    <i class="kb-doc-dot" :style="{ background: toneOf(doc.ext) }">{{ doc.ext }}</i>
-                    <span class="kb-node-name">{{ doc.name }}</span>
-                  </button>
-                </div>
-              </div>
+            <div v-if="isExpanded(kb.id)" class="kb-node-children">
               <button
-                v-for="doc in lib.docs"
+                v-for="doc in docsInKb(kb.id)"
                 :key="doc.id"
                 class="kb-node-row kb-node-doc"
-                :class="{ active: selected.kind === 'doc' && selected.id === doc.id }"
+                :class="{ active: selectedDocId === doc.id }"
                 type="button"
-                @click="select('doc', doc.id)"
+                @click="selectDoc(doc.id)"
               >
-                <i class="kb-doc-dot" :style="{ background: toneOf(doc.ext) }">{{ doc.ext }}</i>
-                <span class="kb-node-name">{{ doc.name }}</span>
+                <i class="kb-doc-dot">{{ extOf(doc.logical_name) }}</i>
+                <span class="kb-node-name">{{ doc.logical_name }}</span>
               </button>
             </div>
           </div>
+          <!-- 未分组（未挂到任何知识库）文档 -->
+          <div v-if="docsInKb(null).length" class="kb-tree-label">未分组文档</div>
+          <button
+            v-for="doc in docsInKb(null)"
+            :key="doc.id"
+            class="kb-node-row kb-node-doc"
+            :class="{ active: selectedDocId === doc.id }"
+            type="button"
+            @click="selectDoc(doc.id)"
+          >
+            <i class="kb-doc-dot">{{ extOf(doc.logical_name) }}</i>
+            <span class="kb-node-name">{{ doc.logical_name }}</span>
+          </button>
         </nav>
       </aside>
 
-      <!-- 右侧：按层级卡片展示 -->
+      <!-- 右侧：内容区 -->
       <section class="kb-main">
         <div class="kb-toolbar">
           <nav class="kb-crumbs">
-            <span v-for="(crumb, index) in breadcrumb" :key="index">
-              <i v-if="index > 0" class="kb-crumb-sep">/</i>{{ crumb }}
-            </span>
+            <template v-if="activeKb">{{ activeKb.name }}</template>
+            <template v-else>当前项目</template>
           </nav>
           <div class="kb-toolbar-actions">
-            <button v-if="selected.kind !== 'doc'" class="kb-btn" type="button" @click="openCreate('folder')">＋ 新建文件夹</button>
-            <button class="kb-btn kb-btn-primary" type="button" @click="openCreate('doc')">＋ 新建文档</button>
+            <button class="kb-btn" type="button" @click="createKbModal = true">＋ 创建知识库</button>
+            <button class="kb-btn" type="button" @click="mountKbModal = true">挂载知识库</button>
+            <button class="kb-btn kb-btn-primary" type="button" @click="openUploadDialog">＋ 上传文档</button>
           </div>
         </div>
 
-        <!-- 选中知识库：文件夹卡片 + 根级文档卡片 同一行排布 -->
-        <template v-if="selected.kind === 'kb' && selectedKb">
-          <div class="kb-section-head"><h2>{{ selectedKb.name }}</h2><span>{{ selectedKb.description }}</span></div>
-          <div v-if="selectedKb.folders.length || rootDocs.length" class="kb-card-grid">
-            <button v-for="folder in selectedKb.folders" :key="folder.id" class="kb-card kb-card-folder" type="button" @click="clickFolder(folder)">
-              <i class="kb-card-folder-ico">▤</i>
-              <strong>{{ folder.name }}</strong>
-              <em>{{ folder.docs.length }} 篇文档 · 更新于 {{ folder.updatedAt }}</em>
-            </button>
-            <button v-for="doc in rootDocs" :key="doc.id" class="kb-card kb-card-doc" type="button" @click="select('doc', doc.id)">
-              <i class="kb-file-ico" :style="{ background: toneOf(doc.ext) }">{{ doc.ext }}</i>
-              <span class="kb-card-doc-name">{{ doc.name }}</span>
-              <span class="kb-card-doc-excerpt">{{ doc.excerpt }}</span>
-              <span class="kb-card-doc-meta">{{ doc.version }} · {{ doc.size }} · {{ doc.author }}</span>
-              <span class="kb-card-doc-foot">
-                <span :class="['kb-badge', doc.status]">{{ doc.status }}</span>
-                <time>{{ doc.updatedAt }}</time>
-              </span>
-            </button>
-          </div>
-        </template>
-
-        <!-- 选中文件夹：文档卡片 -->
-        <template v-else-if="selected.kind === 'folder' && selectedFolder">
-          <div class="kb-section-head"><h2>{{ selectedFolder.name }}</h2><span>{{ activeKb?.name }}</span></div>
-          <div v-if="folderDocs.length" class="kb-card-grid">
-            <button v-for="doc in folderDocs" :key="doc.id" class="kb-card kb-card-doc" type="button" @click="select('doc', doc.id)">
-              <i class="kb-file-ico" :style="{ background: toneOf(doc.ext) }">{{ doc.ext }}</i>
-              <span class="kb-card-doc-name">{{ doc.name }}</span>
-              <span class="kb-card-doc-excerpt">{{ doc.excerpt }}</span>
-              <span class="kb-card-doc-meta">{{ doc.version }} · {{ doc.size }} · {{ doc.author }}</span>
-              <span class="kb-card-doc-foot">
-                <span :class="['kb-badge', doc.status]">{{ doc.status }}</span>
-                <time>{{ doc.updatedAt }}</time>
-              </span>
-            </button>
-          </div>
-        </template>
-
-        <!-- 选中文档：详情卡片 -->
-        <template v-else-if="selected.kind === 'doc' && selectedDoc">
-          <div class="kb-doc-detail">
-            <div class="kb-doc-detail-head">
-              <i class="kb-file-ico kb-file-ico-lg" :style="{ background: toneOf(selectedDoc.doc.ext) }">{{ selectedDoc.doc.ext }}</i>
-              <div>
-                <h2>{{ selectedDoc.doc.name }}</h2>
-                <span :class="['kb-badge', selectedDoc.doc.status]">{{ selectedDoc.doc.status }}</span>
+        <!-- 选中文档：查看器（全文 / 分段） -->
+        <template v-if="activeDoc">
+          <div class="kb-viewer">
+            <header class="kb-viewer-header">
+              <div class="kb-viewer-title">
+                <strong :title="activeDoc.logical_name">{{ activeDoc.logical_name }}</strong>
+                <small>{{ activeDoc.parser_version || '—' }} · {{ activeDoc.force_ocr ? 'OCR' : '文本' }} · {{ statusText(activeDoc.processing_status) }}</small>
               </div>
+              <button class="kb-viewer-close" type="button" aria-label="关闭" @click="closeViewer">×</button>
+            </header>
+            <nav class="kb-viewer-tabs">
+              <button type="button" :class="{ active: viewerTab === 'content' }" @click="viewerTab = 'content'">全文</button>
+              <button type="button" :class="{ active: viewerTab === 'chunks' }" @click="viewerTab = 'chunks'">分段 ({{ docChunks.length }})</button>
+            </nav>
+            <div class="kb-viewer-body">
+              <p v-if="viewerLoading" class="kb-viewer-state">加载中…</p>
+              <p v-else-if="viewerError" class="kb-viewer-error">{{ viewerError }}</p>
+              <article v-else-if="viewerTab === 'content'" class="kb-md" v-html="renderedContent"></article>
+              <ol v-else class="kb-chunk-list">
+                <li v-for="c in docChunks" :key="c.id" class="kb-chunk">
+                  <div class="kb-chunk-meta">
+                    <span class="kb-chunk-idx">#{{ c.chunk_index }}</span>
+                    <span v-if="locatorText(c.locator)" class="kb-chunk-loc">{{ locatorText(c.locator) }}</span>
+                  </div>
+                  <p>{{ c.content }}</p>
+                </li>
+              </ol>
             </div>
-            <dl class="kb-meta">
-              <div><dt>所属知识库</dt><dd>{{ selectedDoc.kb.name }}</dd></div>
-              <div><dt>所在文件夹</dt><dd>{{ selectedDoc.folder?.name ?? '知识库根级' }}</dd></div>
-              <div><dt>大小</dt><dd>{{ selectedDoc.doc.size }}</dd></div>
-              <div><dt>更新时间</dt><dd>{{ selectedDoc.doc.updatedAt }}</dd></div>
-            </dl>
-            <div class="kb-preview"><h3>内容摘要</h3><p>{{ selectedDoc.doc.excerpt }}</p></div>
           </div>
+        </template>
+
+        <!-- 选中知识库：文档卡片 -->
+        <template v-else-if="selectedKbId && activeKb">
+          <div class="kb-section-head"><h2>{{ activeKb.name }}</h2><span>{{ docsInKb(activeKb.id).length }} 篇文档</span></div>
+          <div v-if="docsInKb(activeKb.id).length" class="kb-card-grid">
+            <div v-for="doc in docsInKb(activeKb.id)" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
+              <i class="kb-file-ico">{{ extOf(doc.logical_name) }}</i>
+              <span class="kb-card-doc-name">{{ doc.logical_name }}</span>
+              <span class="kb-card-doc-excerpt">{{ doc.media_type }}</span>
+              <span class="kb-card-doc-meta">{{ doc.parser_version || '—' }} · {{ doc.force_ocr ? 'OCR' : '文本' }}</span>
+              <span class="kb-card-doc-foot">
+                <span :class="['kb-badge', doc.processing_status]">{{ statusText(doc.processing_status) }}</span>
+                <button class="kb-del" type="button" @click.stop="deleteDoc(doc)">删除</button>
+              </span>
+            </div>
+          </div>
+          <div v-else class="kb-empty">该知识库为空，点击右上「上传文档」添加。</div>
+        </template>
+
+        <!-- 未选中知识库：全部挂载文档 -->
+        <template v-else>
+          <div class="kb-section-head"><h2>当前项目</h2></div>
+          <div v-if="sources.length" class="kb-card-grid">
+            <div v-for="doc in sources" :key="doc.id" class="kb-card kb-card-doc" :class="{ selected: selectedDocId === doc.id }" role="button" tabindex="0" @click="selectDoc(doc.id)" @keyup.enter="selectDoc(doc.id)">
+              <i class="kb-file-ico">{{ extOf(doc.logical_name) }}</i>
+              <span class="kb-card-doc-name">{{ doc.logical_name }}</span>
+              <span class="kb-card-doc-excerpt">{{ doc.media_type }}</span>
+              <span class="kb-card-doc-meta">{{ doc.parser_version || '—' }} · {{ doc.force_ocr ? 'OCR' : '文本' }}</span>
+              <span class="kb-card-doc-foot">
+                <span :class="['kb-badge', doc.processing_status]">{{ statusText(doc.processing_status) }}</span>
+                <button class="kb-del" type="button" @click.stop="deleteDoc(doc)">删除</button>
+              </span>
+            </div>
+          </div>
+          <div v-else class="kb-empty">还没有文档。点击右上「上传文档」开始建立知识库。</div>
         </template>
       </section>
     </div>
 
-    <!-- 新建弹窗 -->
-    <div v-if="createModal" class="kb-modal-overlay" @click.self="createModal = null">
-      <div class="kb-modal" role="dialog" :aria-label="createModal.title">
-        <h3>{{ createModal.title }}</h3>
-        <input v-model="createName" :placeholder="createModal.placeholder" @keyup.enter="confirmCreate" />
-        <input v-if="createModal.kind === 'kb'" v-model="createDesc" placeholder="输入知识库描述（可选）" />
+    <!-- 上传弹窗 -->
+    <div v-if="uploadModal" class="kb-modal-overlay" @click.self="uploadModal = null">
+      <div class="kb-modal" role="dialog" aria-label="上传文档">
+        <h3>上传文档</h3>
+        <p class="kb-modal-file">{{ uploadModal.file.name }}</p>
+        <p class="kb-modal-target">目标知识库：{{ activeKb?.name ?? '未分组' }}</p>
+        <label class="kb-upload-option">
+          <input v-model="uploadForceOcr" type="checkbox" />
+          <span>OCR 识别（扫描件/图片 PDF 建议开启）</span>
+        </label>
         <div class="kb-modal-actions">
-          <button class="kb-btn" type="button" @click="createModal = null">取消</button>
-          <button class="kb-btn kb-btn-primary" type="button" :disabled="!createName.trim()" @click="confirmCreate">创建</button>
+          <button class="kb-btn" type="button" @click="uploadModal = null">取消</button>
+          <button class="kb-btn kb-btn-primary" type="button" :disabled="uploading" @click="confirmUpload">{{ uploading ? '上传中…' : '上传' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 创建知识库弹窗 -->
+    <div v-if="createKbModal" class="kb-modal-overlay" @click.self="createKbModal = false">
+      <div class="kb-modal" role="dialog" aria-label="创建知识库">
+        <h3>创建知识库</h3>
+        <input v-model="createKbName" placeholder="输入知识库名称" @keyup.enter="confirmCreateKb" />
+        <div class="kb-modal-actions">
+          <button class="kb-btn" type="button" @click="createKbModal = false">取消</button>
+          <button class="kb-btn kb-btn-primary" type="button" :disabled="!createKbName.trim()" @click="confirmCreateKb">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 挂载知识库弹窗 -->
+    <div v-if="mountKbModal" class="kb-modal-overlay" @click.self="mountKbModal = false">
+      <div class="kb-modal" role="dialog" aria-label="挂载知识库">
+        <h3>挂载知识库</h3>
+        <p class="kb-modal-note">填写要挂载的知识库 ID（其他项目创建的）。挂载后本项目可只读使用其资料。</p>
+        <input v-model="mountKbId" placeholder="知识库 ID" @keyup.enter="confirmMountKb" />
+        <div class="kb-modal-actions">
+          <button class="kb-btn" type="button" @click="mountKbModal = false">取消</button>
+          <button class="kb-btn kb-btn-primary" type="button" :disabled="!mountKbId.trim()" @click="confirmMountKb">挂载</button>
         </div>
       </div>
     </div>
@@ -407,8 +506,6 @@ function toneOf(ext: string) {
   gap: 16px;
   align-items: start;
 }
-
-/* 左侧树 */
 .kb-sidebar {
   min-width: 0;
   border: 1px solid var(--line);
@@ -431,6 +528,33 @@ function toneOf(ext: string) {
 }
 .kb-create:hover {
   background: rgb(31 93 142 / 0.16);
+}
+.kb-sidebar-actions {
+  display: grid;
+  gap: 6px;
+}
+.kb-mount {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.kb-mount:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.kb-modal-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
 }
 .kb-tree-label {
   padding: 14px 6px 8px;
@@ -489,10 +613,6 @@ function toneOf(ext: string) {
   height: 16px;
   font-style: normal;
 }
-.kb-folder-svg {
-  width: 19px;
-  height: 15px;
-}
 .kb-folder-ico.plain {
   background: rgb(118 110 104 / 0.22);
   color: var(--muted);
@@ -502,6 +622,7 @@ function toneOf(ext: string) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1 1 auto;
 }
 .kb-node-doc .kb-node-name {
   color: #615951;
@@ -516,15 +637,119 @@ function toneOf(ext: string) {
   width: 30px;
   height: 20px;
   border-radius: 4px;
+  background: rgb(118 110 104 / 0.16);
+  color: var(--muted);
   font-size: 0.52rem;
   font-style: normal;
   font-weight: 800;
 }
-
-/* 右侧主区 */
+.kb-del-mini {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+.kb-node-row:hover .kb-del-mini {
+  opacity: 1;
+}
+.kb-del-mini:hover {
+  color: #a33;
+}
 .kb-main {
   min-width: 0;
 }
+
+/* 文档查看器 */
+.kb-viewer {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.kb-viewer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.kb-viewer-title { min-width: 0; }
+.kb-viewer-title strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-viewer-title small { display: block; margin-top: 4px; color: var(--muted); font-size: 0.7rem; }
+.kb-viewer-close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.kb-viewer-close:hover { background: #f4f0ec; color: var(--ink); }
+.kb-viewer-tabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--line-soft); }
+.kb-viewer-tabs button {
+  border: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.kb-viewer-tabs button.active { background: var(--brand-soft); color: var(--brand); }
+.kb-viewer-body {
+  padding: 18px 22px;
+  max-height: calc(100vh - 320px);
+  min-height: 160px;
+  overflow: auto;
+}
+.kb-viewer-state,
+.kb-viewer-error { margin: 0; color: var(--muted); font-size: 0.82rem; }
+.kb-viewer-error { color: #a33; }
+
+/* Markdown 全文（v-html 注入的内容不带 scoped 属性，需 :deep 命中内层） */
+.kb-md :deep(p) { margin: 0 0 12px; color: #403a35; font-size: 0.84rem; line-height: 1.75; }
+.kb-md :deep(h1) { margin: 22px 0 12px; color: var(--ink); font-size: 1.28rem; letter-spacing: -0.02em; }
+.kb-md :deep(h2) { margin: 20px 0 10px; color: var(--ink); font-size: 1.06rem; }
+.kb-md :deep(h3) { margin: 18px 0 8px; color: var(--ink); font-size: 0.95rem; }
+.kb-md :deep(h4) { margin: 16px 0 8px; color: var(--ink); font-size: 0.86rem; }
+.kb-md :deep(ul),
+.kb-md :deep(ol) { margin: 0 0 12px; padding-left: 22px; }
+.kb-md :deep(li) { margin: 3px 0; color: #403a35; font-size: 0.84rem; line-height: 1.7; }
+.kb-md :deep(code) { border-radius: 4px; background: #f4f0ec; color: #933; padding: 1px 5px; font: 0.78rem ui-monospace, Consolas, monospace; }
+.kb-md :deep(pre) { overflow: auto; margin: 0 0 12px; border-radius: 8px; background: #2b2723; color: #f4eee9; padding: 12px 14px; font: 0.76rem/1.6 Consolas, monospace; }
+.kb-md :deep(pre code) { background: transparent; color: inherit; padding: 0; }
+.kb-md :deep(blockquote) { margin: 0 0 12px; border-left: 3px solid var(--line); padding: 4px 14px; color: var(--muted); }
+.kb-md :deep(table) { width: 100%; margin: 0 0 14px; border-collapse: collapse; font-size: 0.8rem; }
+.kb-md :deep(th) { border-bottom: 2px solid var(--line); padding: 7px 10px; text-align: left; color: var(--ink); font-weight: 750; }
+.kb-md :deep(td) { border-bottom: 1px solid var(--line-soft); padding: 7px 10px; }
+.kb-md :deep(a) { color: var(--brand); }
+.kb-md :deep(hr) { margin: 18px 0; border: 0; border-top: 1px solid var(--line-soft); }
+
+/* 分段列表 */
+.kb-chunk-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.kb-chunk { border: 1px solid var(--line-soft); border-radius: 9px; background: #fcfaf8; padding: 12px 14px; }
+.kb-chunk-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.kb-chunk-idx { border-radius: 5px; background: var(--brand-soft); color: var(--brand); padding: 1px 7px; font-size: 0.68rem; font-weight: 800; }
+.kb-chunk-loc { color: var(--muted); font-size: 0.7rem; }
+.kb-chunk p { margin: 0; color: #403a35; font-size: 0.82rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 .kb-toolbar {
   display: flex;
   align-items: center;
@@ -594,19 +819,10 @@ function toneOf(ext: string) {
   font-size: 1.02rem;
   letter-spacing: -0.018em;
 }
-.kb-section-head span {
-  color: var(--muted);
-  font-size: 0.76rem;
-}
-
-/* 卡片布局 */
 .kb-card-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
-}
-.kb-card-grid + .kb-card-grid {
-  margin-top: 18px;
 }
 .kb-card {
   display: flex;
@@ -627,29 +843,8 @@ function toneOf(ext: string) {
   box-shadow: 0 10px 24px rgb(43 39 35 / 0.1);
   transform: translateY(-2px);
 }
-.kb-card-folder {
-  align-items: flex-start;
-  justify-content: flex-start;
-}
-.kb-card-folder-ico {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--brand-soft);
-  color: var(--brand);
-  font-size: 1.1rem;
-  font-style: normal;
-}
-.kb-card-folder strong {
-  font-size: 0.88rem;
-  letter-spacing: -0.015em;
-}
-.kb-card-folder em {
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-style: normal;
+.kb-card.selected {
+  border-color: var(--brand);
 }
 .kb-file-ico {
   display: grid;
@@ -657,15 +852,12 @@ function toneOf(ext: string) {
   width: 46px;
   height: 46px;
   border-radius: 10px;
+  background: var(--brand-soft);
+  color: var(--brand);
   font-size: 0.62rem;
   font-style: normal;
   font-weight: 800;
   letter-spacing: -0.01em;
-}
-.kb-file-ico-lg {
-  width: 58px;
-  height: 58px;
-  font-size: 0.74rem;
 }
 .kb-card-doc-name {
   overflow: hidden;
@@ -694,14 +886,6 @@ function toneOf(ext: string) {
   gap: 8px;
   margin-top: auto;
 }
-.kb-card-doc-foot .kb-badge {
-  margin-top: 0;
-}
-.kb-card-doc-foot time {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 0.66rem;
-}
 .kb-badge {
   align-self: flex-start;
   margin-top: auto;
@@ -712,70 +896,62 @@ function toneOf(ext: string) {
   font-size: 0.66rem;
   font-weight: 800;
 }
-.kb-badge.已完成 {
+.kb-badge.READY {
   background: rgb(82 115 96 / 0.14);
   color: var(--success);
 }
-.kb-badge.处理中 {
+.kb-badge.FAILED {
+  background: rgb(162 68 53 / 0.14);
+  color: #a33;
+}
+.kb-badge.UPLOADED,
+.kb-badge.PARSING,
+.kb-badge.OCR_CHECKING,
+.kb-badge.CHUNKING,
+.kb-badge.INDEXING {
   background: rgb(152 102 26 / 0.14);
   color: var(--warning);
 }
-.kb-badge.待处理 {
-  background: rgb(118 110 104 / 0.14);
-  color: var(--muted);
-}
-
-/* 文档详情 */
-.kb-doc-detail {
+.kb-del {
+  margin-left: auto;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 24px;
-}
-.kb-doc-detail-head {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--line-soft);
-}
-.kb-doc-detail-head h2 {
-  margin: 0 0 8px;
-  color: var(--ink);
-  font-size: 1.05rem;
-  letter-spacing: -0.02em;
-}
-.kb-meta {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin: 18px 0 0;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--line-soft);
-}
-.kb-meta dt {
+  border-radius: 7px;
+  background: transparent;
   color: var(--muted);
-  font-size: 0.7rem;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 0.68rem;
+  cursor: pointer;
 }
-.kb-meta dd {
-  margin: 4px 0 0;
-  color: var(--ink);
-  font-size: 0.84rem;
-  font-weight: 750;
+.kb-del:hover {
+  border-color: #a33;
+  color: #a33;
 }
-.kb-preview h3 {
-  margin: 18px 0 8px;
-  color: var(--ink);
-  font-size: 0.84rem;
-}
-.kb-preview p {
-  margin: 0;
-  color: #615951;
+.kb-empty {
+  color: var(--muted);
   font-size: 0.82rem;
-  line-height: 1.75;
+  padding: 40px 0;
+  text-align: center;
 }
-
-/* 新建弹窗 */
+.kb-error {
+  margin-bottom: 12px;
+  border: 1px solid rgb(162 68 53 / 0.3);
+  border-radius: 10px;
+  background: rgb(162 68 53 / 0.08);
+  color: #a33;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+}
+.kb-retry {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
 .kb-modal-overlay {
   position: fixed;
   inset: 0;
@@ -799,7 +975,8 @@ function toneOf(ext: string) {
   font-size: 1rem;
   letter-spacing: -0.015em;
 }
-.kb-modal input {
+.kb-modal input[type="text"],
+.kb-modal > input {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -810,9 +987,34 @@ function toneOf(ext: string) {
   font-size: 0.82rem;
   outline: none;
 }
-.kb-modal input:focus {
+.kb-modal > input:focus {
   border-color: var(--brand);
   box-shadow: 0 0 0 3px rgb(31 93 142 / 0.12);
+}
+.kb-modal-file {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-modal-target {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.kb-upload-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.kb-upload-option input {
+  width: 16px;
+  height: 16px;
 }
 .kb-modal-actions {
   display: flex;

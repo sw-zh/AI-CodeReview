@@ -29,12 +29,35 @@ from app.infrastructure.persistence.models import (
     VerificationCycle,
     VerificationTask,
     SourceRevision,
+    ProjectKnowledgeBase,
 )
 from app.infrastructure.artifact_storage import LocalArtifactStorage
 from app.application.services.retrieval_index_service import active_index_version
 
 
 _DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
+
+
+def _project_visible_source_ids(session: Session, *, project_id: UUID) -> set:
+    """Source ids a project may reference: those in any knowledge base it mounted.
+
+    A project can use sources from knowledge bases it created (auto-mounted)
+    as well as knowledge bases shared/mounted by another project.
+    """
+    kb_ids = [
+        row[0]
+        for row in session.query(ProjectKnowledgeBase.knowledge_base_id)
+        .filter(ProjectKnowledgeBase.project_id == project_id)
+        .all()
+    ]
+    if not kb_ids:
+        return set()
+    return {
+        row[0]
+        for row in session.query(SourceRevision.id)
+        .filter(SourceRevision.knowledge_base_id.in_(kb_ids))
+        .all()
+    }
 
 
 def _document_chunks_for_snapshot(session: Session, *, source_id: UUID, active_version: str | None) -> list[DocumentChunk]:
@@ -70,13 +93,14 @@ def freeze_preparation_snapshot(
     if not source_revision_ids or len(set(source_revision_ids)) != len(source_revision_ids):
         raise DomainError("INPUT_INVALID", "至少选择一份且不重复的资料版本")
 
+    visible = _project_visible_source_ids(session, project_id=task.project_id)
     sources = (
         session.query(SourceRevision)
-        .filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == task.project_id)
+        .filter(SourceRevision.id.in_(source_revision_ids))
         .all()
     )
-    if len(sources) != len(source_revision_ids):
-        raise DomainError("INPUT_INVALID", "资料版本不存在或不属于当前项目")
+    if len(sources) != len(source_revision_ids) or any(source.id not in visible for source in sources):
+        raise DomainError("INPUT_INVALID", "资料版本不存在或不属于当前项目可用的知识库")
     not_ready = [source.id for source in sources if source.processing_status != SourceProcessingStatus.READY]
     if not_ready:
         raise DomainError("SOURCE_NOT_READY", "所选资料尚未完成处理")
@@ -205,9 +229,10 @@ def freeze_formal_snapshot(
         raise DomainError("INPUT_INVALID", "正式快照只能从当前项目已同步的 Pull Request 创建")
     if len(source_revision_ids) != len(set(source_revision_ids)):
         raise DomainError("INPUT_INVALID", "正式快照的资料版本不能重复选择")
-    sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids), SourceRevision.project_id == task.project_id).all()
-    if len(sources) != len(source_revision_ids) or any(x.processing_status != SourceProcessingStatus.READY for x in sources):
-        raise DomainError("SOURCE_NOT_READY", "正式快照的全部资料必须存在且处于 READY")
+    visible = _project_visible_source_ids(session, project_id=task.project_id)
+    sources = session.query(SourceRevision).filter(SourceRevision.id.in_(source_revision_ids)).all()
+    if len(sources) != len(source_revision_ids) or any(source.id not in visible for source in sources):
+        raise DomainError("SOURCE_NOT_READY", "正式快照的资料必须属于当前项目可用的知识库")
     selected_source_ids = {str(source.id) for source in sources}
     referenced_source_ids = {
         str(item.get("sourceRevisionId"))

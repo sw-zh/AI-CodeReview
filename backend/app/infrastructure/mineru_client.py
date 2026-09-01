@@ -66,7 +66,10 @@ def _json_post(url: str, *, payload: dict, token: str, timeout: int) -> dict:
 
 
 def _upload_bytes(upload_url: str, content: bytes, timeout: int) -> None:
-    request = Request(upload_url, data=content, method="PUT")
+    # MinerU's signed OSS URL is computed without a Content-Type header, so the
+    # request must not send one (urllib would otherwise inject a default that
+    # breaks the signature and yields HTTP 403 SignatureDoesNotMatch).
+    request = Request(upload_url, data=content, method="PUT", headers={"Content-Type": ""})
     try:
         with build_opener().open(request, timeout=timeout) as response:
             response.read()
@@ -123,7 +126,7 @@ def _read_markdown_from_zip(zip_bytes: bytes) -> str:
         raise MineruParseError("SOURCE_MINERU_RESULT_INVALID", "MinerU 解析结果不是有效 UTF-8") from exc
 
 
-def parse_document_via_mineru(*, content: bytes, filename: str, settings: Settings) -> ExtractedDocument:
+def parse_document_via_mineru(*, content: bytes, filename: str, settings: Settings, force_ocr: bool | None = None) -> ExtractedDocument:
     """Ingest one file through MinerU's precision API and return chunks."""
     token = _require_token(settings)
     if not content:
@@ -132,12 +135,15 @@ def parse_document_via_mineru(*, content: bytes, filename: str, settings: Settin
     timeout = settings.mineru_timeout_seconds
     pool_interval = settings.mineru_poll_interval_seconds
     result_max_bytes = settings.mineru_result_max_bytes
+    # The per-file OCR intent is authoritative; when unspecified fall back to the
+    # global mineru_force_ocr default.
+    is_ocr = settings.mineru_force_ocr if force_ocr is None else force_ocr
 
     submit_payload = {
         "files": [
             {
                 "name": filename,
-                "is_ocr": settings.mineru_force_ocr,
+                "is_ocr": is_ocr,
                 "language": settings.mineru_language,
                 "enable_table": True,
                 "enable_formula": True,

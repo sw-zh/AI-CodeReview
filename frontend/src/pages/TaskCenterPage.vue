@@ -7,17 +7,23 @@ type PullRequest = { number: string; baseRef: string; baseSha: string; headRef: 
 type DeliveryItem = { id: string; external_key: string; title: string; planning_status: string; verification_status: string; web_url: string; source_updated_at: string | null; pull_request: PullRequest | null }
 type VerificationTask = { id: string; delivery_item_id: string; cycle_status: string; published_record_id: string | null }
 type CreatedTask = { id: string }
+type SyncRun = { id: string; connection_id: string; status: string; error_code: string | null; error_message: string | null; finished_at: string | null }
 type Filter = 'ALL' | 'READY' | 'REVIEWING' | 'FORMALIZED'
 
 const router = useRouter()
 const items = ref<DeliveryItem[]>([])
 const tasks = ref<VerificationTask[]>([])
+const syncs = ref<SyncRun[]>([])
 const busyItemId = ref<string | null>(null)
+const syncRetrying = ref(false)
 const message = ref('选择一次 Pull Request 创建审查。Issue 仅作为可选的需求背景，不会出现在代码交付列表。')
 const activeFilter = ref<Filter>('ALL')
 const query = ref('')
 
 const taskByItem = computed(() => new Map(tasks.value.map((task) => [task.delivery_item_id, task])))
+const latestSync = computed(() => syncs.value[0] ?? null)
+const syncInProgress = computed(() => latestSync.value ? ['RUNNING', 'PARTIALLY_SUCCEEDED'].includes(latestSync.value.status) : false)
+const syncFailed = computed(() => latestSync.value ? latestSync.value.status === 'FAILED' : false)
 const visibleItems = computed(() => items.value.filter((item) => {
   const task = taskByItem.value.get(item.id)
   const text = `${item.title} ${item.pull_request?.number ?? ''} ${item.pull_request?.headRef ?? ''}`.toLowerCase()
@@ -45,20 +51,47 @@ function reviewState(task: VerificationTask | undefined) {
 
 async function load() {
   const projectId = selectedProjectId.value
-  if (!projectId) { items.value = []; tasks.value = []; return }
+  if (!projectId) { items.value = []; tasks.value = []; syncs.value = []; return }
   try {
-    const [deliveryItems, taskList] = await Promise.all([
+    const [deliveryItems, taskList, syncList] = await Promise.all([
       apiRequest<DeliveryItem[]>(`/projects/${projectId}/delivery-items`, { headers: projectHeaders() }),
       apiRequest<VerificationTask[]>(`/projects/${projectId}/verification-tasks`, { headers: projectHeaders() }),
+      apiRequest<SyncRun[]>(`/projects/${projectId}/source-sync-runs`, { headers: projectHeaders() }),
     ])
     if (projectId !== selectedProjectId.value) return
     items.value = deliveryItems.filter((item) => Boolean(item.pull_request))
     tasks.value = taskList
-    message.value = items.value.length
-      ? '每一行都是一次 GitHub Pull Request。创建审查后，系统会预填这次 PR 的分支范围，再冻结实际 Diff。'
-      : '还没有同步到 Pull Request。请到“设置”同步 GitHub 仓库后再返回这里。'
+    syncs.value = syncList
+    if (items.value.length) {
+      message.value = '每一行都是一次 GitHub Pull Request。创建审查后，系统会预填这次 PR 的分支范围，再冻结实际 Diff。'
+    } else if (syncInProgress.value) {
+      message.value = '正在后台同步 GitHub Pull Request，请稍后刷新。'
+    } else if (syncFailed.value) {
+      message.value = `GitHub 同步未完成：${latestSync.value?.error_message ?? latestSync.value?.error_code ?? '未知错误'}。可点击「重试同步」。`
+    } else {
+      message.value = '还没有同步到 Pull Request。请在项目里登记 GitHub 仓库并触发同步。'
+    }
   } catch (error) {
     if (projectId === selectedProjectId.value) message.value = error instanceof Error ? error.message : '代码交付加载失败'
+  }
+}
+
+async function retrySync() {
+  const projectId = selectedProjectId.value
+  const sync = latestSync.value
+  if (!projectId || !sync || syncRetrying.value) return
+  syncRetrying.value = true
+  try {
+    await apiRequest(`/projects/${projectId}/external-connections/${sync.connection_id}/sync`, {
+      method: 'POST',
+      headers: projectHeaders(true),
+    })
+    message.value = '已重新提交同步，正在后台处理，请稍后刷新。'
+    await load()
+  } catch (error) {
+    message.value = error instanceof Error ? `重试同步失败：${error.message}` : '重试同步失败，请稍后重试。'
+  } finally {
+    syncRetrying.value = false
   }
 }
 
@@ -128,8 +161,33 @@ watch(selectedProjectId, () => { void load() }, { immediate: true })
             </div>
           </div>
         </div>
-        <p v-else class="empty-row">没有符合当前筛选条件的 Pull Request。</p>
+        <p v-else class="empty-row">
+          <template v-if="syncFailed">
+            <button type="button" class="link-button" :disabled="syncRetrying" @click="retrySync">{{ syncRetrying ? '重试中…' : '重试同步' }}</button>
+          </template>
+          <template v-else-if="syncInProgress">
+            <button type="button" class="link-button" @click="load">刷新</button>
+          </template>
+          <template v-else>没有符合当前筛选条件的 Pull Request。</template>
+        </p>
       </section>
     </template>
   </section>
 </template>
+
+<style scoped>
+.link-button {
+  border: 0;
+  background: transparent;
+  color: var(--brand, #1d4f79);
+  padding: 0;
+  font: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+</style>

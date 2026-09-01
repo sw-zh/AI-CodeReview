@@ -31,3 +31,20 @@ class LocalArtifactStorage(ArtifactStoragePort):
         if self._root not in path.parents:
             raise ValueError("artifact uri escapes configured root")
         return path
+
+    def delete(self, uri: str) -> None:
+        """Remove an artifact file and prune any now-empty parent directories."""
+        path = self.resolve_path(uri)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+        # Prune empty namespace directories up to the storage root.
+        parent = path.parent
+        current = parent
+        while current != self._root and current != current.parent:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent

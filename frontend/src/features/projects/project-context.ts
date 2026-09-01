@@ -28,11 +28,23 @@ export function projectHeaders(write = false): HeadersInit {
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, init)
   const body = await response.json().catch(() => ({}))
+  if (response.status === 401) {
+    handleSessionExpired()
+  }
   if (!response.ok) {
     const detail = typeof body.detail === 'string' ? body.detail : body.detail?.message
     throw new Error(body.message ?? detail ?? `请求失败 (${response.status})`)
   }
   return body as T
+}
+
+/** Token 过期或无效:清除会话状态并回到登录页。 */
+function handleSessionExpired() {
+  sessionStorage.removeItem('accessToken')
+  sessionStorage.removeItem(projectStorageKey)
+  if (window.location.pathname !== '/login') {
+    window.location.assign('/login')
+  }
 }
 
 export function selectProject(projectId: string) {
@@ -59,11 +71,11 @@ export async function loadProjects() {
   }
 }
 
-export async function createProject(name: string, description = ''): Promise<ProjectContextItem> {
+export async function createProject(name: string, description = '', repositoryUrl = '', knowledgeBaseIds: string[] = []): Promise<ProjectContextItem> {
   const project = await apiRequest<ProjectContextItem>('/projects', {
     method: 'POST',
     headers: projectHeaders(true),
-    body: JSON.stringify({ name, description: description || null }),
+    body: JSON.stringify({ name, description: description || null, repository_url: repositoryUrl || null, knowledge_base_ids: knowledgeBaseIds }),
   })
   projects.value = [project, ...projects.value]
   selectProject(project.id)
