@@ -100,7 +100,8 @@ const uploadForceOcr = ref(true)
 const createKbModal = ref(false)
 const createKbName = ref('')
 const mountKbModal = ref(false)
-const mountKbId = ref('')
+const mountableKbs = ref<KnowledgeBase[]>([])
+const mountKbLoading = ref(false)
 const uploading = ref(false)
 
 async function loadKnowledgeBase() {
@@ -233,18 +234,34 @@ async function confirmCreateKb() {
   }
 }
 
-async function confirmMountKb() {
+async function openMountPicker() {
   const projectId = selectedProjectId.value
   if (!projectId) return
-  const knowledgeBaseId = mountKbId.value.trim()
-  if (!knowledgeBaseId) return
+  mountKbLoading.value = true
+  try {
+    const [allKbs, mountedKbs] = await Promise.all([
+      apiRequest<KnowledgeBase[]>('/knowledge-bases', { headers: projectHeaders() }),
+      apiRequest<KnowledgeBase[]>(`/projects/${projectId}/knowledge-bases`, { headers: projectHeaders() }),
+    ])
+    const mountedIds = new Set(mountedKbs.map((kb) => kb.id))
+    mountableKbs.value = allKbs.filter((kb) => !mountedIds.has(kb.id))
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '知识库列表加载失败'
+  } finally {
+    mountKbLoading.value = false
+  }
+  mountKbModal.value = true
+}
+
+async function confirmMountKb(kb: KnowledgeBase) {
+  const projectId = selectedProjectId.value
+  if (!projectId) return
   try {
     await apiRequest(`/projects/${projectId}/knowledge-bases/mount`, {
       method: 'POST',
       headers: projectHeaders(true),
-      body: JSON.stringify({ knowledge_base_id: knowledgeBaseId }),
+      body: JSON.stringify({ knowledge_base_id: kb.id }),
     })
-    mountKbId.value = ''
     mountKbModal.value = false
     await loadKnowledgeBase()
   } catch (err) {
@@ -331,7 +348,7 @@ onMounted(loadKnowledgeBase)
       <aside class="kb-sidebar">
         <div class="kb-sidebar-actions">
           <button class="kb-create" type="button" @click="createKbModal = true">＋ 创建知识库</button>
-          <button class="kb-mount" type="button" @click="mountKbModal = true">挂载知识库</button>
+          <button class="kb-mount" type="button" @click="openMountPicker">挂载知识库</button>
         </div>
         <div class="kb-tree-label">已挂载知识库</div>
         <nav class="kb-tree">
@@ -381,7 +398,7 @@ onMounted(loadKnowledgeBase)
           </nav>
           <div class="kb-toolbar-actions">
             <button class="kb-btn" type="button" @click="createKbModal = true">＋ 创建知识库</button>
-            <button class="kb-btn" type="button" @click="mountKbModal = true">挂载知识库</button>
+            <button class="kb-btn" type="button" @click="openMountPicker">挂载知识库</button>
             <button class="kb-btn kb-btn-primary" type="button" @click="openUploadDialog">＋ 上传文档</button>
           </div>
         </div>
@@ -488,11 +505,19 @@ onMounted(loadKnowledgeBase)
     <div v-if="mountKbModal" class="kb-modal-overlay" @click.self="mountKbModal = false">
       <div class="kb-modal" role="dialog" aria-label="挂载知识库">
         <h3>挂载知识库</h3>
-        <p class="kb-modal-note">填写要挂载的知识库 ID（其他项目创建的）。挂载后本项目可只读使用其资料。</p>
-        <input v-model="mountKbId" placeholder="知识库 ID" @keyup.enter="confirmMountKb" />
+        <p class="kb-modal-note">选择一个知识库挂载到当前项目。挂载后本项目可只读使用其资料。</p>
+        <p v-if="mountKbLoading" class="kb-modal-note">加载中…</p>
+        <div v-else-if="!mountableKbs.length" class="kb-modal-note">没有可挂载的知识库。</div>
+        <ul v-else class="kb-mount-list">
+          <li v-for="kb in mountableKbs" :key="kb.id">
+            <button type="button" @click="confirmMountKb(kb)">
+              <span>{{ kb.name }}</span>
+              <em>挂载</em>
+            </button>
+          </li>
+        </ul>
         <div class="kb-modal-actions">
           <button class="kb-btn" type="button" @click="mountKbModal = false">取消</button>
-          <button class="kb-btn kb-btn-primary" type="button" :disabled="!mountKbId.trim()" @click="confirmMountKb">挂载</button>
         </div>
       </div>
     </div>
@@ -555,6 +580,41 @@ onMounted(loadKnowledgeBase)
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.5;
+}
+.kb-mount-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 280px;
+  overflow: auto;
+}
+.kb-mount-list li button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+.kb-mount-list li button:hover {
+  border-color: var(--brand);
+}
+.kb-mount-list li em {
+  color: var(--brand);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 750;
 }
 .kb-tree-label {
   padding: 14px 6px 8px;
