@@ -82,11 +82,11 @@ function conclusionStatus(item: ReportContent["items"][number]) {
     return "证据不足";
   return (
     {
-      CONFIRMED: "已确认",
+      SUPPORTED: "代码证据支持",
       PARTIALLY_SUPPORTED: "部分支持",
-      INSUFFICIENT_EVIDENCE: "证据不足",
+      NOT_PROVEN: "当前证据未证明",
+      NOT_ANALYZED: "未完成分析",
       CONFLICTING: "存在冲突",
-      INFERENCE_REQUIRES_CONFIRMATION: "待人工确认",
     } as Record<string, string>
   )[item.result.status] ?? item.result.status;
 }

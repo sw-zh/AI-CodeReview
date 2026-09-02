@@ -12,8 +12,17 @@ class ModelLinkProposal(BaseModel):
     rationale: str = Field(min_length=1, max_length=1000)
 
 
+class CodeContextRequestProposal(BaseModel):
+    """A request can select only a deterministic, SHA-bound candidate prepared by the program."""
+
+    claim_id: UUID
+    candidate_id: str = Field(min_length=8, max_length=64)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ModelProposalBatch(BaseModel):
     proposals: list[ModelLinkProposal] = Field(default_factory=list, max_length=100)
+    context_requests: list[CodeContextRequestProposal] = Field(default_factory=list, max_length=20)
 
 
 class CodeReviewFindingProposal(BaseModel):

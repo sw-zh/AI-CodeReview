@@ -5,6 +5,8 @@
 > 适用项目：AI-CodeReview  
 > 设计目标：面试容易解释，同时能够增量落地到当前项目
 
+快速阅读版本：[PR 交付核验 LangGraph 编排简明总览](./2026-09-01-pr-delivery-verification-langgraph-overview.md)
+
 ## 1. 设计结论
 
 本方案将产品定位为面向研发团队的 **PR 交付核验系统**：针对一次 Pull Request，核验“人工确认的交付目标是否能被本次冻结代码变更支持”，并给出可定位、可回放、可审批的结论。

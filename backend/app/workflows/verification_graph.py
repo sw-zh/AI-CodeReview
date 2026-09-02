@@ -13,12 +13,15 @@ from app.domain.errors import DomainError
 from app.domain.model_contracts import CodeReviewChallengeRequest, CodeReviewRequest, GenerationRequest
 from app.application.services.code_review_service import persist_validated_challenges, persist_validated_findings, plan_code_review, plan_code_review_challenges
 from app.infrastructure.agent_tool_runner import execute_http_query
+from app.infrastructure.code_context import extract_symbol_context
 from app.infrastructure.generation_model import create_generation_model
+from app.infrastructure.git_reader import ReadOnlyGitReader
 from app.infrastructure.persistence.models import (
     AnalysisCoverage,
     AnalysisRun,
     AnalysisRunManifest,
     AnalysisRunOrchestrationSnapshot,
+    AnalysisRunContextArtifact,
     AgentToolExecution,
     ArtifactObject,
     Claim,
@@ -56,6 +59,9 @@ class VerificationGraphState(TypedDict, total=False):
     coverage_id: str
     node_errors: list[str]
     workflow_schema_version: str
+    context_request_round: int
+    context_requests: list[dict]
+    context_artifact_ids: list[str]
 
 
 _SECRET_ASSIGNMENT = re.compile(
@@ -125,7 +131,7 @@ def _parse_hunks(diff: str) -> list[tuple[str, str, int | None, int | None, str]
 
 
 def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) -> VerificationGraphState:
-    """Persist deterministic evidence first; heuristic matches never become CONFIRMED."""
+    """Persist deterministic evidence first; heuristic matches never become SUPPORTED."""
 
     orchestration = session.query(AnalysisRunOrchestrationSnapshot).filter_by(run_id=run_id).one_or_none()
     if orchestration is None:
@@ -449,7 +455,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         reason=(f"外部 {evidence.source_type} 的非零退出码与目标冲突；标识符命中：" if relation == "CONTRADICTS" else "确定性标识符命中：") + ", ".join(sorted(overlap)[:5]),
                         confidence=0.75,
                         produced_by="DETERMINISTIC",
-                        requires_human_confirmation=True,
+                        requires_human_confirmation=relation == "CONTRADICTS",
                     ))
             for evidence in manual_evidence:
                 overlap = claim_tokens & _tokens(evidence.excerpt_safe)
@@ -468,7 +474,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         reason="人工补证包含与核验目标重叠的标识符：" + ", ".join(sorted(overlap)[:5]),
                         confidence=0.5,
                         produced_by="HUMAN",
-                        requires_human_confirmation=True,
+                        requires_human_confirmation=False,
                     ))
         # The next node validates uniqueness against persisted links, including these ones.
         session.flush()
@@ -484,10 +490,32 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
         claims = [session.get(Claim, UUID(item)) for item in state.get("claim_ids", [])]
         claims = [item for item in claims if item is not None]
         allowed_ids = {str(item.id) for item in actual_evidence}
+        bundle = state.get("code_change_bundle") or {}
+        existing_context_symbols = {(str(item.get("path")), str(item.get("symbol"))) for item in bundle.get("contexts", [])}
+        supplement_candidates = [
+            item for item in bundle.get("contextCandidates", [])
+            if (str(item.get("path")), str(item.get("symbol"))) not in existing_context_symbols
+        ]
+        context_payload: list[dict] = []
+        remaining_context_chars = get_settings().code_review_input_char_budget // 2
+        for context in bundle.get("contexts", []):
+            candidate = {
+                "contextId": context.get("contextId"),
+                "path": context.get("path"),
+                "symbol": context.get("symbol"),
+                "relation": context.get("relation"),
+                "content": context.get("content"),
+                "evidenceRole": "CONTEXT_ONLY",
+            }
+            size = len(json.dumps(candidate, ensure_ascii=False))
+            if size > remaining_context_chars:
+                break
+            context_payload.append(candidate)
+            remaining_context_chars -= size
         request = GenerationRequest(
             run_id=run_id,
-            prompt_version="v1",
-            schema_version="v1",
+            prompt_version="v2",
+            schema_version="v2",
             claims=[
                 {
                     "id": str(claim.id),
@@ -499,6 +527,12 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                 for claim in claims
             ],
             evidence=[{"id": str(item.id), "excerpt": item.excerpt_safe, "locator": item.locator} for item in actual_evidence],
+            temporary_context=[{
+                "kind": "FROZEN_CODE_CONTEXT",
+                "contexts": context_payload,
+                "contextCandidates": supplement_candidates,
+                "rules": "CONTEXT_ONLY; never cite it as Diff evidence. A supplemental request may select only a candidateId.",
+            }],
         )
         settings = get_settings()
         try:
@@ -533,11 +567,21 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         reason=proposal.rationale,
                         confidence=0.5,
                         produced_by="MODEL",
-                        requires_human_confirmation=True,
+                        requires_human_confirmation=proposal.relation == "CONTRADICTS",
                     ))
-            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="ANALYZED"))
+            valid_requests: list[dict] = []
+            candidate_ids = {str(item.get("candidateId")) for item in supplement_candidates}
+            if state.get("context_request_round", 0) == 0:
+                for proposal in generated.proposals.context_requests:
+                    if str(proposal.claim_id) in claim_ids and proposal.candidate_id in candidate_ids:
+                        valid_requests.append({
+                            "claimId": str(proposal.claim_id),
+                            "candidateId": proposal.candidate_id,
+                            "reason": proposal.reason,
+                        })
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="ANALYZED", details={"contextRequestCount": len(valid_requests), "contextRound": state.get("context_request_round", 0)}))
             session.flush()
-            return {}
+            return {"context_requests": valid_requests}
         except DomainError as exc:
             manifest = session.query(AnalysisRunManifest).filter_by(run_id=run_id).one_or_none()
             if manifest is not None:
@@ -557,6 +601,93 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             ))
             session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="MODEL", scope_ref="link-proposal", state="UNAVAILABLE", reason_code=exc.code))
             return {"node_errors": [*state.get("node_errors", []), exc.code]}
+
+    def supplement_context(state: VerificationGraphState) -> VerificationGraphState:
+        """Capture one agent-requested, SHA-bound context artifact without fetching remote Git."""
+        ensure_not_cancelled()
+        if state.get("context_request_round", 0) >= 1:
+            return {"context_requests": []}
+        bundle = state.get("code_change_bundle") or {}
+        candidates = {str(item.get("candidateId")): item for item in bundle.get("contextCandidates", [])}
+        selected: list[dict] = []
+        seen: set[str] = set()
+        for request in state.get("context_requests", []):
+            candidate = candidates.get(str(request.get("candidateId")))
+            if candidate is None or candidate["candidateId"] in seen:
+                continue
+            seen.add(candidate["candidateId"])
+            selected.append({**candidate, "claimId": request.get("claimId"), "reason": request.get("reason", "")})
+            if len(selected) >= get_settings().code_review_context_max_supplement_requests:
+                break
+        if not selected:
+            return {"context_request_round": 1, "context_requests": []}
+
+        snapshot = session.get(InputSnapshot, UUID(state["input_snapshot_id"]))
+        binding = session.query(InputSnapshotGit).filter_by(snapshot_id=snapshot.id).one_or_none() if snapshot else None
+        git_snapshot = session.get(GitSnapshot, binding.git_snapshot_id) if binding else None
+        cycle = session.get(VerificationCycle, snapshot.cycle_id) if snapshot else None
+        task = session.get(VerificationTask, cycle.task_id) if cycle else None
+        repository = session.get(GitRepository, git_snapshot.repository_id) if git_snapshot else None
+        if not all((snapshot, git_snapshot, task, repository)):
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CONTEXT_SUPPLEMENT", scope_ref="frozen-sha", state="UNAVAILABLE", reason_code="GIT_ARTIFACT_MISSING", details={}))
+            return {"context_request_round": 1, "context_requests": [], "node_errors": [*state.get("node_errors", []), "GIT_ARTIFACT_MISSING"]}
+        try:
+            blobs = ReadOnlyGitReader().read_frozen_blobs(
+                repository.display_url,
+                target_sha=git_snapshot.target_sha,
+                paths=[item["path"] for item in selected],
+                credential_ref=repository.credential_ref,
+            )
+        except DomainError as exc:
+            session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CONTEXT_SUPPLEMENT", scope_ref="frozen-sha", state="UNAVAILABLE", reason_code=exc.code, details={"requestedCandidateIds": [item["candidateId"] for item in selected]}))
+            return {"context_request_round": 1, "context_requests": [], "node_errors": [*state.get("node_errors", []), exc.code]}
+
+        new_contexts: list[dict] = []
+        skipped: list[dict] = []
+        for item in selected:
+            source = blobs.get(item["path"], b"").decode("utf-8", errors="replace")
+            extracted = extract_symbol_context(item["path"], source, item["symbol"])
+            if extracted is None:
+                skipped.append({"candidateId": item["candidateId"], "reasonCode": "SYMBOL_DEFINITION_NOT_FOUND"})
+                continue
+            context_id = f"ctx-supplement-{hashlib.sha256((item['candidateId'] + extracted['content']).encode('utf-8')).hexdigest()[:20]}"
+            new_contexts.append({
+                "contextId": context_id,
+                "path": item["path"],
+                "commitSha": git_snapshot.target_sha,
+                "language": item.get("language"),
+                "symbol": extracted["symbol"],
+                "symbolKind": extracted["symbolKind"],
+                "kind": "SYMBOL",
+                "relation": "SUPPLEMENTAL_DIRECT_IMPORT",
+                "startLine": extracted["startLine"],
+                "endLine": extracted["endLine"],
+                "content": extracted["content"],
+                "contentHash": f"sha256:{hashlib.sha256(extracted['content'].encode('utf-8')).hexdigest()}",
+                "evidenceRole": "CONTEXT_ONLY",
+                "requestedForClaimId": item.get("claimId"),
+            })
+
+        payload = {"schemaVersion": "run-context-v1", "targetSha": git_snapshot.target_sha, "requests": selected, "contexts": new_contexts, "skipped": skipped}
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        content_hash = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        artifact = session.query(ArtifactObject).filter_by(project_id=task.project_id, kind="CODE_CONTEXT_SUPPLEMENT", content_hash=content_hash).one_or_none()
+        if artifact is None:
+            artifact = ArtifactObject(project_id=task.project_id, kind="CODE_CONTEXT_SUPPLEMENT", content_hash=content_hash, byte_size=len(raw), media_type="application/json", schema_version="run-context-v1", storage_uri="pending://artifact")
+            session.add(artifact)
+            session.flush()
+            artifact.storage_uri = LocalArtifactStorage(get_settings().artifact_root).write_bytes([str(task.project_id), "analysis-runs", str(run_id), "contexts"], f"{artifact.id}.json", raw)
+        request_hash = f"sha256:{hashlib.sha256(json.dumps(selected, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()}"
+        if session.query(AnalysisRunContextArtifact).filter_by(analysis_run_id=run_id, round_no=1).one_or_none() is None:
+            session.add(AnalysisRunContextArtifact(analysis_run_id=run_id, artifact_id=artifact.id, round_no=1, request_hash=request_hash))
+        merged_contexts = [*bundle.get("contexts", []), *[item for item in new_contexts if item["contextId"] not in {entry.get("contextId") for entry in bundle.get("contexts", [])}]]
+        updated_bundle = {**bundle, "contexts": merged_contexts, "coverage": {**(bundle.get("coverage") or {}), "supplementRound": 1, "supplementedContextCount": len(new_contexts), "supplementSkipped": skipped}}
+        session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="CONTEXT_SUPPLEMENT", scope_ref="frozen-sha", state="ANALYZED" if new_contexts else "PARTIAL", reason_code=None if new_contexts else "NO_SUPPLEMENT_CONTEXT", details={"artifactId": str(artifact.id), "requestedCandidateIds": [item["candidateId"] for item in selected], "contextCount": len(new_contexts), "skipped": skipped}))
+        session.flush()
+        return {"code_change_bundle": updated_bundle, "context_request_round": 1, "context_requests": [], "context_artifact_ids": [*state.get("context_artifact_ids", []), str(artifact.id)]}
+
+    def should_supplement_context(state: VerificationGraphState) -> str:
+        return "supplement_context" if state.get("context_requests") and state.get("context_request_round", 0) == 0 else "run_custom_agents"
 
     def run_custom_agents(state: VerificationGraphState) -> VerificationGraphState:
         """Outer Agents may use temporary hints, but only frozen evidence can be cited."""
@@ -692,7 +823,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                         continue
                     existing = session.query(ClaimEvidenceLink).filter_by(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation).one_or_none()
                     if existing is None:
-                        session.add(ClaimEvidenceLink(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation, reason=proposal.rationale, confidence=0.5, produced_by="MODEL", requires_human_confirmation=True))
+                        session.add(ClaimEvidenceLink(claim_id=proposal.claim_id, evidence_id=proposal.evidence_id, relation=proposal.relation, reason=proposal.rationale, confidence=0.5, produced_by="CUSTOM_AGENT", requires_human_confirmation=proposal.relation == "CONTRADICTS"))
                 session.add(AnalysisCoverage(analysis_run_id=run_id, scope_kind="AGENT", scope_ref=key, state="ANALYZED"))
             except DomainError as exc:
                 session.add(ModelCall(run_id=run_id, provider=settings.generation_provider, model=settings.generation_model, operation=request.operation, prompt_version=request.prompt_version, schema_version=request.schema_version, allowed_evidence_ids=sorted(allowed_ids), status="FAILED", attempts=1, error_code=exc.code, error_summary=exc.message[:500]))
@@ -718,15 +849,19 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
             deterministic_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "DETERMINISTIC"]
             human_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "HUMAN"]
             model_supports = [item for item in links if item.relation == "SUPPORTS" and item.produced_by == "MODEL"]
-            deterministic_conflicts = [item for item in links if item.relation == "CONTRADICTS" and item.produced_by == "DETERMINISTIC"]
-            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *deterministic_conflicts, *human_supports, *model_supports]]
-            support_evidence = [session.get(EvidenceItem, item.evidence_id) for item in deterministic_supports]
-            has_passing_external_test = any(
-                item is not None and item.source_type in {"TEST", "BUILD"} and item.locator.get("exitCode") == 0
-                for item in support_evidence
-            )
-            if deterministic_conflicts:
-                for conflict in deterministic_conflicts:
+            conflicts = [item for item in links if item.relation == "CONTRADICTS" and item.produced_by in {"DETERMINISTIC", "MODEL"}]
+            exact_model_supports = [
+                item for item in model_supports
+                if (evidence := session.get(EvidenceItem, item.evidence_id)) is not None
+                and evidence.source_type == "CODE"
+                and evidence.evidence_kind == "GIT_DIFF_HUNK"
+                and evidence.locator_precision == "EXACT"
+            ]
+            evidence_ids = [str(item.evidence_id) for item in [*deterministic_supports, *conflicts, *human_supports, *model_supports]]
+            capture_unavailable = any(code in {"GIT_ARTIFACT_MISSING", "GIT_ARTIFACT_UNAVAILABLE", "GIT_ARTIFACT_HASH_MISMATCH"} for code in state.get("node_errors", []))
+            model_unavailable = any(code.startswith("MODEL_") for code in state.get("node_errors", []))
+            if conflicts:
+                for conflict in conflicts:
                     if "risk-scan" not in enabled_keys:
                         continue
                     existing_finding = session.query(RiskFinding).filter_by(
@@ -746,27 +881,27 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
                             recommendation="复核冲突证据并补充与冻结提交绑定的可追溯材料",
                         ))
                 status = "CONFLICTING"
-                reason = "存在可追溯的确定性反驳证据，不能由模型自行裁决"
+                reason = "存在与冻结代码证据关联的反驳结论，需要核对业务语义"
                 needs_confirmation = True
-            elif deterministic_supports and has_passing_external_test and claim.authority_level >= 3:
-                status = "CONFIRMED"
-                reason = "权威资料、确定性实现证据与绑定目标提交的成功外部结果一致"
+            elif exact_model_supports:
+                status = "SUPPORTED"
+                reason = "模型分析结果已绑定到当前冻结 Diff Hunk；必要代码上下文仅用于解释，不作为独立证据"
                 needs_confirmation = False
             elif deterministic_supports:
                 status = "PARTIALLY_SUPPORTED"
-                reason = "已发现冻结 Git 范围内的确定性标识符命中；语义满足度仍需人工确认"
-                needs_confirmation = True
+                reason = "已发现冻结 Git 范围内的直接代码标识符命中，但尚未形成足以证明完整目标的语义证据"
+                needs_confirmation = False
             elif human_supports:
                 status = "PARTIALLY_SUPPORTED"
-                reason = "已关联人工补证；该补证不能单独形成确认结论，仍需人工复核"
-                needs_confirmation = True
-            elif model_supports:
-                status = "INFERENCE_REQUIRES_CONFIRMATION"
-                reason = "仅有模型提出的证据关联，尚未形成确定性支持结论"
-                needs_confirmation = True
+                reason = "已关联人工补证；该补证不能单独证明本次冻结 PR 的代码交付范围"
+                needs_confirmation = False
+            elif capture_unavailable or (model_unavailable and not deterministic_supports):
+                status = "NOT_ANALYZED"
+                reason = "冻结代码输入或必要模型分析不可用，当前不能完成该目标的核验"
+                needs_confirmation = False
             else:
-                status = "INSUFFICIENT_EVIDENCE"
-                reason = "冻结 Git 范围内没有可验证的确定性代码支持证据"
+                status = "NOT_PROVEN"
+                reason = "已完成当前冻结代码范围分析，但没有足够的直接证据证明该交付目标"
                 needs_confirmation = False
             result = session.query(VerificationResult).filter_by(analysis_run_id=run_id, claim_id=claim.id).one_or_none()
             if result is None:
@@ -794,6 +929,7 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     graph.add_node("summarize_code_coverage", observed("summarize_code_coverage", summarize_code_coverage))
     graph.add_node("link_deterministic", observed("link_deterministic", link_deterministic))
     graph.add_node("propose_model_links", observed("propose_model_links", propose_model_links))
+    graph.add_node("supplement_context", observed("supplement_context", supplement_context))
     graph.add_node("run_custom_agents", observed("run_custom_agents", run_custom_agents))
     graph.add_node("reconcile", observed("reconcile", reconcile))
     graph.add_edge(START, "load_snapshot")
@@ -804,12 +940,19 @@ def run_verification_graph(session: Session, run_id: UUID, snapshot_id: UUID) ->
     graph.add_edge("challenge_code_findings", "summarize_code_coverage")
     graph.add_edge("summarize_code_coverage", "link_deterministic")
     graph.add_edge("link_deterministic", "propose_model_links")
-    graph.add_edge("propose_model_links", "run_custom_agents")
+    graph.add_conditional_edges("propose_model_links", should_supplement_context, {
+        "supplement_context": "supplement_context",
+        "run_custom_agents": "run_custom_agents",
+    })
+    graph.add_edge("supplement_context", "propose_model_links")
     graph.add_edge("run_custom_agents", "reconcile")
     graph.add_edge("reconcile", END)
     return graph.compile().invoke({
         "analysis_run_id": str(run_id),
         "input_snapshot_id": str(snapshot_id),
-        "workflow_schema_version": "standard-verification-v1",
+        "workflow_schema_version": "delivery-context-v2",
         "node_errors": [],
+        "context_request_round": 0,
+        "context_requests": [],
+        "context_artifact_ids": [],
     })

@@ -228,7 +228,7 @@ def _derive_cycle_status(session, run: AnalysisRun) -> None:
         cycle.business_status = "NEEDS_EVIDENCE"
     elif any(item.requires_human_confirmation for item in results):
         cycle.business_status = "NEEDS_CONFIRMATION"
-    elif all(item.status == "INSUFFICIENT_EVIDENCE" for item in results):
+    elif all(item.status in {"NOT_PROVEN", "NOT_ANALYZED"} for item in results):
         cycle.business_status = "NEEDS_EVIDENCE"
     else:
         cycle.business_status = "DRAFT_READY"

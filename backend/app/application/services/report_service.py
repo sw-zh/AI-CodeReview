@@ -138,7 +138,7 @@ def _decision_payloads_from_items(items: list[ReportItem]) -> dict[str, dict]:
 
 
 def _draft_cycle_status(results: list[VerificationResult]) -> str:
-    if not results or all(item.status == "INSUFFICIENT_EVIDENCE" for item in results):
+    if not results or all(item.status in {"NOT_PROVEN", "NOT_ANALYZED"} for item in results):
         return "NEEDS_EVIDENCE"
     if any(item.requires_human_confirmation for item in results):
         return "NEEDS_CONFIRMATION"
@@ -190,8 +190,10 @@ def _delivery_item_verification_status(session: Session, *, report: ReportVersio
         return "CONFIRMED"
     if any(status in {"CONFLICT", "CONFLICTING"} for status in statuses):
         return "CONFLICT"
-    if not statuses or all(status == "INSUFFICIENT_EVIDENCE" for status in statuses):
+    if not statuses or all(status in {"INSUFFICIENT_EVIDENCE", "NOT_PROVEN", "NOT_ANALYZED"} for status in statuses):
         return "INSUFFICIENT_EVIDENCE"
+    if statuses and all(status == "SUPPORTED" for status in statuses):
+        return "PARTIALLY_SUPPORTED"
     return "PARTIALLY_SUPPORTED"
 
 

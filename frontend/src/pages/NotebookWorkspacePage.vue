@@ -347,9 +347,10 @@ function isUuid(value: unknown): value is string {
   );
 }
 function mapStatus(status: string): VerificationConclusion["status"] {
-  if (status === "CONFIRMED") return "已确认";
+  if (status === "SUPPORTED") return "代码证据支持";
   if (status === "PARTIALLY_SUPPORTED") return "部分支持";
-  if (status === "INSUFFICIENT_EVIDENCE") return "证据不足";
+  if (status === "NOT_PROVEN") return "证据不足";
+  if (status === "NOT_ANALYZED") return "未完成分析";
   if (status === "CONFLICTING") return "存在冲突";
   return "待人工确认";
 }

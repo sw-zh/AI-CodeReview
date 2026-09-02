@@ -67,6 +67,17 @@ class GitReaderPort:
         """Read only an immutable SHA range and reject a changed diff payload."""
         raise NotImplementedError
 
+    def read_frozen_blobs(
+        self,
+        repository_url: str,
+        *,
+        target_sha: str,
+        paths: list[str],
+        credential_ref: str | None = None,
+    ) -> dict[str, bytes]:
+        """Read already-cached paths from a frozen commit without any network fetch."""
+        raise NotImplementedError
+
 
 class GenerationModelPort:
     """Generation boundary: implementations may propose links but never final results."""

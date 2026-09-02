@@ -125,7 +125,9 @@ def get_git_snapshot_diff(session: Session, *, snapshot_id: UUID, actor_id: UUID
         "snapshotId": str(snapshot.id), "baseSha": snapshot.base_sha, "targetSha": snapshot.target_sha,
         "effectiveBaseSha": snapshot.effective_base_sha or snapshot.base_sha, "diffMode": snapshot.diff_mode,
         "diffHash": snapshot.diff_hash, "diffArtifactId": str(diff_artifact.id),
-        "coverage": {"capture": snapshot.coverage, "bundle": bundle.get("coverage", {})}, "files": bundle.get("files", []),
+        "coverage": {"capture": snapshot.coverage, "bundle": bundle.get("coverage", {})},
+        "files": bundle.get("files", []),
+        "contexts": bundle.get("contexts", []),
     }
 
 
@@ -187,7 +189,7 @@ def freeze_git_snapshot(
         kind="CODE_CHANGE_BUNDLE",
         content=bundle_bytes,
         media_type="application/json",
-        schema_version="code-change-bundle-v1",
+        schema_version=str(frozen.code_change_bundle.get("schemaVersion", "code-change-bundle-v2")),
     )
     snapshot = GitSnapshot(
         cycle_id=cycle_id,
@@ -198,7 +200,7 @@ def freeze_git_snapshot(
         target_sha=frozen.target_sha,
         merge_base_sha=frozen.merge_base_sha,
         effective_base_sha=frozen.base_sha if diff_mode == "TWO_DOT" else frozen.merge_base_sha,
-        capture_version="git-capture-v2",
+        capture_version="git-capture-v3",
         diff_mode=diff_mode,
         include_paths=include_paths,
         exclude_paths=exclude_paths,

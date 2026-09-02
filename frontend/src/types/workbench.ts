@@ -1,6 +1,6 @@
 export type RiskLevel = "P0" | "P1" | "P2";
 export type VerificationStatus =
-  "已确认" | "部分支持" | "待人工确认" | "证据不足" | "存在冲突";
+  "已确认" | "代码证据支持" | "部分支持" | "待人工确认" | "证据不足" | "未完成分析" | "存在冲突";
 
 export interface ProjectTodo {
   id: string;

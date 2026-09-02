@@ -1008,6 +1008,20 @@ class AnalysisRunManifest(Base):
     degradation: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
+class AnalysisRunContextArtifact(Base):
+    """Immutable, run-scoped context captured by the single controlled supplement round."""
+
+    __tablename__ = "analysis_run_context_artifacts"
+    __table_args__ = (UniqueConstraint("analysis_run_id", "round_no", name="uq_run_context_artifact_round"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    analysis_run_id: Mapped[UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(ForeignKey("artifact_objects.id", ondelete="RESTRICT"), nullable=False)
+    round_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ModelCall(Base):
     __tablename__ = "model_calls"
 

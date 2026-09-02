@@ -51,6 +51,28 @@ def plan_code_review(*, bundle: dict, evidence_by_locator: dict[tuple[str, str],
                 "hunks": hunks,
                 "contextOnly": context if include_context else {"base": None, "target": None},
             })
+    related_contexts: list[dict] = []
+    for context in bundle.get("contexts", []):
+        candidate = {
+            "contextId": context.get("contextId"),
+            "path": context.get("path"),
+            "symbol": context.get("symbol"),
+            "symbolKind": context.get("symbolKind"),
+            "relation": context.get("relation"),
+            "startLine": context.get("startLine"),
+            "endLine": context.get("endLine"),
+            "content": context.get("content"),
+            "evidenceRole": "CONTEXT_ONLY",
+        }
+        size = len(json.dumps(candidate, ensure_ascii=False))
+        if used + size > char_budget:
+            skipped.append({"path": context.get("path"), "symbol": context.get("symbol"), "reasonCode": "RELATED_CONTEXT_BUDGET_EXHAUSTED"})
+            continue
+        related_contexts.append(candidate)
+        used += size
+    if selected and related_contexts:
+        # Context is provided once for the review batch and never has an evidenceId.
+        selected[0]["relatedContexts"] = related_contexts
     return selected, {"state": "ANALYZED" if selected else "PARTIAL", "details": {"inputCharBudget": char_budget, "inputCharsUsed": used, "analysedFiles": len(selected), "analysedHunks": sum(len(item["hunks"]) for item in selected), "unanalysed": skipped, "claims": claim_payload}}
 
 
@@ -162,6 +184,20 @@ def plan_code_review_challenges(
             "hunks": [hunk_payload],
             "contextOnly": context,
         }
+        related_contexts = [
+            {
+                "contextId": item.get("contextId"),
+                "path": item.get("path"),
+                "symbol": item.get("symbol"),
+                "relation": item.get("relation"),
+                "content": item.get("content"),
+                "evidenceRole": "CONTEXT_ONLY",
+            }
+            for item in bundle.get("contexts", [])
+            if item.get("path") in {path, file.get("old_path")}
+        ]
+        if related_contexts:
+            code_change["relatedContexts"] = related_contexts
         candidate_size = len(json.dumps({"finding": finding_payload, "codeChange": code_change}, ensure_ascii=False))
         if used + candidate_size > char_budget:
             skipped.append({"findingId": str(finding.id), "path": path, "hunk": header, "reasonCode": "FINDING_CHALLENGE_BUDGET_EXHAUSTED"})

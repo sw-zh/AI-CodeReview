@@ -63,7 +63,8 @@ class OpenAICompatibleGenerationModelAdapter(GenerationModelPort):
                 "rules": [
                     "Use only supplied claim IDs and evidence IDs.",
                     "Temporary tool context is a review hint only. Never cite it, repeat it as a fact, or use its ID in a proposal.",
-                    "A proposal requires human confirmation and cannot establish CONFIRMED on its own.",
+                    "A proposal is only a candidate. It can contribute to SUPPORTED only after the program validates an exact frozen Diff Hunk reference.",
+                    "A context request may select only a supplied contextCandidates[].candidateId. Request it only when it can materially change the claim analysis.",
                 ],
                 "outputSchema": ModelProposalBatch.model_json_schema(),
                 "claims": request.claims,

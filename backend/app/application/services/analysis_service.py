@@ -33,9 +33,10 @@ from app.application.services.orchestration_service import freeze_run_orchestrat
 _DELIVERY_PROFILE = AssessmentProfile.DELIVERY_VERIFICATION.value
 
 _HUMAN_DECISIONS_BY_STATUS = {
-    "INFERENCE_REQUIRES_CONFIRMATION": ("CONFIRM_PARTIAL", "CONFIRM_INSUFFICIENT"),
+    "SUPPORTED": ("CONFIRM_SUPPORT", "CONFIRM_PARTIAL", "CONFIRM_INSUFFICIENT"),
     "PARTIALLY_SUPPORTED": ("CONFIRM_SUPPORT", "CONFIRM_PARTIAL", "CONFIRM_INSUFFICIENT"),
-    "INSUFFICIENT_EVIDENCE": ("CONFIRM_INSUFFICIENT", "RETURN_FOR_EVIDENCE"),
+    "NOT_PROVEN": ("CONFIRM_INSUFFICIENT", "RETURN_FOR_EVIDENCE"),
+    "NOT_ANALYZED": ("RETURN_FOR_EVIDENCE",),
     "CONFLICTING": ("RETURN_FOR_EVIDENCE",),
     "CONFLICT": ("RETURN_FOR_EVIDENCE",),
 }
@@ -98,10 +99,10 @@ def start_analysis_run(
     settings = get_settings()
     config = {
         "assessmentProfile": snapshot.assessment_profile,
-        "workflow": "dual-core-v1",
-        "rules": "v1",
-        "prompt": "v1",
-        "schema": "v1",
+        "workflow": "delivery-context-v2",
+        "rules": "delivery-verdict-v2",
+        "prompt": "code-context-v2",
+        "schema": "delivery-context-v2",
         "generationProvider": settings.generation_provider,
         "generationModel": settings.generation_model,
         "embeddingProvider": settings.embedding_provider,
@@ -120,7 +121,7 @@ def start_analysis_run(
     if config["orchestrationHash"] != orchestration_snapshot.content_hash:
         raise DomainError("ORCHESTRATION_CHANGED", "启动过程中编排模板发生变化，请重新发起分析")
     session.add(orchestration_snapshot)
-    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="standard-verification-v1", rule_set_version="v1", prompt_set_version="code-review-v1+challenge-v1", generation_model=config["generationModel"], embedding_model=config["embeddingModel"], schema_version="standard-verification-v1"))
+    session.add(AnalysisRunManifest(run_id=run.id, workflow_version="delivery-context-v2", rule_set_version="delivery-verdict-v2", prompt_set_version="code-review-v1+challenge-v1+link-v2", generation_model=config["generationModel"], embedding_model=config["embeddingModel"], schema_version="delivery-context-v2"))
     session.add(AnalysisJob(run_id=run.id, idempotency_key=idempotency_key, max_attempts=settings.job_max_attempts))
     cycle.business_status = "ANALYZING"
     cycle.active_run_id = run.id
@@ -298,7 +299,7 @@ def get_code_review(session: Session, *, run_id: UUID, actor_id: UUID) -> dict:
     coverage = (
         session.query(AnalysisCoverage)
         .filter_by(analysis_run_id=run.id)
-        .filter(AnalysisCoverage.scope_kind.in_(("GIT_CAPTURE", "CODE_REVIEW", "FINDING_CHALLENGE", "STANDARD_VERIFICATION")))
+        .filter(AnalysisCoverage.scope_kind.in_(("GIT_CAPTURE", "CODE_REVIEW", "FINDING_CHALLENGE", "STANDARD_VERIFICATION", "CONTEXT_SUPPLEMENT")))
         .order_by(AnalysisCoverage.id)
         .all()
     )

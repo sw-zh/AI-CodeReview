@@ -16,6 +16,7 @@ COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY app ./app
 COPY migrations ./migrations
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip && pip install . \
+    && python -c "from tree_sitter_language_pack import download; download(['java', 'python', 'javascript', 'typescript', 'tsx'])"
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
