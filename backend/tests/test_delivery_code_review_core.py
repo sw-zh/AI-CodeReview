@@ -1,9 +1,13 @@
 from app.infrastructure.diff_parser import enrich_context, parse_unified_diff
 from app.infrastructure.git_reader import ReadOnlyGitReader
+from app.core.config import get_settings
+from app.domain.errors import DomainError
 from app.application.services.code_review_service import plan_code_review, plan_code_review_challenges
 from app.domain.model_contracts import CodeReviewFindingChallengeProposal
 from types import SimpleNamespace
 import subprocess
+import hashlib
+import shutil
 from uuid import uuid4
 import pytest
 
@@ -132,6 +136,74 @@ def test_reader_freezes_actual_local_git_range_without_checkout(tmp_path) -> Non
     assert frozen.diff.startswith(b"diff --git")
     assert frozen.code_change_bundle["files"][0]["path"] == "中文 文件.py"
     assert frozen.code_change_bundle["files"][0]["context_state"] == "COMPLETE"
+
+
+def test_reader_freeze_collects_sha_bound_java_import_context(tmp_path) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (tmp_path / "src" / "com" / "example" / "config").mkdir(parents=True)
+    (tmp_path / "src" / "PaymentService.java").write_text(
+        "import com.example.config.RetryPolicy;\nclass PaymentService { void pay() { } }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "com" / "example" / "config" / "RetryPolicy.java").write_text(
+        "package com.example.config; public class RetryPolicy { public static void run() {} }\n", encoding="utf-8"
+    )
+    git("add", ".")
+    git("commit", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    (tmp_path / "src" / "PaymentService.java").write_text(
+        "import com.example.config.RetryPolicy;\nclass PaymentService { void pay() { RetryPolicy.run(); } }\n", encoding="utf-8"
+    )
+    git("add", ".")
+    git("commit", "-m", "target")
+    target = git("rev-parse", "HEAD")
+
+    class LocalReader(ReadOnlyGitReader):
+        def _ensure_read_only_clone(self, repository_url: str, *, credential_ref: str | None):
+            return tmp_path
+
+    frozen = LocalReader().freeze_range("https://github.com/example/repo.git", base, target, "TWO_DOT", [], [])
+    assert frozen.code_change_bundle["schemaVersion"] == "code-change-bundle-v2"
+    assert any(item["symbol"] == "RetryPolicy" and item["relation"] == "DIRECT_IMPORT" for item in frozen.code_change_bundle["contexts"])
+    assert all(item["commitSha"] == target for item in frozen.code_change_bundle["contexts"])
+
+
+def test_frozen_blob_read_uses_cached_sha_without_fetch(tmp_path, monkeypatch) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "RetryPolicy.py").write_text("class RetryPolicy:\n    pass\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "target")
+    target = git("rev-parse", "HEAD")
+    repository_url = "https://github.com/example/frozen-context.git"
+    artifact_root = tmp_path.parent / "artifacts"
+    cached = artifact_root / "repositories" / hashlib.sha256(repository_url.encode("utf-8")).hexdigest()
+    cached.parent.mkdir(parents=True)
+    shutil.copytree(tmp_path, cached)
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
+    get_settings.cache_clear()
+    try:
+        class CachedOnlyReader(ReadOnlyGitReader):
+            def _ensure_read_only_clone(self, *args, **kwargs):  # pragma: no cover - must never be called
+                raise AssertionError("supplemental context must not fetch")
+
+        reader = CachedOnlyReader()
+        blobs = reader.read_frozen_blobs(repository_url, target_sha=target, paths=["src/RetryPolicy.py"])
+        assert b"RetryPolicy" in blobs["src/RetryPolicy.py"]
+        with pytest.raises(DomainError) as raised:
+            reader.read_frozen_blobs(repository_url, target_sha=target, paths=["../outside.py"])
+        assert raised.value.code == "GIT_CONTEXT_INVALID"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_finding_challenge_budget_keeps_original_hunk_and_claim() -> None:

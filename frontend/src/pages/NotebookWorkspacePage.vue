@@ -229,17 +229,18 @@ const reportNote = ref("");
 const decisionNote = ref("");
 const decisionMessage = ref("");
 const busy = ref(false);
+const startPhase = ref("");
+const startError = ref("");
+const detailPaneOpen = ref(true);
+let frozenGitSelection = "";
+let startRequestKey = "";
 const runLogOpen = ref(false);
 const centerView = ref<"conclusions" | "diff">("conclusions");
 const selectedDiffPath = ref("");
-const preparationMessage = ref(
-  "选择可选资料并冻结与本次 Pull Request 同源的只读 Git Diff。",
-);
+const preparationMessage = ref("");
 const claimMessage = ref(
-  "先由 DeepSeek 根据 Pull Request 描述提出候选交付内容；确认后才能冻结本轮核验范围。",
+  "根据 PR 描述提取交付内容，再确认本次需要审查的范围。",
 );
-const gitFreezeMessage = ref("");
-const gitFreezeState = ref<"idle" | "working" | "success" | "error">("idle");
 const reportMessage = ref(
   "运行结束后，系统会根据冻结结果生成可提交的报告草稿。",
 );
@@ -273,17 +274,21 @@ const canFreezeGit = computed(() =>
     gitForm.value.targetRef.trim(),
   ),
 );
-const canFreezeFormalSnapshot = computed(() =>
-  Boolean(
-    task.value?.cycle_id && gitSnapshot.value && confirmedClaimCount.value,
-  ),
-);
+const claimsConfirmed = computed(() => confirmedClaimCount.value > 0 &&
+  claimEdits.value.every((claim) => claim.selected && claim.status === "CONFIRMED"));
 const canStartRun = computed(() =>
   Boolean(
-    task.value?.formal_snapshot_id ||
-    (gitSnapshot.value && selectedSourceIds.value.length),
+    claimsConfirmed.value && (task.value?.formal_snapshot_id || canFreezeGit.value),
   ),
 );
+const reviewStatus = computed(() => {
+  const status = liveRun.value?.run_status ?? task.value?.cycle_status ?? "";
+  return ({ QUEUED: "等待审查", RUNNING: "审查中", SUCCEEDED: "审查完成",
+    PARTIALLY_COMPLETED: "部分完成", FAILED: "审查失败", CANCELLED: "已取消",
+    DRAFT: "待开始", ANALYZING: "审查中", DRAFT_READY: "待提交",
+    NEEDS_EVIDENCE: "待补证", NEEDS_CONFIRMATION: "待确认", PENDING_REVIEW: "待审批",
+    APPROVED: "已批准", PUBLISHED: "已留档" } as Record<string, string>)[status] ?? "待准备";
+});
 const activeRun = computed(() =>
   Boolean(
     liveRun.value &&
@@ -460,13 +465,18 @@ const unresolvedDecisionCount = computed(
 );
 
 async function loadRun(run: AnalysisRun) {
+  const cycleId = task.value?.cycle_id;
+  const projectId = selectedProjectId.value;
+  const isCurrent = () => task.value?.cycle_id === cycleId && selectedProjectId.value === projectId && liveRun.value?.id === run.id;
   liveRun.value = run;
   const results = await apiRequest<AnalysisResult[]>(
     `/analysis-runs/${run.id}/results`,
     { headers: projectHeaders() },
   );
+  if (!isCurrent()) return;
   liveResults.value = results;
-  selectedId.value = results[0]?.id ?? "pending-result";
+  if (!results.some((item) => item.id === selectedId.value))
+    selectedId.value = results[0]?.id ?? "pending-result";
 
   const [orchestrationResult, eventsResult, codeReviewResult] =
     await Promise.allSettled([
@@ -480,6 +490,7 @@ async function loadRun(run: AnalysisRun) {
         headers: projectHeaders(),
       }),
     ]);
+  if (!isCurrent()) return;
   if (orchestrationResult.status === "fulfilled")
     liveOrchestration.value = orchestrationResult.value;
   if (eventsResult.status === "fulfilled")
@@ -492,20 +503,26 @@ async function loadRun(run: AnalysisRun) {
     codeReviewResult.value.gitSnapshotId
   ) {
     try {
-      liveGitDiff.value = await apiRequest<GitDiff>(
+      const diff = await apiRequest<GitDiff>(
         `/git-snapshots/${codeReviewResult.value.gitSnapshotId}/diff`,
         { headers: projectHeaders() },
       );
+      if (!isCurrent()) return;
+      liveGitDiff.value = diff;
     } catch {
+      if (!isCurrent()) return;
       liveGitDiff.value = null;
     }
   }
   try {
-    toolExecutions.value = await apiRequest<ToolExecution[]>(
+    const executions = await apiRequest<ToolExecution[]>(
       `/analysis-runs/${run.id}/tool-executions`,
       { headers: projectHeaders() },
     );
+    if (!isCurrent()) return;
+    toolExecutions.value = executions;
   } catch (error) {
+    if (!isCurrent()) return;
     toolExecutionError.value =
       error instanceof Error
         ? `临时工具结果读取失败：${error.message}`
@@ -687,6 +704,16 @@ async function loadWorkspace() {
   toolExecutionError.value = "";
   liveLoadError.value = "";
   task.value = null;
+  busy.value = false;
+  gitSnapshot.value = null;
+  frozenGitSelection = "";
+  startRequestKey = "";
+  startPhase.value = "";
+  startError.value = "";
+  preparationMessage.value = "";
+  claimMessage.value = "根据 PR 描述提取交付内容，再确认本次需要审查的范围。";
+  gitForm.value = { repositoryId: "", baseRef: "main", targetRef: "HEAD", diffMode: "TWO_DOT", includePaths: "", excludePaths: "" };
+  selectedSourceIds.value = [];
   report.value = null;
   reportPreview.value = null;
   claimEdits.value = [];
@@ -708,6 +735,7 @@ async function loadWorkspace() {
         headers: projectHeaders(),
       }),
     ]);
+    if (projectId !== selectedProjectId.value || taskId !== route.params.taskId) return;
     const matchedTask = taskList.find((item) => item.id === taskId);
     if (!matchedTask)
       throw new Error("该核验任务不属于当前项目，或已无权访问。");
@@ -735,11 +763,14 @@ async function loadWorkspace() {
       loadReport(projectId, matchedTask.cycle_id),
       loadClaims(projectId, matchedTask.id),
     ]);
+    if (projectId !== selectedProjectId.value || taskId !== route.params.taskId) return;
+    if (claimsConfirmed.value) claimMessage.value = `已确认 ${confirmedClaimCount.value} 条交付内容。`;
     try {
       const run = await apiRequest<AnalysisRun>(
         `/verification-tasks/${taskId}/latest-analysis-run`,
         { headers: projectHeaders() },
       );
+      if (projectId !== selectedProjectId.value || taskId !== route.params.taskId) return;
       await loadRun(run);
       if (
         !["SUCCEEDED", "PARTIALLY_COMPLETED", "FAILED", "CANCELLED"].includes(
@@ -749,7 +780,7 @@ async function loadWorkspace() {
         schedulePoll();
     } catch {
       liveLoadError.value = matchedTask.formal_snapshot_id
-        ? "正式快照已创建，尚未启动分析运行。"
+        ? "本轮输入已保存，可以继续开始审查。"
         : "";
     }
   } catch (error) {
@@ -772,7 +803,10 @@ async function refreshRun() {
     const run = await apiRequest<AnalysisRun>(`/analysis-runs/${runId}`, {
       headers: projectHeaders(),
     });
+    if (projectId !== selectedProjectId.value || runId !== liveRun.value?.id) return;
     await loadRun(run);
+    if (projectId !== selectedProjectId.value || runId !== liveRun.value?.id) return;
+    liveLoadError.value = "";
     if (
       !["SUCCEEDED", "PARTIALLY_COMPLETED", "FAILED", "CANCELLED"].includes(
         run.run_status,
@@ -786,103 +820,94 @@ async function refreshRun() {
         : "运行已结束，但当前模板没有生成报告草稿。";
     }
   } catch (error) {
+    if (projectId !== selectedProjectId.value || runId !== liveRun.value?.id) return;
     liveLoadError.value =
       error instanceof Error
         ? `运行状态读取失败：${error.message}`
         : "运行状态读取失败。";
-  }
-}
-
-async function freezeGit() {
-  const cycleId = task.value?.cycle_id;
-  if (!cycleId || !canFreezeGit.value) return;
-  busy.value = true;
-  gitFreezeState.value = "working";
-  gitFreezeMessage.value = "正在读取指定范围并冻结 Diff…";
-  try {
-    gitSnapshot.value = await apiRequest<GitSnapshot>(
-      `/cycles/${cycleId}/git-snapshots`,
-      {
-        method: "POST",
-        headers: projectHeaders(true),
-        body: JSON.stringify({
-          repository_id: gitForm.value.repositoryId,
-          base_ref: gitForm.value.baseRef.trim(),
-          target_ref: gitForm.value.targetRef.trim(),
-          diff_mode: gitForm.value.diffMode,
-          include_paths: splitPaths(gitForm.value.includePaths),
-          exclude_paths: splitPaths(gitForm.value.excludePaths),
-        }),
-      },
-    );
-    gitFreezeState.value = "success";
-    gitFreezeMessage.value = `已冻结 ${gitSnapshot.value.coverage.changedFiles?.length ?? 0} 个变更文件：${gitSnapshot.value.base_sha.slice(0, 12)}… → ${gitSnapshot.value.target_sha.slice(0, 12)}…`;
-    preparationMessage.value = `已冻结 Diff：${gitSnapshot.value.base_sha.slice(0, 12)}… → ${gitSnapshot.value.target_sha.slice(0, 12)}…。现在可创建正式输入快照。`;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "Git Diff 冻结失败";
-    gitFreezeState.value = "error";
-    gitFreezeMessage.value = reason.includes("指定范围没有可冻结的 Git Diff")
-      ? "没有找到代码差异：当前 Base ref 与 Target ref 指向同一提交或没有变更。请把 Target ref 改为包含本次改动的分支或提交，例如 Base 为 main、Target 为 dev。"
-      : `冻结失败：${reason}`;
-    preparationMessage.value = gitFreezeMessage.value;
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function freezeFormalSnapshot() {
-  const cycleId = task.value?.cycle_id;
-  if (!cycleId || !gitSnapshot.value) return;
-  busy.value = true;
-  try {
-    const snapshot = await apiRequest<{ id: string; snapshot_hash: string }>(
-      `/cycles/${cycleId}/input-snapshots/formal`,
-      {
-        method: "POST",
-        headers: projectHeaders(true),
-        body: JSON.stringify({
-          source_revision_ids: selectedSourceIds.value,
-          git_snapshot_id: gitSnapshot.value.id,
-          external_evidence_ids: [],
-          manual_evidence_ids: [],
-        }),
-      },
-    );
-    if (task.value) {
-      task.value.formal_snapshot_id = snapshot.id;
-      task.value.formal_snapshot_hash = snapshot.snapshot_hash;
-    }
-    preparationMessage.value =
-      "正式输入快照已冻结。后续资料或 Diff 改动必须创建新轮次，不能覆盖本次输入。";
-  } catch (error) {
-    preparationMessage.value =
-      error instanceof Error ? error.message : "正式输入快照创建失败";
-  } finally {
-    busy.value = false;
+    if (activeRun.value) schedulePoll();
   }
 }
 
 async function startRun() {
-  const snapshotId = task.value?.formal_snapshot_id;
-  if (!snapshotId) {
-    preparationMessage.value = "请先创建正式输入快照。";
-    return;
-  }
+  const currentTask = task.value;
+  const cycleId = currentTask?.cycle_id;
+  const projectId = selectedProjectId.value;
+  if (busy.value || !currentTask || !cycleId || !canStartRun.value) return;
+  const isCurrent = () => task.value?.cycle_id === cycleId && selectedProjectId.value === projectId;
   busy.value = true;
+  startError.value = "";
+  liveLoadError.value = "";
   try {
+    if (!currentTask.formal_snapshot_id) {
+      const gitSelection = JSON.stringify({
+        repository_id: gitForm.value.repositoryId,
+        base_ref: gitForm.value.baseRef.trim(),
+        target_ref: gitForm.value.targetRef.trim(),
+        diff_mode: gitForm.value.diffMode,
+        include_paths: splitPaths(gitForm.value.includePaths),
+        exclude_paths: splitPaths(gitForm.value.excludePaths),
+      });
+      if (!gitSnapshot.value || frozenGitSelection !== gitSelection) {
+        startPhase.value = "正在准备代码变更…";
+        const git = await apiRequest<GitSnapshot>(`/cycles/${cycleId}/git-snapshots`, {
+          method: "POST", headers: projectHeaders(true), body: gitSelection,
+        });
+        if (!isCurrent()) return;
+        gitSnapshot.value = git;
+        frozenGitSelection = gitSelection;
+      }
+      startPhase.value = "正在保存本轮输入…";
+      const snapshot = await apiRequest<{ id: string; snapshot_hash: string }>(
+        `/cycles/${cycleId}/input-snapshots/formal`, {
+          method: "POST", headers: projectHeaders(true),
+          body: JSON.stringify({ source_revision_ids: selectedSourceIds.value,
+            git_snapshot_id: gitSnapshot.value.id, external_evidence_ids: [], manual_evidence_ids: [] }),
+        },
+      );
+      if (!isCurrent()) return;
+      currentTask.formal_snapshot_id = snapshot.id;
+      currentTask.formal_snapshot_hash = snapshot.snapshot_hash;
+    }
+    startPhase.value = "正在启动审查…";
+    // Keep the same request key when retrying an uncertain start response.
+    startRequestKey ||= crypto.randomUUID();
+    const headers = new Headers(projectHeaders(true));
+    headers.set("Idempotency-Key", startRequestKey);
     const run = await apiRequest<AnalysisRun>(
-      `/input-snapshots/${snapshotId}/analysis-runs`,
-      { method: "POST", headers: projectHeaders(true) },
+      `/input-snapshots/${currentTask.formal_snapshot_id}/analysis-runs`, { method: "POST", headers },
     );
-    preparationMessage.value =
-      "固定双核已启动。系统每 3 秒读取运行状态、节点事件和核验结果。";
+    if (!isCurrent()) return;
+    liveRun.value = run;
+    preparationMessage.value = "本轮范围已固定，审查结果将自动更新。";
     await loadRun(run);
-    schedulePoll();
+    if (isCurrent()) schedulePoll();
   } catch (error) {
-    preparationMessage.value =
-      error instanceof Error ? error.message : "分析运行启动失败";
+    if (!isCurrent()) return;
+    const reason = error instanceof Error ? error.message : "请求未完成";
+    if (liveRun.value) {
+      liveLoadError.value = `审查已启动，结果暂时无法读取：${reason}。正在重新获取。`;
+      schedulePoll();
+      return;
+    }
+    // A lost freeze response may still have committed. Recover its identity before retrying.
+    if (!currentTask.formal_snapshot_id) {
+      try {
+        const tasks = await apiRequest<TaskContext[]>(`/projects/${projectId}/verification-tasks`, { headers: projectHeaders() });
+        if (!isCurrent()) return;
+        const saved = tasks.find((item) => item.id === currentTask.id && item.cycle_id === cycleId);
+        if (saved?.formal_snapshot_id) {
+          currentTask.formal_snapshot_id = saved.formal_snapshot_id;
+          currentTask.formal_snapshot_hash = saved.formal_snapshot_hash;
+        }
+      } catch { /* Keep the original failure available to the user. */ }
+    }
+    if (!isCurrent()) return;
+    startError.value = reason.includes("指定范围没有可冻结的 Git Diff")
+      ? "未找到代码差异，请展开代码范围，检查目标分支和基准分支后重试。"
+      : `${startPhase.value.replace(/…$/, "")}失败：${reason}。${currentTask.formal_snapshot_id ? "本轮输入已保存，重试会沿用该版本。" : "请检查设置后重试。"}`;
   } finally {
-    busy.value = false;
+    if (isCurrent()) { busy.value = false; startPhase.value = ""; }
   }
 }
 
@@ -1043,19 +1068,18 @@ onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <section class="notebook-page">
+  <section class="notebook-page" :class="{ 'is-preparing': !liveRun }">
     <header class="notebook-topbar">
       <RouterLink class="notebook-back-button" to="/tasks"
-        >返回任务中心</RouterLink
+        >代码交付</RouterLink
       >
       <div class="notebook-title">
         <h1>{{ task?.title ?? "核验任务" }}</h1>
         <p v-if="liveRun">
-          {{ activeRun ? "正在运行" : "运行已结束" }} · 输入快照
-          {{ liveRun.snapshot_id.slice(0, 12) }}…
+          {{ activeRun ? "正在分析，结果会自动更新" : "查看证据并处理审查结果" }}
         </p>
         <p v-else-if="task">
-          当前轮次 {{ task.cycle_status }} · 按准备步骤形成真实运行
+          确认范围后开始本轮审查
         </p>
         <p v-else>读取当前项目中的核验任务。</p>
       </div>
@@ -1068,239 +1092,66 @@ onBeforeUnmount(stopPolling);
           @click="runLogOpen = true"
         >
           运行记录</button
-        ><span class="notebook-status">{{
-          liveRun?.run_status ?? task?.cycle_status ?? "未加载"
-        }}</span>
+        >
+        <button v-if="liveRun" type="button" class="run-log-trigger" :aria-expanded="detailPaneOpen" aria-controls="review-detail-pane" @click="detailPaneOpen = !detailPaneOpen">{{ detailPaneOpen ? '收起详情' : '展开详情' }}</button>
+        <span class="notebook-status">{{ reviewStatus }}</span>
       </div>
     </header>
     <p v-if="liveLoadError" class="notebook-live-note">{{ liveLoadError }}</p>
-    <section v-if="task && !liveRun" class="surface preparation-panel">
-      <div class="surface-heading">
-        <div>
-          <h2>准备代码审查</h2>
-          <p>
-            本轮将冻结所选 PR 的只读 Git Diff；不会执行仓库代码、构建、测试或
-            Hook。
-          </p>
-        </div>
+    <section v-if="task && !liveRun" class="surface preparation-panel review-preparation" :aria-busy="Boolean(startPhase)">
+      <div class="review-preparation-heading">
+        <div><h2>这次需要审查什么？</h2><p>确认交付内容，开始审查后自动保存本轮代码和资料版本。</p></div>
+        <span class="status-mark">{{ claimsConfirmed ? `${confirmedClaimCount} 条已确认` : '待确认范围' }}</span>
       </div>
-      <p class="association-note">{{ preparationMessage }}</p>
-      <div
-        v-if="task.formal_snapshot_id && !confirmedClaimCount"
-        class="legacy-cycle-notice"
-      >
-        <div>
-          <strong>此任务已有旧版正式快照</strong>
-          <p>
-            旧快照没有记录可回放的交付主张，不能直接继续运行。请新建一轮核验，避免改变历史输入。
-          </p>
-        </div>
-        <button type="button" :disabled="busy" @click="createNextCycle">
-          新建核验轮次
-        </button>
+      <div v-if="task.formal_snapshot_id && !confirmedClaimCount" class="legacy-cycle-notice">
+        <div><strong>本轮需要重新准备</strong><p>旧版快照缺少交付内容，请新建一轮审查。</p></div>
+        <button type="button" :disabled="busy" @click="createNextCycle">新建一轮</button>
       </div>
-      <div class="preparation-grid">
-        <section>
-          <h3>1. 确认交付内容</h3>
-          <p>
-            模型只根据 Pull Request 描述和所选资料提出候选，不会读取或判断代码。
-          </p>
-          <div class="claim-actions">
-            <button
-              type="button"
-              :disabled="
-                busy ||
-                Boolean(task.formal_snapshot_id) ||
-                Boolean(confirmedClaimCount)
-              "
-              @click="proposeClaims"
-            >
-              {{ claimEdits.length ? "重新提取候选" : "由 DeepSeek 提取候选" }}
-            </button>
-            <button
-              type="button"
-              :disabled="
-                busy ||
-                Boolean(task.formal_snapshot_id) ||
-                !claimProposalAttempted ||
-                claimEdits.length >= 12
-              "
-              @click="addManualClaim"
-            >
-              补充一条
-            </button>
+      <div class="review-preparation-body">
+        <section class="review-claims">
+          <div class="review-section-heading"><h3>交付内容</h3>
+            <div class="claim-actions">
+              <button type="button" :disabled="busy || Boolean(task.formal_snapshot_id) || Boolean(confirmedClaimCount)" @click="proposeClaims">{{ claimEdits.length ? '重新提取' : '从 PR 提取' }}</button>
+              <button type="button" :disabled="busy || Boolean(task.formal_snapshot_id) || !claimProposalAttempted || claimEdits.length >= 12" @click="addManualClaim">补充内容</button>
+            </div>
           </div>
-          <p class="claim-feedback" :class="{ confirmed: confirmedClaimCount }">
-            {{ claimMessage }}
-          </p>
-          <div
-            v-for="(claim, index) in claimEdits"
-            :key="claim.id ?? `manual-${index}`"
-            class="claim-edit-row"
-          >
-            <label class="claim-select"
-              ><input
-                v-model="claim.selected"
-                type="checkbox"
-                :disabled="busy || Boolean(task.formal_snapshot_id)"
-                @change="claim.status = 'CANDIDATE'"
-              /><span>纳入本轮</span></label
-            >
-            <textarea
-              v-model="claim.text"
-              :disabled="busy || Boolean(task.formal_snapshot_id)"
-              placeholder="描述本次需要交付并核验的一个功能结果"
-              @input="claim.status = 'CANDIDATE'"
-            />
-            <small>{{
-              claim.origin === "MODEL"
-                ? `模型依据：${claim.rationale}`
-                : "提交人补充"
-            }}</small>
-            <button
-              type="button"
-              :disabled="busy || Boolean(task.formal_snapshot_id)"
-              @click="removeClaim(index)"
-            >
-              删除
-            </button>
+          <p class="claim-feedback" :class="{ confirmed: claimsConfirmed }" role="status">{{ claimMessage }}</p>
+          <div v-for="(claim, index) in claimEdits" :key="claim.id ?? `manual-${index}`" class="claim-edit-row">
+            <label class="claim-select"><input v-model="claim.selected" type="checkbox" :disabled="busy || Boolean(task.formal_snapshot_id)" @change="claim.status = 'CANDIDATE'" /><span>纳入本轮</span></label>
+            <textarea v-model="claim.text" :aria-label="`交付内容 ${index + 1}`" :disabled="busy || Boolean(task.formal_snapshot_id)" placeholder="描述一个需要核验的功能结果" @input="claim.status = 'CANDIDATE'" />
+            <details v-if="claim.origin === 'MODEL' && claim.rationale" class="claim-rationale"><summary>提取依据</summary><p>{{ claim.rationale }}</p></details>
+            <button type="button" :aria-label="`删除交付内容 ${index + 1}`" :disabled="busy || Boolean(task.formal_snapshot_id)" @click="removeClaim(index)">删除</button>
           </div>
-          <p v-if="!claimEdits.length" class="empty-row">
-            尚未确认交付内容。请先由 DeepSeek
-            生成候选；如果没有识别到内容或模型不可用，再手动补充。
-          </p>
-          <button
-            class="primary-button"
-            type="button"
-            :disabled="
-              busy || Boolean(task.formal_snapshot_id) || !selectedClaimCount
-            "
-            @click="confirmClaims"
-          >
-            确认 {{ selectedClaimCount }} 条交付内容
-          </button>
+          <div v-if="!claimEdits.length" class="review-claims-empty"><strong>先确定本次交付的功能</strong><p>从 PR 描述提取后，可以调整内容；提取不可用时，也可以手动补充。</p></div>
+          <button v-if="claimEdits.length && !task.formal_snapshot_id && !claimsConfirmed" class="confirm-claims-button" type="button" :disabled="busy || !selectedClaimCount" @click="confirmClaims">确认 {{ selectedClaimCount }} 条交付内容</button>
         </section>
-        <section>
-          <h3>2. 补充知识库资料（可选）</h3>
-          <label
-            v-for="source in readySources"
-            :key="source.id"
-            class="check-line"
-            ><input
-              v-model="selectedSourceIds"
-              type="checkbox"
-              :value="source.id"
-              :disabled="busy || Boolean(task.formal_snapshot_id)"
-            /><span>{{ source.logical_name }} · v{{ source.revision_no }}</span
-            ><small>{{ source.source_role }}</small></label
-          >
-          <p v-if="!readySources.length" class="empty-row">
-            知识库暂无 READY 资料。仍可直接审查本次 PR 的代码变更。
-          </p>
-        </section>
-        <section>
-          <h3>3. 冻结 PR Diff</h3>
-          <p v-if="task.delivery_pull_request" class="preparation-proof">
-            PR #{{ task.delivery_pull_request.number }}：已预填
-            {{ task.delivery_pull_request.headRef }} →
-            {{ task.delivery_pull_request.baseRef }}，可按需要微调。
-          </p>
-          <label
-            >只读仓库<select
-              v-model="gitForm.repositoryId"
-              :disabled="busy || Boolean(task.formal_snapshot_id)"
-            >
-              <option value="" disabled>选择已登记仓库</option>
-              <option
-                v-for="repository in repositories"
-                :key="repository.id"
-                :value="repository.id"
-              >
-                {{ repository.display_url }}
-              </option>
-            </select></label
-          >
-          <div class="preparation-fields">
-            <label
-              >Base ref<input
-                v-model="gitForm.baseRef"
-                :disabled="busy || Boolean(task.formal_snapshot_id)" /></label
-            ><label
-              >Target ref<input
-                v-model="gitForm.targetRef"
-                :disabled="busy || Boolean(task.formal_snapshot_id)"
-            /></label>
+        <details class="review-settings" :open="!gitForm.repositoryId">
+          <summary><span>代码范围</span><small v-if="task.delivery_pull_request">PR #{{ task.delivery_pull_request.number }} · {{ task.delivery_pull_request.headRef }} → {{ task.delivery_pull_request.baseRef }}</small><small v-else>选择仓库与分支</small></summary>
+          <div class="review-settings-content">
+            <label>仓库<select v-model="gitForm.repositoryId" :disabled="busy || Boolean(task.formal_snapshot_id)"><option value="" disabled>选择已接入仓库</option><option v-for="repository in repositories" :key="repository.id" :value="repository.id">{{ repository.display_url }}</option></select></label>
+            <div class="preparation-fields"><label>基准分支 / 提交<input v-model="gitForm.baseRef" :disabled="busy || Boolean(task.formal_snapshot_id)" /></label><label>目标分支 / 提交<input v-model="gitForm.targetRef" :disabled="busy || Boolean(task.formal_snapshot_id)" /></label></div>
+            <label>比较方式<select v-model="gitForm.diffMode" :disabled="busy || Boolean(task.formal_snapshot_id)"><option value="THREE_DOT">从共同祖先比较（PR）</option><option value="TWO_DOT">直接比较两个提交</option></select></label>
+            <label>包含路径（可选）<input v-model="gitForm.includePaths" :disabled="busy || Boolean(task.formal_snapshot_id)" placeholder="例如 src/, backend/，逗号分隔" /></label>
           </div>
-          <label
-            >范围模式<select
-              v-model="gitForm.diffMode"
-              :disabled="busy || Boolean(task.formal_snapshot_id)"
-            >
-              <option value="TWO_DOT">Two-dot</option>
-              <option value="THREE_DOT">Three-dot</option>
-            </select></label
-          ><label
-            >包含路径（可选，逗号或换行分隔）<input
-              v-model="gitForm.includePaths"
-              :disabled="busy || Boolean(task.formal_snapshot_id)"
-              placeholder="src/, backend/" /></label
-          ><button
-            type="button"
-            :disabled="
-              busy || Boolean(task.formal_snapshot_id) || !canFreezeGit
-            "
-            @click="freezeGit"
-          >
-            {{ gitFreezeState === "working" ? "冻结中…" : "冻结 PR Diff" }}
-          </button>
-          <p
-            v-if="gitFreezeMessage"
-            :class="['git-freeze-feedback', gitFreezeState]"
-            :role="gitFreezeState === 'error' ? 'alert' : 'status'"
-            aria-live="polite"
-          >
-            {{ gitFreezeMessage }}
-          </p>
-          <p v-if="gitSnapshot" class="preparation-proof">
-            {{ gitSnapshot.base_sha.slice(0, 12) }}… →
-            {{ gitSnapshot.target_sha.slice(0, 12) }}… ·
-            {{ gitSnapshot.coverage.changedFiles?.length ?? 0 }} 个文件
-          </p>
-        </section>
-        <section>
-          <h3>4. 正式快照与运行</h3>
-          <p>
-            已确认交付内容、本次 PR、可选知识库资料和 Diff
-            将被哈希冻结；之后的改动不会回写本轮。
-          </p>
-          <button
-            type="button"
-            :disabled="
-              busy ||
-              Boolean(task.formal_snapshot_id) ||
-              !canFreezeFormalSnapshot
-            "
-            @click="freezeFormalSnapshot"
-          >
-            创建正式快照
-          </button>
-          <p v-if="task.formal_snapshot_hash" class="preparation-proof">
-            快照：{{ task.formal_snapshot_hash }}
-          </p>
-          <button
-            class="primary-button"
-            type="button"
-            :disabled="busy || !task.formal_snapshot_id"
-            @click="startRun"
-          >
-            启动真实 DeepSeek 审查
-          </button>
-          <p class="preparation-proof">
-            未配置模型密钥或网络不可达时，系统会记录真实失败，不会改用 Fake
-            模型。
-          </p>
-        </section>
+        </details>
+        <details class="review-settings">
+          <summary><span>关联资料 <em>可选</em></span><small>{{ selectedSourceIds.length }} 份已选择</small></summary>
+          <div class="review-settings-content">
+            <label v-for="source in readySources" :key="source.id" class="check-line"><input v-model="selectedSourceIds" type="checkbox" :value="source.id" :disabled="busy || Boolean(task.formal_snapshot_id)" /><span>{{ source.logical_name }}</span><small>v{{ source.revision_no }}</small></label>
+            <p v-if="!readySources.length" class="empty-row">暂无可用资料，可直接审查本次代码变更。</p>
+          </div>
+        </details>
+        <details v-if="task.formal_snapshot_hash" class="review-settings">
+          <summary><span>本轮输入已保存</span><small>查看版本详情</small></summary>
+          <div class="review-settings-content"><p>本轮范围已固定。如需调整交付内容或资料，请新建一轮。</p><code class="review-snapshot-hash">{{ task.formal_snapshot_hash }}</code><button type="button" :disabled="busy" @click="createNextCycle">调整范围，开启新一轮</button></div>
+        </details>
       </div>
+      <footer class="review-start-footer">
+        <div aria-live="polite"><strong>{{ startPhase || (task.formal_snapshot_id ? '本轮输入已就绪' : claimsConfirmed ? '可以开始审查了' : '请先确认交付内容') }}</strong><p>{{ task.formal_snapshot_id ? '继续审查将沿用已保存的输入版本。' : '开始后，本轮交付内容和资料版本将固定。' }}</p></div>
+        <button class="primary-button" type="button" :disabled="busy || !canStartRun" @click="startRun">{{ startPhase ? '正在准备…' : startError ? '重试审查' : '开始审查' }}</button>
+        <p v-if="startError" class="review-start-error" role="alert">{{ startError }}</p>
+        <p v-else-if="preparationMessage" class="review-preparation-note" role="status">{{ preparationMessage }}</p>
+      </footer>
     </section>
     <section
       v-if="liveRun && (toolExecutions.length || toolExecutionError)"
@@ -1364,7 +1215,7 @@ onBeforeUnmount(stopPolling);
         {{ toolImportMessage }}
       </p>
     </section>
-    <main v-if="liveRun" class="notebook-grid">
+    <main v-if="liveRun" class="notebook-grid" :class="{ 'detail-collapsed': !detailPaneOpen }">
       <SourceEvidencePane
         :evidence="liveEvidence"
         :snapshot-label="liveRun?.snapshot_id ?? task?.formal_snapshot_hash"
@@ -1382,6 +1233,8 @@ onBeforeUnmount(stopPolling);
         @select="selectedId = $event"
         @change-view="centerView = $event"
       /><ReviewDetailPane
+        v-show="detailPaneOpen"
+        id="review-detail-pane"
         :conclusion="selectedConclusion"
         :evidence="liveEvidence"
         :orchestration="liveOrchestration"

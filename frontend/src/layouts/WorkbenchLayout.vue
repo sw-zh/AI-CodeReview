@@ -8,12 +8,12 @@ interface KnowledgeBaseOption { id: string; name: string; project_id: string }
 const route = useRoute()
 const router = useRouter()
 const navigationItems = [
-  { label: '主页', to: '/workbench' },
-  { label: '代码交付', to: '/tasks' },
-  { label: '知识库', to: '/knowledge-base' },
-  { label: '审批', to: '/approvals' },
-  { label: '交付记录', to: '/deliveries' },
-  { label: '设置', to: '/settings' },
+  { label: '工作台', to: '/workbench', icon: 'M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z' },
+  { label: '代码交付', to: '/tasks', icon: 'm8 5-7 7 7 7m8-14 7 7-7 7M14 3l-4 18' },
+  { label: '知识库', to: '/knowledge-base', icon: 'M12 5v16M3 3h5a4 4 0 0 1 4 2 4 4 0 0 1 4-2h5v16h-5a4 4 0 0 0-4 2 4 4 0 0 0-4-2H3Z' },
+  { label: '审批', to: '/approvals', icon: 'M9 3h6v4H9zM9 5H5v16h14V5h-4m-7 9 3 3 5-6' },
+  { label: '交付记录', to: '/deliveries', icon: 'M5 3h10l4 4v14H5ZM14 3v5h5M8 12h8m-8 4h6' },
+  { label: '设置', to: '/settings', icon: 'M4 7h16M4 17h16M9 4v6m6 4v6' },
 ]
 const title = computed(() => String(route.meta.title ?? 'AI-CodeReview'))
 const showProjectOnboarding = ref(false)
@@ -107,15 +107,15 @@ onMounted(() => { void loadProjects() })
   <div class="workbench-shell">
     <aside class="global-nav" aria-label="主导航">
       <RouterLink class="brand-lockup" to="/workbench" aria-label="AI-CodeReview 主页"><span class="brand-symbol" aria-hidden="true">AC</span><strong>AI-CodeReview</strong></RouterLink>
-      <nav class="primary-navigation"><RouterLink v-for="item in navigationItems" :key="item.to" class="nav-item" :to="item.to">{{ item.label }}</RouterLink></nav>
+      <nav class="primary-navigation"><RouterLink v-for="item in navigationItems" :key="item.to" class="nav-item" :to="item.to"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="item.icon" /></svg><span>{{ item.label }}</span></RouterLink></nav>
       <p class="nav-footer">可信交付核验</p>
       <div class="demo-user-card" aria-label="当前用户：张伟，交付核验负责人"><span class="demo-user-avatar" aria-hidden="true">张</span><span class="demo-user-copy"><strong>张伟</strong><small>交付核验负责人</small></span><span class="demo-user-action">账户</span></div>
     </aside>
     <div class="workbench-content">
       <header class="global-topbar">
         <div class="topbar-page-title"><h1>{{ title }}</h1></div>
-        <div class="topbar-project-actions"><label class="project-switch"><span>项目</span><select :value="selectedProjectId" :disabled="projectContextLoading" aria-label="选择当前项目" @change="changeProject"><option v-if="projectContextLoading" value="">加载项目中…</option><option v-else-if="!projects.length" value="">暂无项目</option><option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option></select></label><button class="topbar-create-project" type="button" @click="openProjectCreate">创建并接入</button></div>
-        <div class="topbar-spacer" aria-hidden="true"></div>
+        <div class="topbar-project-actions"><label class="project-switch"><span>项目</span><select :value="selectedProjectId" :disabled="projectContextLoading" aria-label="选择当前项目" @change="changeProject"><option v-if="projectContextLoading" value="">加载项目中…</option><option v-else-if="!projects.length" value="">暂无项目</option><option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option></select></label><button class="topbar-create-project" type="button" @click="openProjectCreate">新建项目</button></div>
+
         <div class="topbar-actions"><button type="button" @click="logout" aria-label="退出登录">退出</button></div>
       </header>
       <div v-if="showProjectOnboarding" class="project-onboarding-overlay" @click.self="closeProjectCreate">

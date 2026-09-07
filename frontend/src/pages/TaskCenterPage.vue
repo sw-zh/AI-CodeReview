@@ -149,15 +149,15 @@ watch(selectedProjectId, () => { void load() }, { immediate: true })
             <strong>
               <a v-if="item.web_url" :href="item.web_url" target="_blank" rel="noreferrer">PR #{{ item.pull_request?.number }} · {{ item.title }}</a>
               <template v-else>PR #{{ item.pull_request?.number }} · {{ item.title }}</template>
-              <small>{{ item.pull_request?.changedFiles === null ? '变更文件数将在冻结 Diff 时确认' : `${item.pull_request?.changedFiles} 个变更文件` }}</small>
+              <small>{{ item.pull_request?.changedFiles == null ? '变更文件数将在审查时确认' : `${item.pull_request?.changedFiles} 个变更文件` }}</small>
             </strong>
             <span class="pr-branch-range">{{ item.pull_request?.headRef || '未知来源分支' }} → {{ item.pull_request?.baseRef || '未知目标分支' }}</span>
             <span>{{ pullRequestState(item) }}</span>
-            <span>{{ reviewState(taskByItem.get(item.id)) }}</span>
+            <span><span class="status-mark" :data-status="taskByItem.get(item.id)?.cycle_status">{{ reviewState(taskByItem.get(item.id)) }}</span></span>
             <time>{{ formatDate(item.source_updated_at) }}</time>
             <div class="task-row-actions">
               <RouterLink v-if="taskByItem.get(item.id)" :to="`/tasks/${taskByItem.get(item.id)?.id}/notebook`">继续审查</RouterLink>
-              <button v-else type="button" :disabled="busyItemId !== null" @click="createReview(item)">{{ busyItemId === item.id ? '创建中…' : '创建审查' }}</button>
+              <button v-else type="button" :disabled="busyItemId !== null" @click="createReview(item)">{{ busyItemId === item.id ? '正在打开…' : '进入审查' }}</button>
             </div>
           </div>
         </div>
