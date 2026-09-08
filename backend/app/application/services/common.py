@@ -4,13 +4,21 @@ from sqlalchemy.orm import Session
 
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import AuditEvent, ProjectMember
+from app.infrastructure.persistence.models import AuditEvent, Project, ProjectMember
 
 
 def require_project_role(
     session: Session, project_id: UUID, user_id: UUID, allowed: set[ProjectRole]
 ) -> ProjectMember:
-    member = session.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).one_or_none()
+    # Keep the project active for this transaction; deletion takes an exclusive
+    # lock so it cannot race a permission-checked write or job enqueue.
+    member = (
+        session.query(ProjectMember)
+        .join(Project, Project.id == ProjectMember.project_id)
+        .filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id, Project.deleted_at.is_(None))
+        .with_for_update(read=True, of=Project)
+        .one_or_none()
+    )
     if member is None or ProjectRole(member.role) not in allowed:
         raise DomainError("AUTH_FORBIDDEN", "当前用户没有该项目资源权限")
     return member

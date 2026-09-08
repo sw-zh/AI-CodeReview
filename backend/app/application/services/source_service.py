@@ -18,7 +18,7 @@ from app.domain.model_contracts import EmbeddingRequest
 from app.infrastructure.artifact_storage import LocalArtifactStorage
 from app.infrastructure.document_parser import DocumentExtractionError, detect_media_type, extract_document, supported_extensions
 from app.infrastructure.embedding_model import create_embedding_model, embedding_index_version
-from app.infrastructure.persistence.models import DocumentChunk, InputSnapshotSource, KnowledgeBase, ProjectKnowledgeBase, ProjectMember, SourceIngestionJob, SourceRevision
+from app.infrastructure.persistence.models import DocumentChunk, InputSnapshotSource, KnowledgeBase, Project, ProjectKnowledgeBase, ProjectMember, SourceIngestionJob, SourceRevision
 
 
 _CANONICAL_PARSER_VERSION = "knowledge-extraction-v1"
@@ -264,7 +264,8 @@ def list_all_knowledge_bases(session: Session, *, actor_id: UUID) -> list[Knowle
     member_project_ids = [
         row[0]
         for row in session.query(ProjectMember.project_id)
-        .filter(ProjectMember.user_id == actor_id)
+        .join(Project, Project.id == ProjectMember.project_id)
+        .filter(ProjectMember.user_id == actor_id, Project.deleted_at.is_(None))
         .distinct()
         .all()
     ]
@@ -363,10 +364,25 @@ def _require_knowledge_base(session: Session, *, project_id: UUID, knowledge_bas
 
 
 def _require_knowledge_base_access(session: Session, *, knowledge_base_id: UUID, actor_id: UUID) -> KnowledgeBase:
-    """Require the caller can access a knowledge base (owner/creator or a project they belong to)."""
+    """Require an active member project that owns or already mounts this base."""
     knowledge_base = session.get(KnowledgeBase, knowledge_base_id)
     if knowledge_base is None:
         raise DomainError("RESOURCE_NOT_FOUND", "知识库不存在")
+    access = (
+        session.query(Project.id)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .filter(
+            Project.deleted_at.is_(None), ProjectMember.user_id == actor_id,
+            or_(
+                Project.id == knowledge_base.project_id,
+                Project.id.in_(session.query(ProjectKnowledgeBase.project_id).filter_by(knowledge_base_id=knowledge_base_id)),
+            ),
+        )
+        .with_for_update(read=True, of=Project)
+        .first()
+    )
+    if access is None:
+        raise DomainError("AUTH_FORBIDDEN", "当前用户无法访问该知识库")
     return knowledge_base
 
 

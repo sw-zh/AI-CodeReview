@@ -39,6 +39,7 @@ class Project(TimestampedEntity, Base):
     description: Mapped[str | None] = mapped_column(Text)
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ProjectMember(TimestampedEntity, Base):

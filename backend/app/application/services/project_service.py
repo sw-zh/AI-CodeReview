@@ -1,11 +1,16 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from app.application.services.common import append_audit_event, require_project_role
 from app.domain.enums import ProjectRole
 from app.domain.errors import DomainError
-from app.infrastructure.persistence.models import Project, ProjectMember, User
+from app.infrastructure.persistence.models import (
+    AnalysisJob, AnalysisRun, ExternalConnection, InputSnapshot, Project, ProjectMember,
+    RetrievalIndexBuildRun, SourceIngestionJob, SourceRevision, User, VerificationCycle, VerificationTask,
+)
 from app.application.services.orchestration_service import ensure_default_orchestration
 from app.application.services.external_source_service import (
     create_connection,
@@ -106,10 +111,60 @@ def list_projects(session: Session, *, actor_id: UUID) -> list[Project]:
     return (
         session.query(Project)
         .join(ProjectMember, ProjectMember.project_id == Project.id)
-        .filter(ProjectMember.user_id == actor_id)
+        .filter(ProjectMember.user_id == actor_id, Project.deleted_at.is_(None))
         .order_by(Project.updated_at.desc(), Project.created_at.desc())
         .all()
     )
+
+
+def delete_project(
+    session: Session, *, project_id: UUID, confirmation_name: str, actor_id: UUID, correlation_id: str
+) -> None:
+    try:
+        project = session.query(Project).filter_by(id=project_id).with_for_update(nowait=True).one_or_none()
+    except OperationalError as exc:
+        if getattr(exc.orig, "sqlstate", None) == "55P03":
+            raise DomainError("PROJECT_BUSY", "项目仍有操作进行中，请稍后再删除") from exc
+        raise
+    member = session.query(ProjectMember).filter_by(project_id=project_id, user_id=actor_id).one_or_none()
+    if project is None or member is None:
+        raise DomainError("RESOURCE_NOT_FOUND", "项目不存在或无法访问")
+    if member.role != ProjectRole.ADMIN:
+        raise DomainError("AUTH_FORBIDDEN", "只有项目管理员可以删除项目")
+    if confirmation_name != project.name:
+        raise DomainError("INPUT_INVALID", "项目名称不匹配，请输入完整项目名称")
+    if project.deleted_at is not None:
+        return
+
+    run_scope = (
+        session.query(AnalysisRun.id)
+        .join(InputSnapshot, InputSnapshot.id == AnalysisRun.snapshot_id)
+        .join(VerificationCycle, VerificationCycle.id == InputSnapshot.cycle_id)
+        .join(VerificationTask, VerificationTask.id == VerificationCycle.task_id)
+        .filter(VerificationTask.project_id == project_id)
+    )
+    active_work = [
+        run_scope.filter(AnalysisRun.run_status.in_(("QUEUED", "RUNNING"))),
+        session.query(AnalysisJob.id).filter(AnalysisJob.run_id.in_(run_scope), AnalysisJob.job_status.in_(("QUEUED", "RUNNING"))),
+        session.query(SourceSyncRun.id).join(ExternalConnection, ExternalConnection.id == SourceSyncRun.connection_id)
+        .filter(ExternalConnection.project_id == project_id, SourceSyncRun.status == "RUNNING"),
+        session.query(SourceIngestionJob.id).join(SourceRevision, SourceRevision.id == SourceIngestionJob.source_revision_id)
+        .filter(SourceRevision.project_id == project_id, SourceIngestionJob.job_status.in_(("QUEUED", "RUNNING"))),
+        session.query(RetrievalIndexBuildRun.id).filter_by(project_id=project_id, status="RUNNING"),
+    ]
+    if any(query.first() is not None for query in active_work):
+        raise DomainError("PROJECT_BUSY", "项目仍有待处理或运行中的任务，请等待审查、同步或资料处理结束后再删除")
+
+    before_version = project.version
+    project.deleted_at = datetime.now(UTC)
+    project.version += 1
+    session.query(ExternalConnection).filter_by(project_id=project_id).update({"is_active": False})
+    append_audit_event(
+        session, project_id=project_id, actor_id=actor_id, aggregate_type="Project", aggregate_id=project_id,
+        action="PROJECT_DELETED", correlation_id=correlation_id, payload={"name": project.name},
+        before_version=before_version, after_version=project.version,
+    )
+    session.flush()
 
 
 def add_member(session: Session, *, project_id: UUID, user_id: UUID, role: str, actor_id: UUID, correlation_id: str) -> ProjectMember:

@@ -30,6 +30,11 @@ class ProjectResponse(BaseModel):
     description: str | None
     version: int
     created_at: datetime
+    can_delete: bool = False
+
+
+class ProjectDeleteRequest(BaseModel):
+    confirmation_name: str = Field(min_length=1, max_length=200)
 
 
 class TaskCreateRequest(BaseModel):
