@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { apiRequest, projectHeaders, selectedProject, selectedProjectId } from '../features/projects/project-context'
+import DeleteProjectSection from '../features/projects/DeleteProjectSection.vue'
 
 interface ExternalConnection { id: string; provider: string; name: string; repository_slug: string; secret_ref_configured: boolean; is_active: boolean; created_at: string }
 interface SyncRun { id: string; connection_id: string; status: string; fetched_count: number; changed_count: number; page_count: number; error_code: string | null; error_message: string | null; finished_at: string | null }
@@ -98,6 +99,7 @@ watch(selectedProjectId, () => { void load() }, { immediate: true })
           <form class="agent-form" @submit.prevent="registerRepository"><h3>登记只读 Git 仓库</h3><label>仓库 URL<input v-model="repositoryForm.displayUrl" required placeholder="https://github.com/owner/repository.git" /></label><label>私有仓库凭据引用（可选）<input v-model="repositoryForm.credentialRef" placeholder="例如：GITHUB_SOURCE_TOKEN" /></label><button class="primary-button" :disabled="busy">登记只读仓库</button></form>
         </section>
       </div>
+      <DeleteProjectSection />
     </template>
   </section>
 </template>

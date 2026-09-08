@@ -37,7 +37,7 @@ async function login() {
   <main class="auth-page">
     <section class="auth-story" aria-labelledby="auth-story-title">
       <div class="auth-brand">
-        <span class="auth-brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 5-5 7 5 7m10-14 5 7-5 7m-9-7 3 3 5-6" /></svg></span>
+        <img class="auth-brand-mark" src="/project-icon.svg" alt="" width="36" height="36" />
         <strong>AI-CodeReview</strong>
       </div>
       <div class="auth-story-content">
@@ -78,8 +78,7 @@ async function login() {
 .auth-page { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); min-height: 100dvh; color: var(--ink); background: var(--surface); }
 .auth-story { display: flex; flex-direction: column; min-width: 0; padding: 34px clamp(28px, 3vw, 48px) 26px; background: #edf2f8; border-right: 1px solid #dfe6f0; }
 .auth-brand { display: flex; align-items: center; gap: 12px; }
-.auth-brand-mark { display: grid; place-items: center; width: 36px; height: 36px; color: white; background: var(--brand); border-radius: 9px; }
-.auth-brand-mark svg { width: 23px; height: 23px; }
+.auth-brand-mark { display: block; flex-shrink: 0; width: 36px; height: 36px; }
 .auth-brand strong { font-size: 18px; font-weight: 650; letter-spacing: -.025em; }
 .auth-story-content { width: 100%; max-width: 720px; margin: auto 0; padding: 26px 0 18px; }
 .auth-story h1 { margin: 0; font-size: clamp(24px, 2.25vw, 30px); line-height: 1.5; letter-spacing: -.025em; font-weight: 550; color: #304967; }

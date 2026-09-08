@@ -27,7 +27,8 @@ input[type="checkbox"] { accent-color: var(--brand); }
 .global-nav { background: #f0f2f6; border-right: 1px solid var(--line); padding: 24px 14px 14px; }
 .brand-lockup { gap: 10px; padding: 0 8px 26px; }
 .brand-lockup strong { color: var(--ink); font-size: 15px; letter-spacing: -.025em; }
-.brand-symbol { background: var(--brand); border-radius: 8px; color: white; }
+.brand-symbol { display: block; flex-shrink: 0; background: transparent; border-radius: 0; }
+.project-operation-notice { margin: 0 0 16px; padding: 10px 14px; border: 1px solid #ccdcd5; border-radius: 7px; background: #eff6f2; color: #37624e; font-size: 13px; overflow-wrap: anywhere; }
 .primary-navigation { gap: 6px; }
 .nav-item { gap: 11px; min-height: 42px; color: #556175; font-size: 14px; font-weight: 500; }
 .nav-icon { flex: 0 0 18px; width: 18px; height: 18px; }

@@ -184,7 +184,7 @@ onBeforeUnmount(() => {
         </g>
       </svg>
     </div>
-    <figcaption class="lens-caption"><span><span class="lens-caption-label">交互示意</span><span class="lens-desktop-hint">移动鼠标，发现结论依据</span><span class="lens-touch-hint">点按画面，探索示例证据</span></span><button type="button" @click="exploreNext">切换证据 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></button></figcaption>
+    <figcaption class="lens-caption"><button type="button" @click="exploreNext">切换证据 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></button></figcaption>
   </figure>
 </template>
 
@@ -208,19 +208,13 @@ onBeforeUnmount(() => {
 .citation-sample rect { fill: #edf4ff; stroke: #d3e2f5; }
 .citation-sample text { fill: #365c91; font-size: 11px; }
 .citation-sample .citation-path { fill: #697f9c; font: 10px Consolas, monospace; }
-.lens-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 18px 0; font-size: 11px; line-height: 1.7; color: #586b83; }
-.lens-caption > span { display: flex; gap: 10px; flex-wrap: wrap; }
-.lens-caption-label { padding-right: 10px; border-right: 1px solid #bacadd; color: #466183; }
+.lens-caption { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 6px 18px 0; font-size: 11px; line-height: 1.7; color: #586b83; }
 .lens-caption button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 4px 0 4px 8px; background: transparent; color: #285eb8; font: inherit; white-space: nowrap; border-radius: 4px; }
 .lens-caption button:hover { color: #174383; background: #e3ecf9; }
 .lens-caption button:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
 .lens-caption button svg { width: 15px; height: 15px; }
-.lens-touch-hint { display: none; }
-@media (pointer: coarse) { .lens-desktop-hint { display: none; } .lens-touch-hint { display: inline; } }
 @media (max-width: 700px) {
   .evidence-lens { max-width: 520px; margin: 12px auto 0; }
   .lens-caption { padding: 4px 0 0; font-size: 10px; }
-  .lens-caption > span { gap: 6px; }
-  .lens-caption-label { padding-right: 6px; }
 }
 </style>
