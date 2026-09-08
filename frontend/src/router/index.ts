@@ -27,6 +27,11 @@ export const router = createRouter({
       meta: { guest: true },
     },
     {
+      path: '/register',
+      component: LoginPage,
+      meta: { guest: true },
+    },
+    {
       path: '/',
       component: WorkbenchLayout,
       children: [

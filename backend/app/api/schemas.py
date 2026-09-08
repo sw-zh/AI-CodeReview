@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -9,9 +9,37 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=8, max_length=200)
 
 
+class RegisterRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=100)
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=200)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalise_display_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("姓名不能为空")
+        return name
+
+    @field_validator("email")
+    @classmethod
+    def normalise_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        if email.count("@") != 1 or email.startswith("@") or email.endswith("@"):
+            raise ValueError("请输入有效的邮箱地址")
+        return email
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class CurrentUserResponse(BaseModel):
+    id: UUID
+    display_name: str
+    email: str
 
 
 class ProjectCreateRequest(BaseModel):

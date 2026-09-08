@@ -1,32 +1,69 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import EvidenceLens from '../features/login/EvidenceLens.vue'
 
 const router = useRouter()
-const email = ref('submitter@example.local')
-const password = ref('demo-submitter')
+const route = useRoute()
+const loginEmail = ref('')
+const loginPassword = ref('')
+const registerForm = ref({ displayName: '', email: '', password: '' })
 const showPassword = ref(false)
 const busy = ref(false)
 const error = ref('')
+const isRegister = computed(() => route.path === '/register')
+const formTitle = computed(() => isRegister.value ? '创建账号' : '欢迎回来')
+const formIntroduction = computed(() => isRegister.value ? '填写基本信息，马上开始你的第一个项目。' : '登录工作台，继续你的项目审查。')
+
+watch(isRegister, () => {
+  error.value = ''
+  showPassword.value = false
+})
+
+function saveSession(token: string, userEmail: string) {
+  sessionStorage.setItem('accessToken', token)
+  sessionStorage.setItem('loginEmail', userEmail)
+}
+
+async function requestToken(path: string, payload: Record<string, string>) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify(payload),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message ?? '操作失败，请稍后重试')
+  return body as { access_token: string }
+}
 
 async function login() {
-  if (busy.value || !email.value.trim() || !password.value) return
+  if (busy.value || !loginEmail.value.trim() || !loginPassword.value) return
   busy.value = true
   error.value = ''
   try {
-    const res = await fetch('/api/v1/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.value.trim(), password: password.value }),
-    })
-    const body = await res.json()
-    if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message ?? '登录失败，请稍后重试')
-    sessionStorage.setItem('accessToken', body.access_token)
-    sessionStorage.setItem('loginEmail', email.value.trim())
+    const body = await requestToken('/api/v1/auth/login', { email: loginEmail.value.trim(), password: loginPassword.value })
+    saveSession(body.access_token, loginEmail.value.trim())
     await router.replace('/workbench')
-  } catch (e) {
-    error.value = e instanceof TypeError ? '暂时无法连接服务，请检查网络后重试。' : e instanceof Error ? e.message : '登录失败，请稍后重试'
+  } catch (cause) {
+    error.value = cause instanceof TypeError ? '暂时无法连接服务，请检查网络后重试。' : cause instanceof Error ? cause.message : '登录失败，请稍后重试'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function register() {
+  const displayName = registerForm.value.displayName.trim()
+  const email = registerForm.value.email.trim()
+  const password = registerForm.value.password
+  if (busy.value || !displayName || !email || !password) return
+  busy.value = true
+  error.value = ''
+  try {
+    const body = await requestToken('/api/v1/auth/register', { display_name: displayName, email, password })
+    saveSession(body.access_token, email)
+    await router.replace('/workbench')
+  } catch (cause) {
+    error.value = cause instanceof TypeError ? '暂时无法连接服务，请检查网络后重试。' : cause instanceof Error ? cause.message : '注册失败，请稍后重试'
   } finally {
     busy.value = false
   }
@@ -49,25 +86,33 @@ async function login() {
     </section>
     <section class="auth-entry" aria-labelledby="auth-login-title">
       <div class="auth-form-container">
-        <header class="auth-form-heading"><h2 id="auth-login-title">欢迎回来</h2><p>登录工作台，继续你的项目审查。</p></header>
-        <form class="auth-form" :aria-busy="busy" @submit.prevent="login">
+        <header class="auth-form-heading"><h2 id="auth-login-title">{{ formTitle }}</h2><p>{{ formIntroduction }}</p></header>
+        <form v-if="!isRegister" class="auth-form" :aria-busy="busy" @submit.prevent="login">
           <div class="auth-field">
             <label for="auth-email">邮箱地址</label>
-            <input id="auth-email" v-model="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none" :spellcheck="false" placeholder="name@example.com" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" />
+            <input id="auth-email" v-model="loginEmail" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none" :spellcheck="false" placeholder="name@example.com" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" />
           </div>
           <div class="auth-field">
             <label for="auth-password">密码</label>
             <div class="auth-password-field">
-              <input id="auth-password" v-model="password" name="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" placeholder="输入你的密码" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" />
+              <input id="auth-password" v-model="loginPassword" name="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" placeholder="输入你的密码" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" />
               <button class="auth-password-toggle" type="button" :aria-label="showPassword ? '隐藏密码' : '显示密码'" :aria-pressed="showPassword" :disabled="busy" @click="showPassword = !showPassword">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /><path v-if="showPassword" d="m3 3 18 18" /></svg>
               </button>
             </div>
           </div>
           <div class="auth-feedback" aria-live="polite"><p v-if="error" id="auth-error" role="alert">{{ error }}</p></div>
-          <button class="auth-submit" type="submit" :disabled="busy || !email.trim() || !password"><span v-if="busy" class="auth-spinner" aria-hidden="true"></span>{{ busy ? '正在登录…' : '登录工作台' }}<svg v-if="!busy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></button>
+          <button class="auth-submit" type="submit" :disabled="busy || !loginEmail.trim() || !loginPassword"><span v-if="busy" class="auth-spinner" aria-hidden="true"></span>{{ busy ? '正在登录…' : '登录工作台' }}<svg v-if="!busy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></button>
         </form>
-        <p class="auth-form-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2" /></svg>登录后查看你有权限访问的项目</p>
+        <form v-else class="auth-form" :aria-busy="busy" @submit.prevent="register">
+          <div class="auth-field"><label for="auth-display-name">你的姓名</label><input id="auth-display-name" v-model="registerForm.displayName" name="name" autocomplete="name" maxlength="100" placeholder="例如：张伟" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" /></div>
+          <div class="auth-field"><label for="auth-register-email">邮箱地址</label><input id="auth-register-email" v-model="registerForm.email" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" :spellcheck="false" placeholder="name@example.com" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" /></div>
+          <div class="auth-field"><label for="auth-register-password">设置密码</label><div class="auth-password-field"><input id="auth-register-password" v-model="registerForm.password" name="password" :type="showPassword ? 'text' : 'password'" autocomplete="new-password" minlength="8" placeholder="至少 8 个字符" required :disabled="busy" :aria-describedby="error ? 'auth-error' : undefined" @input="error = ''" /><button class="auth-password-toggle" type="button" :aria-label="showPassword ? '隐藏密码' : '显示密码'" :aria-pressed="showPassword" :disabled="busy" @click="showPassword = !showPassword"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /><path v-if="showPassword" d="m3 3 18 18" /></svg></button></div></div>
+          <div class="auth-feedback" aria-live="polite"><p v-if="error" id="auth-error" role="alert">{{ error }}</p></div>
+          <button class="auth-submit" type="submit" :disabled="busy || !registerForm.displayName.trim() || !registerForm.email.trim() || !registerForm.password"><span v-if="busy" class="auth-spinner" aria-hidden="true"></span>{{ busy ? '正在创建…' : '创建账号并进入工作台' }}<svg v-if="!busy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></button>
+        </form>
+        <p class="auth-form-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2" /></svg>{{ isRegister ? '注册后即可创建并接入第一个项目' : '登录后查看你有权限访问的项目' }}</p>
+        <p class="auth-switch"><template v-if="isRegister">已有账号？<RouterLink to="/login">返回登录</RouterLink></template><template v-else>还没有账号？<RouterLink to="/register">注册账号</RouterLink></template></p>
       </div>
       <p class="auth-entry-footer">代码审查 · 交付核验 · 证据追溯</p>
     </section>
@@ -112,6 +157,9 @@ async function login() {
 .auth-spinner { width: 16px; height: 16px; border: 2px solid rgb(255 255 255 / .4); border-top-color: white; border-radius: 50%; animation: auth-spin 800ms linear infinite; }
 .auth-form-note { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 20px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .auth-form-note svg { flex: 0 0 14px; width: 14px; height: 14px; }
+.auth-switch { margin: 16px 0 0; color: var(--muted); text-align: center; font-size: 13px; line-height: 1.6; }
+.auth-switch a { margin-left: 6px; color: var(--brand); font-weight: 600; text-decoration: none; }
+.auth-switch a:hover { color: #214f9c; text-decoration: underline; text-underline-offset: 3px; }
 .auth-entry-footer { position: absolute; bottom: 30px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 @keyframes auth-spin { to { transform: rotate(360deg); } }
 @media (min-width: 1500px) {
