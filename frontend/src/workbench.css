@@ -28,15 +28,20 @@ input[type="checkbox"] { accent-color: var(--brand); }
 .brand-lockup { gap: 10px; padding: 0 8px 26px; }
 .brand-lockup strong { color: var(--ink); font-size: 15px; letter-spacing: -.025em; }
 .brand-symbol { display: block; flex-shrink: 0; background: transparent; border-radius: 0; }
-.project-operation-notice { margin: 0 0 16px; padding: 10px 14px; border: 1px solid #ccdcd5; border-radius: 7px; background: #eff6f2; color: #37624e; font-size: 13px; overflow-wrap: anywhere; }
+.project-operation-notice { position: fixed; z-index: 30; top: 78px; right: 28px; display: flex; width: min(292px, calc(100vw - 40px)); align-items: flex-start; gap: 10px; box-sizing: border-box; padding: 14px 15px; border: 1px solid #b8d4c6; border-radius: 7px; background: #f4faf6; box-shadow: 0 12px 30px #16263d1f; color: #2f644d; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; cursor: default; }
+.project-operation-notice svg { flex: 0 0 18px; width: 18px; height: 18px; margin-top: 1px; }
+.project-operation-toast-enter-active { transition: opacity 140ms ease-out, transform 140ms ease-out; }
+.project-operation-toast-leave-active { transition: opacity 240ms ease-out, transform 240ms ease-out; }
+.project-operation-toast-enter-from, .project-operation-toast-leave-to { opacity: 0; transform: translateY(-6px); }
+@media (prefers-reduced-motion: reduce) { .project-operation-toast-enter-active, .project-operation-toast-leave-active { transition-duration: 1ms; } }
+@media (max-width: 640px) { .project-operation-notice { top: 68px; right: 20px; width: calc(100vw - 40px); } }
 .primary-navigation { gap: 6px; }
 .nav-item { gap: 11px; min-height: 42px; color: #556175; font-size: 14px; font-weight: 500; }
 .nav-icon { flex: 0 0 18px; width: 18px; height: 18px; }
 .nav-item.active, .nav-item.router-link-active { background: #e1eafa; color: #254f94; box-shadow: none; font-weight: 650; }
 .nav-item:hover, .nav-item:focus-visible { background: #e6eaf1; }
 .nav-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
-.nav-footer { font-size: 12px; color: var(--muted); padding-left: 10px; }
-.demo-user-card { border-top-color: var(--line); padding-top: 18px; }
+.demo-user-card { margin-top: auto; border-top-color: var(--line); border-radius: 0; padding: 18px 8px 8px; }
 .demo-user-avatar { background: #e1e7ef; color: #435573; }
 .demo-user-copy strong { color: var(--ink); font-size: 13px; }
 .demo-user-copy small, .demo-user-action { color: var(--muted); }

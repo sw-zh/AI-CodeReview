@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, provide, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { loadProjects, projectContextLoading, projectContextNotice, projects, selectProject, selectedProject, selectedProjectId, createProject, apiRequest, projectHeaders } from '../features/projects/project-context'
+import { currentUser, currentUserLoading, loadCurrentUser, loadProjects, projectContextLoading, projectContextNotice, projects, resetCurrentUser, selectProject, selectedProject, selectedProjectId, createProject, apiRequest, projectHeaders } from '../features/projects/project-context'
 
 interface KnowledgeBaseOption { id: string; name: string; project_id: string }
 
@@ -16,6 +16,9 @@ const navigationItems = [
   { label: '设置', to: '/settings', icon: 'M4 7h16M4 17h16M9 4v6m6 4v6' },
 ]
 const title = computed(() => String(route.meta.title ?? 'AI-CodeReview'))
+const currentUserInitial = computed(() => currentUser.value?.display_name.trim().slice(0, 1) || '…')
+const currentUserName = computed(() => currentUser.value?.display_name || (currentUserLoading.value ? '正在读取账号' : '账号信息不可用'))
+const currentUserEmail = computed(() => currentUser.value?.email || (currentUserLoading.value ? '请稍候' : '请重新登录'))
 const showProjectOnboarding = ref(false)
 const onboardingForm = ref({ name: '', description: '', repositoryUrl: '' })
 const onboardingBusy = ref(false)
@@ -26,9 +29,29 @@ const kbPickerOpen = ref(false)
 const kbOptions = ref<KnowledgeBaseOption[]>([])
 const selectedKbIds = ref<string[]>([])
 const kbPickerLoading = ref(false)
+const projectNoticeVisible = ref(false)
+let projectNoticeTimer: ReturnType<typeof setTimeout> | undefined
+
+function dismissProjectNotice() {
+  if (!projectNoticeVisible.value) return
+  window.clearTimeout(projectNoticeTimer)
+  projectNoticeVisible.value = false
+}
+
+function clearProjectNotice() {
+  projectContextNotice.value = ''
+}
+
+watch(projectContextNotice, (notice) => {
+  window.clearTimeout(projectNoticeTimer)
+  projectNoticeVisible.value = Boolean(notice)
+  if (notice) projectNoticeTimer = window.setTimeout(dismissProjectNotice, 2000)
+})
 
 function logout() {
   sessionStorage.removeItem('accessToken')
+  sessionStorage.removeItem('loginEmail')
+  resetCurrentUser()
   router.replace('/login')
 }
 
@@ -100,7 +123,8 @@ async function submitProjectOnboarding() {
   }
 }
 
-onMounted(() => { void loadProjects() })
+onMounted(() => { void loadProjects(); void loadCurrentUser() })
+onBeforeUnmount(() => window.clearTimeout(projectNoticeTimer))
 </script>
 
 <template>
@@ -108,8 +132,7 @@ onMounted(() => { void loadProjects() })
     <aside class="global-nav" aria-label="主导航">
       <RouterLink class="brand-lockup" to="/workbench" aria-label="AI-CodeReview 主页"><img class="brand-symbol" src="/project-icon.svg" alt="" width="28" height="28" /><strong>AI-CodeReview</strong></RouterLink>
       <nav class="primary-navigation"><RouterLink v-for="item in navigationItems" :key="item.to" class="nav-item" :to="item.to"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="item.icon" /></svg><span>{{ item.label }}</span></RouterLink></nav>
-      <p class="nav-footer">可信交付核验</p>
-      <div class="demo-user-card" aria-label="当前用户：张伟，交付核验负责人"><span class="demo-user-avatar" aria-hidden="true">张</span><span class="demo-user-copy"><strong>张伟</strong><small>交付核验负责人</small></span><span class="demo-user-action">账户</span></div>
+      <div class="demo-user-card" :aria-label="`当前用户：${currentUserName}，${currentUserEmail}`"><span class="demo-user-avatar" aria-hidden="true">{{ currentUserInitial }}</span><span class="demo-user-copy"><strong>{{ currentUserName }}</strong><small>{{ currentUserEmail }}</small></span></div>
     </aside>
     <div class="workbench-content">
       <header class="global-topbar">
@@ -162,10 +185,17 @@ onMounted(() => { void loadProjects() })
         </section>
       </div>
       <main class="workbench-main" :aria-label="title">
-        <p v-if="projectContextNotice" class="project-operation-notice" role="status">{{ projectContextNotice }}</p>
         <section v-if="requiresProjectContext" class="project-context-empty"><div><h2>{{ projects.length ? '先选择一个项目' : '先创建并接入一个项目' }}</h2><p>{{ projects.length ? '代码交付、资料、审批和交付记录都属于某个项目。请从顶部选择项目，或创建并接入一个新项目。' : '先接入 GitHub 仓库并同步 Pull Request。完成后，即可从一次代码交付开始审查。' }}</p><button class="primary-button" type="button" @click="openProjectCreate">创建并接入项目</button></div></section>
         <RouterView v-else />
       </main>
     </div>
+    <Teleport to="body">
+      <Transition name="project-operation-toast" @after-leave="clearProjectNotice">
+        <aside v-if="projectNoticeVisible" class="project-operation-notice" role="status" aria-live="polite" @pointerenter="dismissProjectNotice">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4.2 4L19 6.5" /></svg>
+          <span>{{ projectContextNotice }}</span>
+        </aside>
+      </Transition>
+    </Teleport>
   </div>
 </template>

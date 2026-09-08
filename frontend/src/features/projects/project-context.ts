@@ -9,6 +9,12 @@ export interface ProjectContextItem {
   can_delete: boolean
 }
 
+export interface CurrentUser {
+  id: string
+  display_name: string
+  email: string
+}
+
 const projectStorageKey = 'workbenchProjectId'
 let projectLoadVersion = 0
 
@@ -17,6 +23,8 @@ export const selectedProjectId = ref(sessionStorage.getItem(projectStorageKey) ?
 export const projectContextLoading = ref(false)
 export const projectContextError = ref('')
 export const projectContextNotice = ref('')
+export const currentUser = ref<CurrentUser | null>(null)
+export const currentUserLoading = ref(false)
 export const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null)
 
 export function projectHeaders(write = false): HeadersInit {
@@ -79,6 +87,18 @@ export async function loadProjects() {
   }
 }
 
+export async function loadCurrentUser() {
+  if (!sessionStorage.getItem('accessToken')) return
+  currentUserLoading.value = true
+  try {
+    currentUser.value = await apiRequest<CurrentUser>('/auth/me', { headers: projectHeaders() })
+  } catch {
+    currentUser.value = null
+  } finally {
+    currentUserLoading.value = false
+  }
+}
+
 export async function createProject(name: string, description = '', repositoryUrl = '', knowledgeBaseIds: string[] = []): Promise<ProjectContextItem> {
   const project = await apiRequest<ProjectContextItem>('/projects', {
     method: 'POST',
@@ -113,4 +133,9 @@ export function resetProjectContext() {
   projects.value = []
   projectContextError.value = ''
   selectProject('')
+}
+
+export function resetCurrentUser() {
+  currentUser.value = null
+  currentUserLoading.value = false
 }

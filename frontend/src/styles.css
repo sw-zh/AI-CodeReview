@@ -108,7 +108,6 @@ a { color: inherit; }
 .brand-lockup { color: var(--ink); text-decoration: none; }
 .nav-item.router-link-active { border-left-color: var(--brand); background: var(--brand-soft); color: var(--brand); font-weight: 800; }
 .nav-item.active { border-left-color: var(--brand); background: var(--brand-soft); color: var(--brand); font-weight: 800; }
-.nav-footer { margin-top: auto; padding: 18px 8px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: .75rem; }
 .primary-navigation { display: grid; gap: 3px; }.project-navigation { display: grid; gap: 2px; margin: 2px 0 6px; padding-left: 18px; }.project-navigation a { border-left: 1px solid var(--line); color: var(--muted); padding: 7px 12px; font-size: .78rem; font-weight: 700; text-decoration: none; }.project-navigation a:hover, .project-navigation a.router-link-active { border-left-color: var(--brand); color: var(--brand); }.project-navigation:not(.active) a { color: #8f8780; }
 @media (max-width: 1380px) { .home-grid { grid-template-columns: 1fr; }.approvals-brief { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }.approvals-brief .surface-heading { grid-column: 1 / -1; } }
 .project-table { --project-columns: minmax(150px, 1.15fr) .55fr .55fr .55fr minmax(220px, 1.8fr); display: block; }.project-table-head, .project-row { display: grid; grid-template-columns: var(--project-columns); align-items: center; gap: 14px; }
@@ -154,8 +153,7 @@ a { color: inherit; }
 .project-navigation a:hover, .project-navigation a:focus-visible, .project-navigation a.router-link-active { border-left-color: transparent; background: #e9edf4; color: var(--brand); outline: none; }
 .nav-item:hover, .nav-item:focus-visible { background: #e9edf4; }
 .nav-item.active, .nav-item.router-link-active { border-left-color: transparent; box-shadow: inset 2px 0 0 var(--brand); }
-.demo-user-card { display: grid; width: 100%; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 54px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--ink); padding: 8px; text-align: left; }
-.nav-footer { margin: auto 4px 8px; padding: 14px 4px 0; }
+.demo-user-card { display: grid; width: 100%; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 9px; min-height: 54px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--ink); padding: 8px; text-align: left; }
 .demo-user-card:hover, .demo-user-card:focus-visible { border-color: var(--line); background: var(--surface); outline: none; }
 .demo-user-avatar { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; background: #dce8f0; color: #24516f; font-size: .78rem; font-weight: 800; }
 .demo-user-copy { display: grid; min-width: 0; gap: 2px; }.demo-user-copy strong, .demo-user-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -163,7 +161,7 @@ a { color: inherit; }
 .global-topbar { min-height: 52px; height: auto; grid-template-columns: minmax(180px, .7fr) minmax(260px, 640px) auto; gap: 20px; padding: 10px 40px 6px; border-bottom: 0; background: transparent; }
 .global-search input, .project-switch select, .topbar-actions button { background: transparent; }.global-search input { border-color: transparent; }.global-search input:hover, .global-search input:focus { border-color: var(--line); background: var(--surface); }
 .page { padding-top: 14px; }.page-heading { align-items: flex-start; margin-bottom: 22px; }.page-heading h1 { font-size: clamp(1.25rem, 1.6vw, 1.5rem); letter-spacing: -.025em; line-height: 1.28; }.page-heading p { margin-top: 6px; font-size: .84rem; }
-@media (max-width: 760px) { .global-nav { padding: 12px 16px; }.demo-user-card, .nav-footer { display: none; }.primary-navigation { gap: 6px; }.nav-item, .project-navigation a { min-height: 36px; }.global-topbar { padding: 8px 16px 4px; }.page { padding-top: 12px; }.page-heading h1 { font-size: 1.22rem; } }
+@media (max-width: 760px) { .global-nav { padding: 12px 16px; }.demo-user-card { display: none; }.primary-navigation { gap: 6px; }.nav-item, .project-navigation a { min-height: 36px; }.global-topbar { padding: 8px 16px 4px; }.page { padding-top: 12px; }.page-heading h1 { font-size: 1.22rem; } }
 
 /* Route title lives in the shell, so page bodies begin directly with their context. */
 .global-topbar { grid-template-columns: minmax(0, 1fr) minmax(220px, 540px) auto; align-items: center; min-height: 50px; padding-top: 8px; padding-bottom: 4px; }
