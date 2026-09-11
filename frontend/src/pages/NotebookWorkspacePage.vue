@@ -136,6 +136,7 @@ type AnalysisResult = {
   reason: string;
   requires_human_confirmation: boolean;
   evidence: ResultEvidence[];
+  evidence_assessments?: VerificationConclusion["evidenceAssessments"];
   risks: Array<{ severity: string }>;
   human_decision: {
     id: string;
@@ -202,7 +203,6 @@ const claimEdits = ref<
     selected: boolean;
   }>
 >([]);
-const claimProposalAttempted = ref(false);
 const gitForm = ref({
   repositoryId: "",
   baseRef: "main",
@@ -232,6 +232,7 @@ const busy = ref(false);
 const startPhase = ref("");
 const startError = ref("");
 const detailPaneOpen = ref(true);
+const reportOpen = ref(false);
 let frozenGitSelection = "";
 let startRequestKey = "";
 const runLogOpen = ref(false);
@@ -239,7 +240,7 @@ const centerView = ref<"conclusions" | "diff">("conclusions");
 const selectedDiffPath = ref("");
 const preparationMessage = ref("");
 const claimMessage = ref(
-  "根据 PR 描述提取交付内容，再确认本次需要审查的范围。",
+  "从 PR 提取的目标默认纳入本轮，可直接修改或移除。",
 );
 const reportMessage = ref(
   "运行结束后，系统会根据冻结结果生成可提交的报告草稿。",
@@ -278,7 +279,9 @@ const claimsConfirmed = computed(() => confirmedClaimCount.value > 0 &&
   claimEdits.value.every((claim) => claim.selected && claim.status === "CONFIRMED"));
 const canStartRun = computed(() =>
   Boolean(
-    claimsConfirmed.value && (task.value?.formal_snapshot_id || canFreezeGit.value),
+    (task.value?.formal_snapshot_id ? confirmedClaimCount.value > 0 :
+      selectedClaimCount.value > 0 && claimEdits.value.every((claim) => !claim.selected || claim.text.trim().length >= 3)) &&
+    (task.value?.formal_snapshot_id || canFreezeGit.value),
   ),
 );
 const reviewStatus = computed(() => {
@@ -352,11 +355,11 @@ function isUuid(value: unknown): value is string {
   );
 }
 function mapStatus(status: string): VerificationConclusion["status"] {
-  if (status === "SUPPORTED") return "代码证据支持";
+  if (status === "SUPPORTED") return "自动通过";
   if (status === "PARTIALLY_SUPPORTED") return "部分支持";
   if (status === "NOT_PROVEN") return "证据不足";
   if (status === "NOT_ANALYZED") return "未完成分析";
-  if (status === "CONFLICTING") return "存在冲突";
+  if (status === "CONFLICTING" || status === "CONFLICT") return "存在冲突";
   return "待人工确认";
 }
 function effectiveConclusionStatus(item: AnalysisResult): VerificationConclusion["status"] {
@@ -380,6 +383,17 @@ function reportConclusionStatus(item: ReportPreview["items"][number]) {
     return "证据不足";
   return mapStatus(item.result.status);
 }
+function reportStatusLabel(status: string) {
+  return ({ DRAFT: "草稿", SUBMITTED: "待审批", APPROVED: "已批准", REJECTED: "已退回", PUBLISHED: "已留档", SUPERSEDED: "已有新版本" } as Record<string, string>)[status] ?? status;
+}
+
+function openPendingConclusion() {
+  const pending = liveConclusions.value.find((item) => item.needsHumanDecision);
+  if (pending) selectConclusion(pending.id);
+  centerView.value = "conclusions";
+  reportOpen.value = false;
+}
+
 function mapEvidenceKind(sourceType: string): EvidenceReference["kind"] {
   if (sourceType === "CODE") return "代码";
   if (sourceType === "TEST" || sourceType === "BUILD") return "测试";
@@ -408,7 +422,7 @@ const liveEvidence = computed<EvidenceReference[]>(() => {
         byId.set(item.id, {
           id: item.id,
           kind: mapEvidenceKind(item.sourceType),
-          title: item.sourceType,
+          title: `${mapEvidenceKind(item.sourceType)}依据`,
           locator: locatorLabel(item.locator),
           excerpt: item.excerpt,
           state: "已引用",
@@ -420,9 +434,7 @@ const liveConclusions = computed<VerificationConclusion[]>(() =>
     id: item.id,
     requirement: item.claim_text,
     status: effectiveConclusionStatus(item),
-    summary: item.human_decision
-      ? `${item.reason} 人工裁决：${decisionLabel(item.human_decision.decision)}。`
-      : item.reason,
+    summary: item.reason,
     needsHumanDecision: item.requires_human_confirmation && !item.human_decision,
     risk: item.risks.some((risk) => risk.severity === "HIGH")
       ? "P0"
@@ -433,6 +445,7 @@ const liveConclusions = computed<VerificationConclusion[]>(() =>
     systemStatus: item.status,
     humanDecision: item.human_decision,
     allowedHumanDecisions: item.allowed_human_decisions,
+    evidenceAssessments: item.evidence_assessments,
   })),
 );
 const displayedConclusions = computed<VerificationConclusion[]>(() =>
@@ -443,11 +456,11 @@ const displayedConclusions = computed<VerificationConclusion[]>(() =>
         .map((claim, index) => ({
           id: `pending-${claim.id ?? index}`,
           requirement: claim.text,
-          status: "待人工确认",
+          status: "未完成分析",
           summary: liveRun.value
             ? "该主张尚未产生可展示的核验结果。请查看运行记录中的真实失败或处理状态。"
             : "该主张已确认，但尚未冻结输入并启动核验。",
-          needsHumanDecision: true,
+          needsHumanDecision: false,
           risk: null,
           evidenceIds: [],
         })),
@@ -561,15 +574,17 @@ async function loadReport(projectId: string, cycleId: string | null) {
 }
 
 function applyClaims(claims: DeliveryClaim[]) {
-  claimEdits.value = claims.map((claim) => ({
+  const hasSavedScope = claims.some((claim) => claim.status === "CONFIRMED");
+  const visibleClaims = task.value?.formal_snapshot_id
+    ? claims.filter((claim) => claim.status === "CONFIRMED") : claims;
+  claimEdits.value = visibleClaims.map((claim) => ({
     id: claim.id,
     text: claim.text,
     rationale: claim.rationale,
     origin: claim.origin,
     status: claim.status,
-    selected: claim.status === "CONFIRMED",
+    selected: !hasSavedScope || claim.status === "CONFIRMED",
   }));
-  claimProposalAttempted.value = claims.length > 0;
 }
 
 async function loadClaims(projectId: string, taskId: string) {
@@ -592,7 +607,6 @@ async function proposeClaims() {
   ) {
     return;
   }
-  claimProposalAttempted.value = true;
   busy.value = true;
   claimMessage.value = "正在使用 DeepSeek 提取候选交付内容…";
   try {
@@ -606,7 +620,7 @@ async function proposeClaims() {
     );
     applyClaims(claims);
     claimMessage.value = claims.length
-      ? "已生成候选交付内容。请逐条确认、调整或删除后再继续。"
+      ? "已提取交付目标并默认纳入本轮，可直接开始审查，也可以调整或移除。"
       : "PR 描述和已选资料不足以识别可核验交付内容。请手动补充本次要交付的功能。";
   } catch (error) {
     claimMessage.value =
@@ -631,39 +645,6 @@ function addManualClaim() {
 
 function removeClaim(index: number) {
   claimEdits.value.splice(index, 1);
-}
-
-async function confirmClaims() {
-  const projectId = selectedProjectId.value;
-  const taskId = task.value?.id;
-  const claims = claimEdits.value
-    .filter((claim) => claim.selected)
-    .map((claim) => ({ id: claim.id, text: claim.text.trim() }))
-    .filter((claim) => claim.text);
-  if (!projectId || !taskId || !claims.length) {
-    claimMessage.value = "请至少选择或补充一条本次需要核验的交付内容。";
-    return;
-  }
-  busy.value = true;
-  try {
-    const confirmed = await apiRequest<DeliveryClaim[]>(
-      `/projects/${projectId}/verification-tasks/${taskId}/delivery-claims`,
-      {
-        method: "PUT",
-        headers: projectHeaders(true),
-        body: JSON.stringify({ claims }),
-      },
-    );
-    applyClaims(confirmed);
-    claimMessage.value = `已确认 ${confirmed.length} 条交付内容；冻结后将不能修改本轮范围。`;
-  } catch (error) {
-    claimMessage.value =
-      error instanceof Error
-        ? `确认失败：${error.message}`
-        : "交付内容确认失败。";
-  } finally {
-    busy.value = false;
-  }
 }
 
 async function createNextCycle() {
@@ -711,13 +692,15 @@ async function loadWorkspace() {
   startPhase.value = "";
   startError.value = "";
   preparationMessage.value = "";
-  claimMessage.value = "根据 PR 描述提取交付内容，再确认本次需要审查的范围。";
+  claimMessage.value = "从 PR 提取的目标默认纳入本轮，可直接修改或移除。";
+  reportOpen.value = false;
+  decisionNote.value = "";
+  decisionMessage.value = "";
   gitForm.value = { repositoryId: "", baseRef: "main", targetRef: "HEAD", diffMode: "TWO_DOT", includePaths: "", excludePaths: "" };
   selectedSourceIds.value = [];
   report.value = null;
   reportPreview.value = null;
   claimEdits.value = [];
-  claimProposalAttempted.value = false;
   centerView.value = "conclusions";
   selectedDiffPath.value = "";
   const projectId = selectedProjectId.value;
@@ -840,6 +823,16 @@ async function startRun() {
   liveLoadError.value = "";
   try {
     if (!currentTask.formal_snapshot_id) {
+      startPhase.value = "正在保存交付目标…";
+      const claims = claimEdits.value.filter((claim) => claim.selected)
+        .map((claim) => ({ id: claim.id, text: claim.text.trim() }));
+      const confirmed = await apiRequest<DeliveryClaim[]>(
+        `/projects/${projectId}/verification-tasks/${currentTask.id}/delivery-claims`, {
+          method: "PUT", headers: projectHeaders(true), body: JSON.stringify({ claims }),
+        },
+      );
+      if (!isCurrent()) return;
+      applyClaims(confirmed);
       const gitSelection = JSON.stringify({
         repository_id: gitForm.value.repositoryId,
         base_ref: gitForm.value.baseRef.trim(),
@@ -1026,6 +1019,13 @@ function showDiffFile(path: string) {
   selectedDiffPath.value = path;
   centerView.value = "diff";
 }
+
+function selectConclusion(id: string) {
+  selectedId.value = id;
+  detailPaneOpen.value = true;
+  decisionNote.value = "";
+  decisionMessage.value = "";
+}
 async function importToolExecution(execution: ToolExecution) {
   if (!liveRun.value) return;
   const logicalName = toolImportName(execution).trim();
@@ -1075,13 +1075,10 @@ onBeforeUnmount(stopPolling);
       >
       <div class="notebook-title">
         <h1>{{ task?.title ?? "核验任务" }}</h1>
-        <p v-if="liveRun">
-          {{ activeRun ? "正在分析，结果会自动更新" : "查看证据并处理审查结果" }}
-        </p>
-        <p v-else-if="task">
-          确认范围后开始本轮审查
-        </p>
-        <p v-else>读取当前项目中的核验任务。</p>
+        <nav v-if="liveRun" class="review-page-tabs" aria-label="审查工作区">
+          <button type="button" :class="{ active: !reportOpen }" :aria-pressed="!reportOpen" @click="reportOpen = false">审查结果</button>
+          <button type="button" :class="{ active: reportOpen }" :aria-pressed="reportOpen" :disabled="!report" :title="!report ? '报告尚未生成' : undefined" @click="reportOpen = true">交付报告</button>
+        </nav>
       </div>
       <div class="notebook-header-actions">
         <button
@@ -1093,15 +1090,15 @@ onBeforeUnmount(stopPolling);
         >
           运行记录</button
         >
-        <button v-if="liveRun" type="button" class="run-log-trigger" :aria-expanded="detailPaneOpen" aria-controls="review-detail-pane" @click="detailPaneOpen = !detailPaneOpen">{{ detailPaneOpen ? '收起详情' : '展开详情' }}</button>
+        <button v-if="liveRun && !reportOpen" type="button" class="run-log-trigger" :aria-expanded="detailPaneOpen" aria-controls="review-detail-pane" @click="detailPaneOpen = !detailPaneOpen">{{ detailPaneOpen ? '收起详情' : '展开详情' }}</button>
         <span class="notebook-status">{{ reviewStatus }}</span>
       </div>
     </header>
     <p v-if="liveLoadError" class="notebook-live-note">{{ liveLoadError }}</p>
     <section v-if="task && !liveRun" class="surface preparation-panel review-preparation" :aria-busy="Boolean(startPhase)">
       <div class="review-preparation-heading">
-        <div><h2>这次需要审查什么？</h2><p>确认交付内容，开始审查后自动保存本轮代码和资料版本。</p></div>
-        <span class="status-mark">{{ claimsConfirmed ? `${confirmedClaimCount} 条已确认` : '待确认范围' }}</span>
+        <div><h2>交付目标</h2></div>
+        <span class="status-mark">{{ selectedClaimCount ? `${selectedClaimCount} 个交付目标` : '待提取目标' }}</span>
       </div>
       <div v-if="task.formal_snapshot_id && !confirmedClaimCount" class="legacy-cycle-notice">
         <div><strong>本轮需要重新准备</strong><p>旧版快照缺少交付内容，请新建一轮审查。</p></div>
@@ -1112,7 +1109,7 @@ onBeforeUnmount(stopPolling);
           <div class="review-section-heading"><h3>交付内容</h3>
             <div class="claim-actions">
               <button type="button" :disabled="busy || Boolean(task.formal_snapshot_id) || Boolean(confirmedClaimCount)" @click="proposeClaims">{{ claimEdits.length ? '重新提取' : '从 PR 提取' }}</button>
-              <button type="button" :disabled="busy || Boolean(task.formal_snapshot_id) || !claimProposalAttempted || claimEdits.length >= 12" @click="addManualClaim">补充内容</button>
+              <button type="button" :disabled="busy || Boolean(task.formal_snapshot_id) || claimEdits.length >= 12" @click="addManualClaim">补充内容</button>
             </div>
           </div>
           <p class="claim-feedback" :class="{ confirmed: claimsConfirmed }" role="status">{{ claimMessage }}</p>
@@ -1123,7 +1120,6 @@ onBeforeUnmount(stopPolling);
             <button type="button" :aria-label="`删除交付内容 ${index + 1}`" :disabled="busy || Boolean(task.formal_snapshot_id)" @click="removeClaim(index)">删除</button>
           </div>
           <div v-if="!claimEdits.length" class="review-claims-empty"><strong>先确定本次交付的功能</strong><p>从 PR 描述提取后，可以调整内容；提取不可用时，也可以手动补充。</p></div>
-          <button v-if="claimEdits.length && !task.formal_snapshot_id && !claimsConfirmed" class="confirm-claims-button" type="button" :disabled="busy || !selectedClaimCount" @click="confirmClaims">确认 {{ selectedClaimCount }} 条交付内容</button>
         </section>
         <details class="review-settings" :open="!gitForm.repositoryId">
           <summary><span>代码范围</span><small v-if="task.delivery_pull_request">PR #{{ task.delivery_pull_request.number }} · {{ task.delivery_pull_request.headRef }} → {{ task.delivery_pull_request.baseRef }}</small><small v-else>选择仓库与分支</small></summary>
@@ -1147,17 +1143,18 @@ onBeforeUnmount(stopPolling);
         </details>
       </div>
       <footer class="review-start-footer">
-        <div aria-live="polite"><strong>{{ startPhase || (task.formal_snapshot_id ? '本轮输入已就绪' : claimsConfirmed ? '可以开始审查了' : '请先确认交付内容') }}</strong><p>{{ task.formal_snapshot_id ? '继续审查将沿用已保存的输入版本。' : '开始后，本轮交付内容和资料版本将固定。' }}</p></div>
+        <div aria-live="polite"><strong>{{ startPhase || (task.formal_snapshot_id ? '本轮输入已就绪' : canStartRun ? '可以开始审查了' : !selectedClaimCount ? '请提取或补充交付目标' : '请补全目标与代码范围') }}</strong><p>{{ task.formal_snapshot_id ? '继续审查将沿用已保存的输入版本。' : '开始后，本轮交付内容和资料版本将固定。' }}</p></div>
         <button class="primary-button" type="button" :disabled="busy || !canStartRun" @click="startRun">{{ startPhase ? '正在准备…' : startError ? '重试审查' : '开始审查' }}</button>
         <p v-if="startError" class="review-start-error" role="alert">{{ startError }}</p>
         <p v-else-if="preparationMessage" class="review-preparation-note" role="status">{{ preparationMessage }}</p>
       </footer>
     </section>
-    <section
-      v-if="liveRun && (toolExecutions.length || toolExecutionError)"
+    <details
+      v-if="liveRun && !reportOpen && (toolExecutions.length || toolExecutionError)"
       class="tool-execution-strip"
       aria-label="临时工具结果"
     >
+      <summary>补充分析材料 · {{ toolExecutions.length }} 项</summary>
       <header>
         <div>
           <h2>临时工具结果</h2>
@@ -1214,40 +1211,37 @@ onBeforeUnmount(stopPolling);
       <p v-if="toolImportMessage" class="tool-execution-message">
         {{ toolImportMessage }}
       </p>
-    </section>
-    <main v-if="liveRun" class="notebook-grid" :class="{ 'detail-collapsed': !detailPaneOpen }">
+    </details>
+    <main v-if="liveRun" v-show="!reportOpen" class="notebook-grid" :class="{ 'detail-collapsed': !detailPaneOpen }">
       <SourceEvidencePane
         :evidence="liveEvidence"
         :snapshot-label="liveRun?.snapshot_id ?? task?.formal_snapshot_hash"
         :live="Boolean(liveRun)"
         :git-diff="liveGitDiff"
         :code-review="liveCodeReview"
+        :run-status="liveRun?.run_status"
         :selected-file-path="selectedDiffFile?.path"
         @select-file="showDiffFile"
+        @show-run-log="runLogOpen = true"
       /><VerificationPane
         :conclusions="displayedConclusions"
         :selected-id="selectedId"
         :live="Boolean(liveRun)"
         :view="centerView"
         :selected-file="selectedDiffFile"
-        @select="selectedId = $event"
+        @select="selectConclusion"
         @change-view="centerView = $event"
       /><ReviewDetailPane
         v-show="detailPaneOpen"
         id="review-detail-pane"
         :conclusion="selectedConclusion"
         :evidence="liveEvidence"
-        :orchestration="liveOrchestration"
-        :run-status="liveRun?.run_status"
-        :run-snapshot-id="liveRun?.snapshot_id"
-        :has-report="Boolean(report)"
         :can-decide="Boolean(selectedConclusion?.allowedHumanDecisions?.length && !selectedConclusion?.humanDecision)"
         ><template #decision
           ><div class="human-decision-panel">
             <div class="surface-heading">
               <div>
-                <h2>人工裁决</h2>
-                <p>系统结论保持原样；此处只记录你是否采纳当前证据。</p>
+                <h2>复核意见</h2>
               </div>
             </div>
             <template v-if="selectedConclusion?.humanDecision">
@@ -1256,25 +1250,23 @@ onBeforeUnmount(stopPolling);
               <small>裁决时间：{{ selectedConclusion.humanDecision.createdAt ? formatDate(selectedConclusion.humanDecision.createdAt) : '—' }}</small>
             </template>
             <template v-else-if="selectedConclusion?.allowedHumanDecisions?.length">
-              <p class="quiet-note">请先阅读“引用”和“代码变更”。只有模型关联时，不能直接确认交付支持。</p>
-              <label>裁决说明（退回补证时必填）<textarea v-model="decisionNote" :disabled="busy" placeholder="记录采纳理由、当前缺口或需要补充的证据。" /></label>
+              <label>处理说明（退回补证时必填）<textarea v-model="decisionNote" :disabled="busy" placeholder="说明你发现的问题或需要补充的证据。" /></label>
               <div class="action-buttons decision-actions">
                 <button v-for="decision in selectedConclusion.allowedHumanDecisions" :key="decision" type="button" :class="{ 'primary-button': decision === 'CONFIRM_SUPPORT' }" :disabled="busy" @click="decideConclusion(decision)">{{ decisionLabel(decision) }}</button>
               </div>
             </template>
             <p v-else class="quiet-note">当前系统结论不需要人工裁决，或本轮尚未生成可裁决结果。</p>
             <p v-if="decisionMessage" class="claim-feedback">{{ decisionMessage }}</p>
-          </div></template
-        ><template #report
-          ><div v-if="report" class="report-submit-panel detail-report">
+          </div></template>
+      </ReviewDetailPane>
+    </main>
+    <section v-if="report && reportOpen" class="review-report-workspace" aria-label="交付报告">
+          <div class="report-submit-panel">
             <div class="surface-heading">
               <div>
                 <h2>交付报告</h2>
-                <p>
-                  报告绑定本次冻结输入与核验结果；提交后仅允许审批或固化，不可直接改写。
-                </p>
               </div>
-              <span class="status-mark attention">{{ report.status }}</span>
+              <span class="status-mark attention">{{ reportStatusLabel(report.status) }}</span>
             </div>
             <p class="association-note">{{ reportMessage }}</p>
             <section v-if="reportPreview" class="report-preview" aria-label="已保存的交付报告内容">
@@ -1282,7 +1274,6 @@ onBeforeUnmount(stopPolling);
                 <strong>已保存的报告内容</strong>
                 <span>v{{ reportPreview.version }} · 输入快照 {{ reportPreview.snapshot_hash.slice(0, 12) }}</span>
               </div>
-              <p class="report-preview-note">以下内容来自本报告版本；重新进入该核验任务时仍可在这里回看，不会按当前页面数据重新生成。</p>
               <article v-for="item in reportPreview.items" :key="item.id" class="report-preview-item">
                 <div class="report-preview-item-heading">
                   <strong>{{ item.claimText }}</strong>
@@ -1306,7 +1297,7 @@ onBeforeUnmount(stopPolling);
             </section>
             <p v-else class="quiet-note">正在读取已保存的报告内容；如读取失败，请刷新后重试。</p>
             <template v-if="report.status === 'DRAFT'"
-              ><p v-if="unresolvedDecisionCount" class="report-gate-note">还有 {{ unresolvedDecisionCount }} 条结论等待人工裁决；请先在右侧“人工裁决”中完成处理。</p><label
+              ><p v-if="unresolvedDecisionCount" class="report-gate-note">还有 {{ unresolvedDecisionCount }} 条结论需要人工复核。<button type="button" @click="openPendingConclusion">前往处理</button></p><label
                 >提交说明<textarea
                   v-model="reportNote"
                   :disabled="busy"
@@ -1327,7 +1318,7 @@ onBeforeUnmount(stopPolling);
               </div></template
             >
             <p v-else class="empty-row">
-              当前报告状态：{{ report.status }}。{{
+              当前报告状态：{{ reportStatusLabel(report.status) }}。{{
                 report.status === "SUBMITTED"
                   ? "请由不同成员的审核者进入待审批队列处理。"
                   : report.status === "APPROVED"
@@ -1335,10 +1326,8 @@ onBeforeUnmount(stopPolling);
                     : "该报告版本仅供回放。"
               }}
             </p>
-          </div></template
-        ></ReviewDetailPane
-      >
-    </main>
+          </div>
+    </section>
     <div
       v-if="runLogOpen && liveRun"
       class="run-log-backdrop"
@@ -1393,6 +1382,11 @@ onBeforeUnmount(stopPolling);
           <p v-if="!liveEvents.length" class="empty-row">
             暂时没有可展示的运行事件。
           </p>
+          <details v-if="liveOrchestration" class="review-runtime-details">
+            <summary>技术详情与本轮版本</summary>
+            <dl class="run-details"><div><dt>输入版本</dt><dd>{{ liveRun.snapshot_id }}</dd></div><div><dt>编排模板</dt><dd>{{ liveOrchestration.template.name }} · v{{ liveOrchestration.template.version }}</dd></div></dl>
+            <ol class="run-orchestration-list"><li v-for="node in [...liveOrchestration.nodes].sort((a, b) => a.displayOrder - b.displayOrder)" :key="node.capabilityKey"><span>{{ node.displayOrder }}</span><div><strong>{{ node.capabilityName }}</strong><small>v{{ node.capabilityVersion }}<template v-if="node.tools.length"> · {{ node.tools.map((tool) => tool.key).join('、') }}</template></small></div><em v-if="node.locked">系统锁定</em></li></ol>
+          </details>
         </div>
       </section>
     </div>

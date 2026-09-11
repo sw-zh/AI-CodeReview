@@ -20,6 +20,7 @@ from app.infrastructure.persistence.models import (
     InputSnapshotClaim,
     InputSnapshotGit,
     Claim,
+    ClaimEvidenceLink,
     EvidenceItem,
     HumanVerificationDecision,
     RiskFinding,
@@ -201,6 +202,17 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
             else []
         )
         risks = session.query(RiskFinding).filter_by(analysis_run_id=run.id, claim_id=claim.id).all()
+        assessments = (
+            session.query(ClaimEvidenceLink)
+            .filter(
+                ClaimEvidenceLink.claim_id == claim.id,
+                ClaimEvidenceLink.evidence_id.in_([item.id for item in evidence]),
+                ClaimEvidenceLink.produced_by.in_(["MODEL", "DETERMINISTIC", "HUMAN"]),
+            )
+            .order_by(ClaimEvidenceLink.id)
+            .all()
+            if evidence else []
+        )
         items.append({
             "id": result.id,
             "claim_id": claim.id,
@@ -211,6 +223,11 @@ def get_analysis_results(session: Session, *, run_id: UUID, actor_id: UUID) -> l
             "requires_human_confirmation": result.requires_human_confirmation,
             "human_decision": _human_decision_projection(decisions.get(result.id)),
             "allowed_human_decisions": list(_HUMAN_DECISIONS_BY_STATUS.get(result.status, ())),
+            "evidence_assessments": [
+                {"evidenceId": str(link.evidence_id), "relation": link.relation,
+                 "reason": link.reason, "producedBy": link.produced_by}
+                for link in assessments
+            ],
             "evidence": [
                 {
                     "id": str(item.id),

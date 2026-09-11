@@ -17,7 +17,9 @@ services:
 
   api:
     build: ../backend
+    restart: unless-stopped
     environment:
+      PYTHONFAULTHANDLER: "1"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ai_codereview}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_codereview}
       ARTIFACT_ROOT: /artifacts
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}

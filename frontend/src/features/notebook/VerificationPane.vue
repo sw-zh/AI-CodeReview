@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { VerificationConclusion } from "../../types/workbench";
 
 type GitFile = {
@@ -31,7 +31,7 @@ const emit = defineEmits<{
 }>();
 
 const summary = computed(() => ({
-  confirmed: props.conclusions.filter((item) => item.status === "已确认")
+  confirmed: props.conclusions.filter((item) => ["自动通过", "代码证据支持", "已确认"].includes(item.status) && !item.needsHumanDecision)
     .length,
   partial: props.conclusions.filter((item) => item.status === "部分支持")
     .length,
@@ -40,18 +40,21 @@ const summary = computed(() => ({
   conflicting: props.conclusions.filter((item) => item.status === "存在冲突")
     .length,
   pending: props.conclusions.filter((item) => item.needsHumanDecision).length,
+  unanalyzed: props.conclusions.filter((item) => item.status === "未完成分析").length,
 }));
 
-const deliveryState = computed(() => {
-  if (!props.live) return "尚未形成可审批的交付结论";
-  if (!props.conclusions.length) return "本轮尚未生成逐项交付结论";
-  if (summary.value.conflicting) return "存在需要处理的交付证据冲突";
-  if (summary.value.insufficient && summary.value.pending)
-    return "存在待人工确认与证据不足项";
-  if (summary.value.insufficient) return "存在需要补充证据的交付项";
-  if (summary.value.pending || summary.value.partial)
-    return "交付结论仍需人工确认";
-  return "已形成逐项交付证据结论";
+const filter = ref<"all" | "attention" | "passed">("all");
+const isPassed = (item: VerificationConclusion) =>
+  ["自动通过", "代码证据支持", "已确认"].includes(item.status) && !item.needsHumanDecision;
+const visibleConclusions = computed(() => props.conclusions.filter((item) =>
+  filter.value === "all" || (filter.value === "passed" ? isPassed(item) : !isPassed(item)),
+));
+watch(filter, () => {
+  if (!visibleConclusions.value.some((item) => item.id === props.selectedId) && visibleConclusions.value[0])
+    emit("select", visibleConclusions.value[0].id);
+});
+watch(() => props.selectedId, () => {
+  if (!visibleConclusions.value.some((item) => item.id === props.selectedId)) filter.value = "all";
 });
 
 function diffLines(header: string, payload: string): DiffLine[] {
@@ -87,16 +90,7 @@ function diffLines(header: string, payload: string): DiffLine[] {
   <section class="notebook-pane notebook-verification">
     <header class="notebook-pane-header">
       <div>
-        <h2>{{ view === "conclusions" ? "交付核验" : "代码变更" }}</h2>
-        <p>
-          {{
-            view === "conclusions"
-              ? live
-                ? "当前真实运行结果"
-                : "尚未运行固定双核"
-              : "冻结 Diff 的只读视图"
-          }}
-        </p>
+        <h2>{{ view === "conclusions" ? "审查结论" : "代码变更" }}</h2>
       </div>
     </header>
     <nav class="workspace-tabs" aria-label="审查内容">
@@ -114,46 +108,40 @@ function diffLines(header: string, payload: string): DiffLine[] {
         代码变更
       </button>
     </nav>
-    <template v-if="view === 'conclusions'"
-      ><section class="conclusion-banner">
-        <span>本轮状态</span><strong>{{ deliveryState }}</strong>
-        <p>
-          已确认 {{ summary.confirmed }} 项，部分支持
-          {{ summary.partial }} 项，证据不足
-          {{ summary.insufficient }} 项，待人工确认 {{ summary.pending }} 项。
-        </p>
-      </section>
+    <template v-if="view === 'conclusions'">
+      <div class="review-result-filters" role="group" aria-label="筛选审查结论">
+        <button type="button" :aria-pressed="filter === 'all'" @click="filter = 'all'">全部 {{ conclusions.length }}</button>
+        <button type="button" :disabled="conclusions.length === summary.confirmed" :aria-pressed="filter === 'attention'" @click="filter = 'attention'">待解决 {{ conclusions.length - summary.confirmed }}</button>
+        <button type="button" :disabled="!summary.confirmed" :aria-pressed="filter === 'passed'" @click="filter = 'passed'">已通过 {{ summary.confirmed }}</button>
+      </div>
       <ol class="conclusion-list">
         <li
-          v-for="item in conclusions"
+          v-for="item in visibleConclusions"
           :key="item.id"
           :class="{ selected: selectedId === item.id }"
         >
-          <button type="button" @click="emit('select', item.id)">
+          <button type="button" :aria-current="selectedId === item.id ? 'true' : undefined" @click="emit('select', item.id)">
             <div class="conclusion-top">
               <strong>{{ item.requirement }}</strong
               ><span :class="['conclusion-status', item.status]">{{
                 item.status
               }}</span>
             </div>
-            <p>{{ item.summary }}</p>
             <small
               ><span v-if="item.risk" :class="['risk-chip', item.risk]">{{
                 item.risk
               }}</span
               >{{
                 item.humanDecision
-                  ? "已完成人工裁决"
+                  ? "已人工复核"
                   : item.needsHumanDecision
-                  ? "需要人工确认"
-                  : item.status === "证据不足"
-                    ? "需要补充证据"
-                    : "证据已形成闭环"
+                  ? "待人工复核"
+                  : `${item.evidenceIds.length} 条依据`
               }}</small
             >
           </button>
         </li>
-      </ol></template
+      </ol><p v-if="!visibleConclusions.length" class="notebook-empty">该分类暂无结论，可切换到其他分类查看。</p></template
     >
     <section v-else-if="selectedFile" class="center-diff-view">
       <header>

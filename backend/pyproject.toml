@@ -16,6 +16,9 @@ dependencies = [
   "langgraph>=0.2,<1.0",
   "filelock>=3.16,<4.0",
   "tree-sitter-language-pack>=1.6,<2.0",
+  # tree-sitter 0.26.0 segfaults (GC/attribute reads) and 0.25.2 hangs with
+  # language-pack 1.16.x; pin to the proven 0.25.1 until upstream is fixed.
+  "tree-sitter==0.25.1",
   "beautifulsoup4>=4.12,<5.0",
   "PyYAML>=6.0,<7.0",
 ]

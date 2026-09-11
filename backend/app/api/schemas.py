@@ -326,6 +326,7 @@ class AnalysisResultResponse(BaseModel):
     risks: list[dict] = Field(default_factory=list)
     human_decision: dict | None = None
     allowed_human_decisions: list[str] = Field(default_factory=list)
+    evidence_assessments: list[dict] = Field(default_factory=list)
 
 
 class HumanVerificationDecisionRequest(BaseModel):

@@ -186,14 +186,12 @@ def _delivery_item_verification_status(session: Session, *, report: ReportVersio
             else "INSUFFICIENT_EVIDENCE" if decision in {"CONFIRM_INSUFFICIENT", "RETURN_FOR_EVIDENCE"}
             else item.result_snapshot.get("status")
         )
-    if statuses and all(status == "CONFIRMED" for status in statuses):
+    if statuses and all(status in {"SUPPORTED", "CONFIRMED"} for status in statuses):
         return "CONFIRMED"
     if any(status in {"CONFLICT", "CONFLICTING"} for status in statuses):
         return "CONFLICT"
     if not statuses or all(status in {"INSUFFICIENT_EVIDENCE", "NOT_PROVEN", "NOT_ANALYZED"} for status in statuses):
         return "INSUFFICIENT_EVIDENCE"
-    if statuses and all(status == "SUPPORTED" for status in statuses):
-        return "PARTIALLY_SUPPORTED"
     return "PARTIALLY_SUPPORTED"
 
 

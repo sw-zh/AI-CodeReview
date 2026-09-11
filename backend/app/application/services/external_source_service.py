@@ -33,9 +33,6 @@ from app.infrastructure.persistence.models import (
 
 
 _GITHUB_API_BASE_URL = "https://api.github.com"
-# Fixed environment-variable name backing GitHub private-repo access.  The UI
-# no longer collects a credential name; clients fall back to this convention.
-_DEFAULT_SECRET_REF = "GITHUB_SOURCE_TOKEN"
 _GITHUB_REPOSITORY_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -120,9 +117,10 @@ def create_connection(
     if not normalized_name:
         raise DomainError("INPUT_INVALID", "来源连接名称不能为空")
     slug = _normalize_repository_slug(repository_slug)
-    # The token lives in the server environment under a fixed convention; the
-    # UI no longer asks the user for a credential name.  Fall back to that name.
-    normalized_secret_ref = normalize_secret_ref(secret_ref) or _DEFAULT_SECRET_REF
+    # A public repository needs no credential.  Keep the reference absent unless
+    # a caller explicitly provides a server environment-variable name for a
+    # private repository.
+    normalized_secret_ref = normalize_secret_ref(secret_ref)
     existing = session.query(ExternalConnection).filter_by(
         project_id=project_id,
         provider=provider,
