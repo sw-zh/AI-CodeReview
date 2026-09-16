@@ -126,13 +126,3 @@ GitHub 来源连接仅支持只读同步。公开仓库无需凭据；私有仓�
 ├── docs/          # 架构、设计与功能说明
 └── start.ps1      # 本地开发一键启动脚本
 ```
-
-## 相关文档
-
-- [系统架构](docs/architecture/AI-CodeReview-v1.md)
-- [PR 交付核验 LangGraph 设计](docs/specs/2026-09-01-pr-delivery-verification-langgraph-design.md)
-- [标准交付核验设计](docs/specs/2026-08-25-standard-verification-review-design.md)
-
-## 许可证
-
-当前仓库未声明开源许可证。若计划公开分发或允许复用，请在发布前补充明确的 License。
